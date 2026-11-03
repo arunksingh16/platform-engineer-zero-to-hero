@@ -21,7 +21,7 @@
   <ul>
     <li><strong>Trace</strong> — everything that happened for one request, identified by a <code>trace_id</code>.</li>
     <li><strong>Span</strong> — one unit of work (an HTTP handler, a DB query, a call to another service). It has a name, a <code>span_id</code>, a <code>parent_span_id</code>, a start time, a duration, a status and <strong>attributes</strong> (key/value details like <code>db.system="postgres"</code>).</li>
-    <li>The span with no parent is the <strong>root span</strong>. Together, spans form a tree.</li>
+    <li>The span with no parent is the <strong>root span</strong>. Parent-child relationships form a tree in this basic model; OpenTelemetry span links can also associate spans without making them parent and child.</li>
   </ul>
 
   <p>Raw spans are just rows:</p>

@@ -22,9 +22,9 @@
 <pre><code>2026-11-03 10:15:02 ERROR Payment failed for user 4821 after 2300ms</code></pre>
   <p>To find all slow payments you'd need a fragile regex. Structured (one JSON object per line):</p>
 <pre><code>{"ts":"2026-11-03T10:15:02Z","level":"error","service":"payment",
- "msg":"payment failed","user_id":4821,"duration_ms":2300,
+ "msg":"payment failed","duration_ms":2300,
  "trace_id":"ab12","error":"gateway_timeout"}</code></pre>
-  <p>Now "show me <code>service=payment</code> and <code>duration_ms &gt; 2000</code>" is a simple filter. Logging systems (Loki, Elasticsearch, CloudWatch Logs) index and query these fields.</p>
+  <p>Now "show me <code>service=payment</code> and <code>duration_ms &gt; 2000</code>" can be expressed as a field query. How fields are indexed depends on the system and configuration; for example, Loki indexes labels and can parse JSON fields at query time.</p>
 
   <h2>Levels</h2>
   <table>
@@ -36,7 +36,7 @@
   </table>
 
   <h2>The most important field: <code>trace_id</code></h2>
-  <p>One user action touches many services, each writing its own logs. If every log line carries the same <strong>correlation ID</strong> (the trace ID from lesson 7), you can pull all the lines for one request across all services — and jump between a log line and the trace.</p>
+  <p>One user action touches many services, each writing its own logs. When available, the same <strong>correlation ID</strong> (the trace ID from lesson 7) lets you find lines for one request across services and jump between a log line and the trace.</p>
 
   <div class="widget">
     <h3>Log explorer</h3>
@@ -67,10 +67,10 @@
     <h3>Habits that make logs useful</h3>
     <ul>
       <li>Structured JSON, consistent field names across services.</li>
-      <li>Always include <code>service</code>, <code>level</code>, timestamp (UTC) and <code>trace_id</code>.</li>
+      <li>Include consistent fields such as <code>service</code>, <code>level</code>, and a UTC timestamp. Include <code>trace_id</code> when tracing context is available.</li>
       <li>Never log secrets or personal data (passwords, tokens, card numbers).</li>
       <li>Logs are the most expensive signal by volume — log events that matter, not every loop iteration.</li>
-      <li>High-cardinality detail (user_id, order_id) belongs here, not in metric labels.</li>
+      <li>High-cardinality identifiers do not belong in metric labels. If request or user correlation is genuinely needed, use an approved opaque or pseudonymous identifier in logs or traces with appropriate access and retention controls; do not log raw personal data.</li>
     </ul>
   </div>
 
@@ -80,7 +80,7 @@
 [
  {"q":"Why prefer structured (JSON) logs?","options":["They are shorter","Fields can be filtered and aggregated without fragile regex","They don't need timestamps","They can't contain errors"],"answer":1,"why":"Named fields turn log search into queries on data instead of text matching."},
  {"q":"What is the purpose of putting <code>trace_id</code> in every log line?","options":["To make logs larger","To correlate logs across services and link them to traces","To replace the timestamp","To sort alphabetically"],"answer":1,"why":"Same ID across services means one search returns the whole story of a request."},
- {"q":"Where should <code>user_id</code> go?","options":["A metric label","A log field (or trace attribute)","The metric name","Nowhere, it is forbidden"],"answer":1,"why":"Unbounded identifiers are fine in logs/traces but cause cardinality explosions in metrics."},
+ {"q":"An incident workflow needs to correlate requests without exposing personal data. What is the best approach?","options":["Add raw personal data as a metric label","Use an approved opaque or pseudonymous identifier in protected logs or traces","Write the access token to every log","Put the full request body in a metric"],"answer":1,"why":"Metric labels should stay bounded, and telemetry should avoid raw personal data. Use protected identifiers only when justified by policy."},
  {"q":"A retry succeeded on the second attempt. Which level fits best?","options":["DEBUG","WARN","ERROR","FATAL"],"answer":1,"why":"Something went wrong but was handled — a warning. ERROR would page people for nothing."}
 ]
 </script>

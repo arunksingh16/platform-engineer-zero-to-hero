@@ -109,7 +109,7 @@ with tracer.start_as_current_span("charge-card") as span:
       <li>Decode the flags in <code>…-00</code>. What does it mean for sampling?</li>
     </ol>
     <details><summary>Show answer</summary>
-      <p>1) The same <code>aaaa…aaaa</code> — the trace-id never changes. 2) Parent id = <code>1111111111111111</code> (A's span). The header to C carries <code>2222222222222222</code> (or a deeper child span's id) as the parent. 3) Flags <code>00</code> mean "not sampled": the trace is propagated so IDs still correlate, but spans are not recorded/exported.</p>
+      <p>1) The same <code>aaaa…aaaa</code> — the trace-id never changes. 2) Parent id = <code>1111111111111111</code> (A's span). The header to C carries <code>2222222222222222</code> (or a deeper child span's id) as the parent. 3) The sampled flag is unset in <code>00</code>. With a parent-based sampler, this normally means spans are not recorded/exported, though trace context can still propagate; the configured sampling policy controls the decision.</p>
     </details>
   </div>
 

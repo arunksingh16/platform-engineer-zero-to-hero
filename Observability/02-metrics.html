@@ -18,7 +18,7 @@
   </div>
 
   <h2>1. Counter — only goes up</h2>
-  <p>A counter counts events: requests served, errors, bytes sent. It starts at 0 and only increases (it resets to 0 only when the process restarts). Its raw value is rarely interesting; the <em>rate of change</em> is. Name them with <code>_total</code>, e.g. <code>http_requests_total</code>.</p>
+  <p>A counter counts events: requests served, errors, bytes sent. It starts at 0 and should not decrease during normal operation; it typically resets when the process restarts or the counter is reinitialized. Its raw value is rarely interesting; the <em>rate of change</em> is. Name them with <code>_total</code>, e.g. <code>http_requests_total</code>.</p>
 
   <h2>2. Gauge — goes up and down</h2>
   <p>A gauge is a current level: active connections, queue length, memory in use, temperature. Its raw value is the interesting part.</p>

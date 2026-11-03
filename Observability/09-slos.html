@@ -21,7 +21,7 @@
   <ul>
     <li><strong>SLI</strong> (Service Level Indicator): a measurement of user-visible quality, as a ratio of good events to valid events. Example: <code>good = requests that returned non-5xx in &lt; 500 ms</code>, <code>SLI = good ÷ total</code>.</li>
     <li><strong>SLO</strong> (Service Level Objective): the target for the SLI over a window. Example: "99.9% of requests are good over 30 days".</li>
-    <li><strong>SLA</strong> (Service Level Agreement): a contract with consequences (refunds). Looser than your SLO.</li>
+    <li><strong>SLA</strong> (Service Level Agreement): a contract with consequences (for example, service credits). It is often less stringent than the internal SLO, but the terms depend on the agreement.</li>
   </ul>
 
   <h2>Error budget</h2>
@@ -76,7 +76,7 @@
     <tr><td>Page</td><td>6</td><td>6 h</td><td>30 min</td><td>5%</td></tr>
     <tr><td>Ticket</td><td>1</td><td>3 days</td><td>6 h</td><td>10%</td></tr>
   </table>
-  <p>Both windows must exceed the threshold: the long window shows it's serious, the short window shows it's still happening (so it clears quickly once fixed). In PromQL this is built from <code>rate()</code> and <code>sum</code> from lesson 5 over your SLI counters.</p>
+  <p>Both windows must exceed the threshold: the long window shows it's serious, the short window shows it's still happening (so it clears quickly once fixed). A burn-rate value alone is not enough to decide whether to page; the alert also evaluates the configured windows. These thresholds are examples, not universal policy. In PromQL this is built from <code>rate()</code> and <code>sum</code> from lesson 5 over your SLI counters.</p>
 
   <h2>🎓 You made it — what to learn next</h2>
   <p>You now have the foundations. These advanced topics build directly on what you practised:</p>
@@ -114,7 +114,7 @@
     const hoursToGone=burn>0?720/burn:Infinity;
     const used1h=burn/720*100;
     const fmt=h=>!isFinite(h)?"never":h>=48?(h/24).toFixed(1)+" days":h>=1?h.toFixed(1)+" hours":(h*60).toFixed(0)+" minutes";
-    $("burn").innerHTML=`<table><tr><th>Error budget (30 d)</th><td>${budgetMin.toFixed(2)} minutes of full outage</td></tr><tr><th>Burn rate</th><td><strong class="${burn>=14.4?"err":burn>=1?"":"ok"}">${burn.toFixed(2)}×</strong> ${burn>=14.4?"→ page now":burn>=6?"→ page (slow burn)":burn>=1?"→ ticket-level":"→ within budget"}</td></tr><tr><th>Budget gone in</th><td>${fmt(hoursToGone)}</td></tr><tr><th>Used per hour</th><td>${used1h.toFixed(2)}% of the budget</td></tr></table>`;
+    $("burn").innerHTML=`<table><tr><th>Error budget (30 d)</th><td>${budgetMin.toFixed(2)} minutes of full outage</td></tr><tr><th>Burn rate</th><td><strong class="${burn>=14.4?"err":burn>=1?"":"ok"}">${burn.toFixed(2)}×</strong> ${burn>=14.4?"→ fast-burn threshold":burn>=6?"→ slow-burn threshold":burn>=1?"→ budget burning":"→ within budget"}</td></tr><tr><th>Budget gone in</th><td>${fmt(hoursToGone)}</td></tr><tr><th>Used per hour</th><td>${used1h.toFixed(2)}% of the budget</td></tr></table>`;
     const bar=$("budgetbar");
     bar.setAttribute("width",Math.max(0,500*(1-used1h/100)));
     bar.setAttribute("fill",used1h>=2?"var(--bad)":"var(--good)");

@@ -25,7 +25,7 @@ http_requests_total{method="POST", status="200"}   → (10:00:00,  300) (10:00:1
   <p>That is <strong>three</strong> different series sharing one metric name. Change any label value and you get a new series. Labels are what let you ask "errors <em>per method</em>" or "only <em>POST</em> traffic".</p>
 
   <h2>Cardinality = number of series</h2>
-  <p><strong>Cardinality</strong> is how many distinct series exist. For a metric it is (roughly) the <em>product</em> of the number of values of each label. Every series costs memory, CPU and disk, forever, for as long as it is active. This multiplication is why one careless label is dangerous.</p>
+  <p><strong>Cardinality</strong> is how many distinct series exist. For a metric it is (roughly) the <em>product</em> of the number of values of each label. Active series consume resources, especially memory and index space; disk use also depends on sample rate, retention, labels and compression. This multiplication is why one careless label can be expensive.</p>
 
   <h2>Cardinality calculator</h2>
   <div class="widget">
@@ -38,16 +38,16 @@ http_requests_total{method="POST", status="200"}   → (10:00:00,  300) (10:00:1
 
   <div class="hand">
     <h3>✍️ Do it by hand</h3>
-    <p>You track <code>checkout_duration_seconds</code> as a histogram with 8 buckets (plus <code>_sum</code> and <code>_count</code> = 10 series per label combination). Labels: <code>region</code> (3 values), <code>payment_method</code> (4 values).</p>
+    <p>You track <code>checkout_duration_seconds</code> as a classic histogram with 7 finite bucket boundaries plus the implicit <code>+Inf</code> bucket: 8 bucket series, plus <code>_sum</code> and <code>_count</code> = 10 series per label combination. Labels: <code>region</code> (3 values), <code>payment_method</code> (4 values).</p>
     <ol>
       <li>How many series in total?</li>
       <li>A teammate adds <code>customer_id</code> with 50,000 customers. How many series now?</li>
-      <li>At roughly 3 KB of memory per series (a common rule of thumb), how much memory is that?</li>
+      <li>If this exercise assumes 3 KB of memory per series, how much memory is that? This is an illustrative assumption, not a universal Prometheus sizing value.</li>
     </ol>
     <details><summary>Show answer</summary>
       <p>1) 3 × 4 = 12 combinations × 10 = <strong>120 series</strong>.<br>
       2) 120 × 50,000 = <strong>6,000,000 series</strong>.<br>
-      3) 6,000,000 × 3 KB = 18,000,000 KB ≈ <strong>18 GB</strong> — from one metric. The fix: put high-cardinality identifiers like customer IDs in <em>logs or traces</em>, not metric labels.</p>
+      3) 6,000,000 × 3 KB = 18,000,000 KB ≈ <strong>18 GB</strong> — from one metric under the exercise's assumed cost. Avoid high-cardinality metric labels; if correlation requires an identifier, use an approved opaque or pseudonymous value in protected logs or traces.</p>
     </details>
   </div>
 
@@ -85,7 +85,7 @@ http_requests_total{method="POST", status="200"}   → (10:00:00,  300) (10:00:1
     el.textContent=n.toLocaleString()+" series";
     el.className="big "+(n>100000?"err":"");
     const mb=n*3/1024;
-    document.getElementById("series-note").textContent=`≈ ${mb<1024?mb.toFixed(1)+" MB":(mb/1024).toFixed(1)+" GB"} of memory at ~3 KB/series (rule of thumb)`+(n>100000?" — ⚠ cardinality explosion":"");
+    document.getElementById("series-note").textContent=`≈ ${mb<1024?mb.toFixed(1)+" MB":(mb/1024).toFixed(1)+" GB"} of memory at 3 KB/series (illustrative assumption)`+(n>100000?" — ⚠ cardinality explosion":"");
     const lab=dims.filter(d=>on.has(d[0])).map(d=>`${d[0]}="${d[2]}"`).join(",");
     document.getElementById("series-name").innerHTML=`One example series: <code>http_requests_total{${lab}}</code>`;
   }
