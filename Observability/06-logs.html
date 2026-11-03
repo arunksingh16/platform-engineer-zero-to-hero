@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>6. Logs you can actually search · Observability from zero</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-lesson="6">
+<main>
+  <span class="tag">Lesson 6</span>
+  <h1>Logs you can actually search</h1>
+  <p class="lead">Metrics say <em>that</em> something broke. Logs say <em>what</em> happened. But only if they are written so a machine can search them.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Convert an unstructured log line into a structured one, use levels and correlation IDs properly, and follow one request through many services by hand.
+  </div>
+
+  <h2>Unstructured vs structured</h2>
+  <p>Unstructured (human-friendly, machine-hostile):</p>
+<pre><code>2026-11-03 10:15:02 ERROR Payment failed for user 4821 after 2300ms</code></pre>
+  <p>To find all slow payments you'd need a fragile regex. Structured (one JSON object per line):</p>
+<pre><code>{"ts":"2026-11-03T10:15:02Z","level":"error","service":"payment",
+ "msg":"payment failed","user_id":4821,"duration_ms":2300,
+ "trace_id":"ab12","error":"gateway_timeout"}</code></pre>
+  <p>Now "show me <code>service=payment</code> and <code>duration_ms &gt; 2000</code>" is a simple filter. Logging systems (Loki, Elasticsearch, CloudWatch Logs) index and query these fields.</p>
+
+  <h2>Levels</h2>
+  <table>
+    <tr><th>Level</th><th>Use for</th></tr>
+    <tr><td>DEBUG</td><td>Developer detail; usually off in production</td></tr>
+    <tr><td>INFO</td><td>Normal significant events (order placed)</td></tr>
+    <tr><td>WARN</td><td>Something odd but handled (retry succeeded)</td></tr>
+    <tr><td>ERROR</td><td>An operation failed; someone may need to look</td></tr>
+  </table>
+
+  <h2>The most important field: <code>trace_id</code></h2>
+  <p>One user action touches many services, each writing its own logs. If every log line carries the same <strong>correlation ID</strong> (the trace ID from lesson 7), you can pull all the lines for one request across all services — and jump between a log line and the trace.</p>
+
+  <div class="widget">
+    <h3>Log explorer</h3>
+    <div class="row">
+      <label>level <select id="fl"><option value="">any</option><option>info</option><option>warn</option><option>error</option></select></label>
+      <label>service <select id="fs"><option value="">any</option><option>frontend</option><option>checkout</option><option>payment</option></select></label>
+      <label>trace_id <input id="ft" placeholder="e.g. ab12" style="width:100px"></label>
+      <button class="ghost" id="reset">Reset</button>
+    </div>
+    <div id="logs" style="overflow-x:auto"></div>
+    <p class="muted" id="count"></p>
+  </div>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>Using the explorer above:</p>
+    <ol>
+      <li>How many <strong>error</strong> lines are there in total?</li>
+      <li>Filter to <code>trace_id = ab12</code>. List the services in order. Which service failed first?</li>
+      <li>Is the error rate from logs (errors ÷ all lines) a good "error rate of requests"? Why or why not?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) <strong>3</strong> error lines. 2) frontend → checkout → payment (timeout) → checkout (error) → frontend (500); <strong>payment</strong> failed first. 3) No — logs lines per request vary (some requests write 2 lines, others 7), so lines are not requests. Use a metric counter for rates; use logs for the detail of individual failures.</p>
+    </details>
+  </div>
+
+  <div class="callout">
+    <h3>Habits that make logs useful</h3>
+    <ul>
+      <li>Structured JSON, consistent field names across services.</li>
+      <li>Always include <code>service</code>, <code>level</code>, timestamp (UTC) and <code>trace_id</code>.</li>
+      <li>Never log secrets or personal data (passwords, tokens, card numbers).</li>
+      <li>Logs are the most expensive signal by volume — log events that matter, not every loop iteration.</li>
+      <li>High-cardinality detail (user_id, order_id) belongs here, not in metric labels.</li>
+    </ul>
+  </div>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"Why prefer structured (JSON) logs?","options":["They are shorter","Fields can be filtered and aggregated without fragile regex","They don't need timestamps","They can't contain errors"],"answer":1,"why":"Named fields turn log search into queries on data instead of text matching."},
+ {"q":"What is the purpose of putting <code>trace_id</code> in every log line?","options":["To make logs larger","To correlate logs across services and link them to traces","To replace the timestamp","To sort alphabetically"],"answer":1,"why":"Same ID across services means one search returns the whole story of a request."},
+ {"q":"Where should <code>user_id</code> go?","options":["A metric label","A log field (or trace attribute)","The metric name","Nowhere, it is forbidden"],"answer":1,"why":"Unbounded identifiers are fine in logs/traces but cause cardinality explosions in metrics."},
+ {"q":"A retry succeeded on the second attempt. Which level fits best?","options":["DEBUG","WARN","ERROR","FATAL"],"answer":1,"why":"Something went wrong but was handled — a warning. ERROR would page people for nothing."}
+]
+</script>
+<script src="course.js"></script>
+<script>
+(function(){
+  const L=[
+   ["10:15:01.100","info","frontend","ab12","GET /checkout received"],
+   ["10:15:01.150","info","checkout","ab12","reserving inventory"],
+   ["10:15:01.300","info","payment","ab12","charging card via gateway"],
+   ["10:15:03.300","error","payment","ab12","gateway_timeout after 2000ms"],
+   ["10:15:03.320","error","checkout","ab12","payment failed, rolling back"],
+   ["10:15:03.340","error","frontend","ab12","returning 500"],
+   ["10:15:04.000","info","frontend","cd34","GET /checkout received"],
+   ["10:15:04.050","info","checkout","cd34","reserving inventory"],
+   ["10:15:04.120","info","payment","cd34","charging card via gateway"],
+   ["10:15:04.400","info","payment","cd34","payment ok"],
+   ["10:15:04.420","warn","checkout","cd34","slow inventory call 180ms"],
+   ["10:15:04.450","info","frontend","cd34","returning 200"]
+  ];
+  const $=id=>document.getElementById(id);
+  function draw(){
+    const l=$("fl").value,s=$("fs").value,t=$("ft").value.trim();
+    const rows=L.filter(r=>(!l||r[1]===l)&&(!s||r[2]===s)&&(!t||r[3]===t));
+    $("logs").innerHTML='<table><tr><th>time</th><th>level</th><th>service</th><th>trace_id</th><th>msg</th></tr>'+rows.map(r=>`<tr><td><code>${r[0]}</code></td><td class="${r[1]==="error"?"err":r[1]==="warn"?"":"ok"}">${r[1]}</td><td>${r[2]}</td><td><code>${r[3]}</code></td><td>${r[4]}</td></tr>`).join("")+"</table>";
+    $("count").textContent=rows.length+" of "+L.length+" lines";
+  }
+  ["fl","fs"].forEach(i=>$(i).onchange=draw);$("ft").oninput=draw;
+  $("reset").onclick=()=>{$("fl").value="";$("fs").value="";$("ft").value="";draw()};
+  draw();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>9. SLIs, SLOs & burn-rate alerting · Observability from zero</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-lesson="9">
+<main>
+  <span class="tag">Lesson 9</span>
+  <h1>SLIs, SLOs &amp; burn-rate alerting</h1>
+  <p class="lead">Telemetry is only useful if it answers "is the user happy?" and "should I wake someone up?". This lesson turns everything so far into those decisions.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Define an SLI and SLO, compute an error budget, calculate burn rate, and explain why alerting on burn rate beats alerting on raw errors.
+  </div>
+
+  <h2>Three terms</h2>
+  <ul>
+    <li><strong>SLI</strong> (Service Level Indicator): a measurement of user-visible quality, as a ratio of good events to valid events. Example: <code>good = requests that returned non-5xx in &lt; 500 ms</code>, <code>SLI = good ÷ total</code>.</li>
+    <li><strong>SLO</strong> (Service Level Objective): the target for the SLI over a window. Example: "99.9% of requests are good over 30 days".</li>
+    <li><strong>SLA</strong> (Service Level Agreement): a contract with consequences (refunds). Looser than your SLO.</li>
+  </ul>
+
+  <h2>Error budget</h2>
+  <p>If the SLO is 99.9%, you are <em>allowed</em> to fail 0.1% of the time. That allowance is the <strong>error budget</strong>. It is a feature: while you have budget, ship features and take risks; when it's gone, slow down and fix reliability.</p>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand — budget</h3>
+    <ol>
+      <li>How many minutes are in 30 days?</li>
+      <li>SLO 99.9%: how many minutes of full outage does the budget allow?</li>
+      <li>SLO 99.99%?</li>
+      <li>A service handles 10,000,000 requests in 30 days at SLO 99.9%. How many failed requests are allowed?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) 30 × 24 × 60 = <strong>43,200 min</strong>. 2) 43,200 × 0.001 = <strong>43.2 min</strong>. 3) 43,200 × 0.0001 = <strong>4.32 min</strong>. 4) 10,000,000 × 0.001 = <strong>10,000 requests</strong>.</p>
+    </details>
+  </div>
+
+  <h2>Burn rate</h2>
+  <p><strong>Burn rate</strong> = how fast you're using budget compared with the "exactly on target" speed.</p>
+  <p><code>burn rate = current error rate ÷ (1 − SLO)</code></p>
+  <p>Burn rate 1 means you'd use exactly 100% of the budget by the end of the window. Burn rate 10 means you'd run out in a tenth of the window.</p>
+
+  <div class="widget">
+    <h3>Burn-rate calculator</h3>
+    <div class="row">
+      <label>SLO <select id="slo"><option>99</option><option>99.5</option><option selected>99.9</option><option>99.95</option><option>99.99</option></select> %</label>
+      <label>Current error rate <input id="err" type="number" step="0.01" min="0" value="1.44" style="width:80px"> %</label>
+    </div>
+    <div id="burn"></div>
+    <svg viewBox="0 0 520 60" width="100%"><rect x="10" y="20" width="500" height="22" rx="5" fill="var(--code)"/><rect id="budgetbar" x="10" y="20" width="500" height="22" rx="5" fill="var(--good)" style="transition:width .4s"/><text x="10" y="14" font-size="11">Budget left after 1 hour at this error rate</text></svg>
+  </div>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand — burn</h3>
+    <p>SLO 99.9%. Right now 1.44% of requests fail.</p>
+    <ol>
+      <li>What is the burn rate?</li>
+      <li>How long until the 30-day budget is gone (30 days = 720 hours)?</li>
+      <li>What % of the whole budget does <strong>one hour</strong> at this rate consume?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) 1.44% ÷ 0.1% = <strong>14.4</strong>. 2) 720 ÷ 14.4 = <strong>50 hours</strong>. 3) 14.4 ÷ 720 = 0.02 → <strong>2%</strong> of the budget per hour. That's exactly the figure the Google SRE Workbook uses for its fast-burn page: 14.4× burn over 1 hour (confirmed with a 5-minute window).</p>
+    </details>
+  </div>
+
+  <h2>Alert on burn, not on blips</h2>
+  <p>"Alert if error rate &gt; 1%" fires on harmless 30-second spikes and misses slow leaks. Burn-rate alerts ask: <em>at this pace, will we miss our promise?</em> A common scheme uses two windows so alerts are fast but not flappy:</p>
+  <table>
+    <tr><th>Severity</th><th>Burn rate</th><th>Long window</th><th>Short window</th><th>Budget used</th></tr>
+    <tr><td>Page</td><td>14.4</td><td>1 h</td><td>5 min</td><td>2%</td></tr>
+    <tr><td>Page</td><td>6</td><td>6 h</td><td>30 min</td><td>5%</td></tr>
+    <tr><td>Ticket</td><td>1</td><td>3 days</td><td>6 h</td><td>10%</td></tr>
+  </table>
+  <p>Both windows must exceed the threshold: the long window shows it's serious, the short window shows it's still happening (so it clears quickly once fixed). In PromQL this is built from <code>rate()</code> and <code>sum</code> from lesson 5 over your SLI counters.</p>
+
+  <h2>🎓 You made it — what to learn next</h2>
+  <p>You now have the foundations. These advanced topics build directly on what you practised:</p>
+  <table>
+    <tr><th>Topic</th><th>Builds on</th></tr>
+    <tr><td>Cardinality control &amp; metric relabelling / cost management</td><td>Lesson 3</td></tr>
+    <tr><td>Long-term storage, remote write, downsampling (Thanos, Mimir)</td><td>Lesson 4</td></tr>
+    <tr><td>Recording rules, native histograms, PromQL joins</td><td>Lesson 5</td></tr>
+    <tr><td>Log pipelines, sampling and retention tiers</td><td>Lesson 6</td></tr>
+    <tr><td>Tail sampling, exemplars (jump from a metric point to a trace), service maps</td><td>Lessons 7–8</td></tr>
+    <tr><td>Collector at scale: gateway vs agent, load balancing, processors</td><td>Lesson 8</td></tr>
+    <tr><td>Multi-window burn-rate alerting, SLO tooling (Sloth, Pyrra), RED &amp; USE methods</td><td>This lesson</td></tr>
+    <tr><td>eBPF-based zero-code instrumentation, profiling as a fourth signal</td><td>All of it</td></tr>
+  </table>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"SLO is 99.5% over 30 days (43,200 minutes). Error budget in minutes?","options":["21.6","216","4.32","432"],"answer":1,"why":"43,200 × 0.005 = 216 minutes."},
+ {"q":"SLO 99.9%, current error rate 0.5%. Burn rate?","options":["0.5","5","50","0.05"],"answer":1,"why":"0.5% ÷ 0.1% = 5. At this rate the 30-day budget lasts 6 days."},
+ {"q":"Why use two windows (long + short) in a burn-rate alert?","options":["To double the alerts","Long window proves it's serious; short window proves it's still happening so alerts clear quickly","To save storage","Because Prometheus requires it"],"answer":1,"why":"This balances detection speed with fewer false alarms and faster resolution."},
+ {"q":"Which is a good <em>SLI</em>?","options":["CPU usage of a node","Proportion of requests that succeed in under 500 ms","Number of pods","Disk free space"],"answer":1,"why":"SLIs measure user-visible quality as good events ÷ valid events, not internal resources."}
+]
+</script>
+<script src="course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  function calc(){
+    const slo=parseFloat($("slo").value),err=parseFloat($("err").value);
+    if(isNaN(err)||err<0)return;
+    const allowed=100-slo,burn=err/allowed;
+    const budgetMin=43200*allowed/100;
+    const hoursToGone=burn>0?720/burn:Infinity;
+    const used1h=burn/720*100;
+    const fmt=h=>!isFinite(h)?"never":h>=48?(h/24).toFixed(1)+" days":h>=1?h.toFixed(1)+" hours":(h*60).toFixed(0)+" minutes";
+    $("burn").innerHTML=`<table><tr><th>Error budget (30 d)</th><td>${budgetMin.toFixed(2)} minutes of full outage</td></tr><tr><th>Burn rate</th><td><strong class="${burn>=14.4?"err":burn>=1?"":"ok"}">${burn.toFixed(2)}×</strong> ${burn>=14.4?"→ page now":burn>=6?"→ page (slow burn)":burn>=1?"→ ticket-level":"→ within budget"}</td></tr><tr><th>Budget gone in</th><td>${fmt(hoursToGone)}</td></tr><tr><th>Used per hour</th><td>${used1h.toFixed(2)}% of the budget</td></tr></table>`;
+    const bar=$("budgetbar");
+    bar.setAttribute("width",Math.max(0,500*(1-used1h/100)));
+    bar.setAttribute("fill",used1h>=2?"var(--bad)":"var(--good)");
+  }
+  $("slo").onchange=calc;$("err").oninput=calc;calc();
+})();
+</script>
+</body>
+</html>

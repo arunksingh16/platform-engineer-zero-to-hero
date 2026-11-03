@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>5. Querying: rate, sum and percentiles · Observability from zero</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-lesson="5">
+<main>
+  <span class="tag">Lesson 5</span>
+  <h1>Querying: rate, sum and percentiles</h1>
+  <p class="lead">Raw counters are useless on a graph. Three operations turn stored samples into answers: <code>rate</code>, <code>sum by</code>, and <code>histogram_quantile</code>. We do the maths by hand first.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Compute a per-second rate from counter samples (including across a restart), aggregate series by label, and estimate p95 latency from histogram buckets.
+  </div>
+
+  <h2>1. <code>rate()</code> — from a total to a speed</h2>
+  <p>A counter says "1,500 requests so far". What you want is "how many <em>per second</em> right now". Take the increase over a window and divide by the window length. In PromQL: <code>rate(http_requests_total[1m])</code>.</p>
+
+  <div class="widget">
+    <h3>rate() calculator</h3>
+    <div class="row">
+      <label>Samples (one per 15 s): <select id="preset">
+        <option value="100,130,190,250,280">Normal counter</option>
+        <option value="500,520,5,25,45">With a restart (reset)</option>
+      </select></label>
+    </div>
+    <div id="rate"></div>
+  </div>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand — rate</h3>
+    <p>Counter samples every 15 s: <code>100, 130, 190, 250, 280</code>.</p>
+    <ol>
+      <li>What is the total increase over the 60 s window?</li>
+      <li>What is the per-second rate?</li>
+      <li>Now the samples are <code>500, 520, 5, 25, 45</code>. The app restarted between samples 2 and 3. What is the increase and the rate?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) 280 − 100 = <strong>180</strong>. 2) 180 ÷ 60 = <strong>3 requests/s</strong>.<br>
+      3) Naively 45 − 500 = −455 would be nonsense. PromQL notices the drop (a <em>counter reset</em>) and treats the new value as counting up from 0: increases are 20 (500→520), then 5 (after reset: 0→5), then 20, then 20 = <strong>65</strong>. Rate = 65 ÷ 60 ≈ <strong>1.08/s</strong>. (Real Prometheus also extrapolates to window edges, so exact numbers can differ slightly — the idea is the same.)</p>
+    </details>
+  </div>
+
+  <h2>2. <code>sum by</code> — combine series</h2>
+  <p>You have one series per label combination. Aggregation collapses the labels you don't care about.</p>
+  <table>
+    <tr><th>series</th><th>rate (req/s)</th></tr>
+    <tr><td>{method="GET", status="200"}</td><td>8</td></tr>
+    <tr><td>{method="GET", status="500"}</td><td>1</td></tr>
+    <tr><td>{method="POST", status="200"}</td><td>3</td></tr>
+    <tr><td>{method="POST", status="500"}</td><td>2</td></tr>
+  </table>
+  <ul>
+    <li><code>sum(rate(http_requests_total[1m]))</code> → <strong>14</strong> (everything)</li>
+    <li><code>sum by (method) (rate(...))</code> → GET 9, POST 5</li>
+    <li>Error ratio: <code>sum(rate(...{status="500"}[1m])) / sum(rate(...[1m]))</code> → 3 / 14 ≈ <strong>21.4%</strong></li>
+  </ul>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand — aggregation</h3>
+    <p>What is the error ratio for <em>POST only</em>?</p>
+    <details><summary>Show answer</summary><p>POST errors 2 ÷ POST total (3+2=5) = <strong>40%</strong>. Even though overall the error ratio looks like 21%, POST is much worse — that's why we aggregate <em>by</em> labels.</p></details>
+  </div>
+
+  <h2>3. <code>histogram_quantile()</code> — percentiles from buckets</h2>
+  <p>p95 means "95% of requests were faster than this". With cumulative buckets we find the bucket that contains the 95th-percentile request, then <strong>linearly interpolate</strong> inside it:</p>
+  <p><code>estimate = lower + (upper − lower) × (rank − count_below) / (count_in_bucket)</code>, where <code>rank = q × total</code>.</p>
+
+  <div class="widget">
+    <h3>Quantile explorer</h3>
+    <p class="muted">Buckets (cumulative): le 0.1 → 50, le 0.5 → 90, le 1 → 100 (total 100)</p>
+    <div class="row"><label>Quantile q = <strong id="qv">0.95</strong> <input type="range" id="q" min="0.05" max="0.99" step="0.01" value="0.95"></label></div>
+    <div id="qout"></div>
+    <svg viewBox="0 0 520 90" width="100%"><rect x="10" y="30" width="250" height="28" fill="var(--accent)" opacity=".5"/><rect x="260" y="30" width="200" height="28" fill="var(--accent)" opacity=".8"/><rect x="460" y="30" width="50" height="28" fill="var(--accent)"/>
+      <text x="135" y="48" text-anchor="middle" font-size="11">0–0.1s: 50 req</text><text x="360" y="48" text-anchor="middle" font-size="11">0.1–0.5s: 40</text><text x="485" y="48" text-anchor="middle" font-size="10">.5–1: 10</text>
+      <line id="mark" x1="10" x2="10" y1="15" y2="75" stroke="var(--bad)" stroke-width="3"/></svg>
+  </div>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand — percentile</h3>
+    <p>Same buckets (50 / 90 / 100 cumulative). Compute p95.</p>
+    <details><summary>Show answer</summary>
+      <p>rank = 0.95 × 100 = 95. Cumulative counts: ≤0.1 → 50, ≤0.5 → 90, ≤1 → 100. 95 lies in (0.5, 1]; 90 are below it and 10 inside it. Estimate = 0.5 + (1 − 0.5) × (95 − 90) / 10 = 0.5 + 0.5 × 0.5 = <strong>0.75 s</strong>.<br>This is an <em>estimate</em>: Prometheus can't know where inside the bucket the values really are, so choose buckets around your SLO threshold.</p>
+    </details>
+  </div>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"Counter samples over 30 s: 200 at t=0, 260 at t=30. What is rate()?","options":["60/s","2/s","260/s","0.5/s"],"answer":1,"why":"Increase 60 over 30 s = 2 per second."},
+ {"q":"Why can't you graph a raw counter directly and learn about traffic?","options":["It only shows the total so far; its slope (rate) is the interesting part","Counters can't be graphed","It is always zero","It changes too fast"],"answer":0,"why":"A raw counter grows forever. rate() converts it to events per second."},
+ {"q":"Rates: GET 6, POST 2, PUT 2 req/s. What does <code>sum by (method)</code> return for GET?","options":["10","6","0.6","2"],"answer":1,"why":"Grouping by method keeps one result per method: GET = 6."},
+ {"q":"Cumulative buckets: le0.2 → 20, le1 → 80, le2 → 100. Estimate p50.","options":["0.2","0.2 + 0.8×(50−20)/60 = 0.6","1","0.5"],"answer":1,"why":"rank 50 lies in (0.2,1] where 20 are below and 60 inside: 0.2 + 0.8 × 30/60 = 0.6 s."}
+]
+</script>
+<script src="course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  function rate(){
+    const s=$("preset").value.split(",").map(Number);
+    let inc=0,rows="";
+    for(let i=1;i<s.length;i++){
+      let d=s[i]-s[i-1],note="";
+      if(d<0){d=s[i];note=" ⚠ reset detected → counts from 0"}
+      inc+=d;rows+=`<tr><td>${s[i-1]} → ${s[i]}</td><td>+${d}${note}</td></tr>`;
+    }
+    const w=(s.length-1)*15;
+    $("rate").innerHTML=`<table><tr><th>step</th><th>increase</th></tr>${rows}</table><p>Total increase <strong>${inc}</strong> over ${w}s → rate = <strong>${(inc/w).toFixed(2)} /s</strong></p>`;
+  }
+  $("preset").onchange=rate;rate();
+  const B=[[0,0.1,0,50],[0.1,0.5,50,90],[0.5,1,90,100]];
+  function qf(){
+    const q=parseFloat($("q").value);$("qv").textContent=q.toFixed(2);
+    const rank=q*100;let res=1,txt="";
+    for(const [lo,hi,cl,ch] of B){
+      if(rank<=ch){res=lo+(hi-lo)*(rank-cl)/(ch-cl);txt=`rank = ${q.toFixed(2)} × 100 = ${rank.toFixed(0)} → bucket (${lo}, ${hi}] → ${lo} + (${hi}−${lo}) × (${rank.toFixed(0)}−${cl})/(${ch}−${cl})`;break}
+    }
+    $("qout").innerHTML=`<p>${txt}<br><span class="big">${res.toFixed(3)} s</span></p>`;
+    const x=10+Math.min(res,1)/1*500;
+    $("mark").setAttribute("x1",x);$("mark").setAttribute("x2",x);
+  }
+  $("q").oninput=qf;qf();
+})();
+</script>
+</body>
+</html>

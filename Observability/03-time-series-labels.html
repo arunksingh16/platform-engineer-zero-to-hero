@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>3. Time series, labels & cardinality · Observability from zero</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-lesson="3">
+<main>
+  <span class="tag">Lesson 3</span>
+  <h1>Time series, labels &amp; cardinality</h1>
+  <p class="lead">"A metric" is really many separate lists of numbers. Understanding that explains the most common and expensive observability mistake.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Say exactly what a time series is, count how many series a metric produces, and explain why a <code>user_id</code> label can take down a monitoring system.
+  </div>
+
+  <h2>What is a time series?</h2>
+  <p>A <strong>time series</strong> is a list of <strong>samples</strong>, each a pair <code>(timestamp, value)</code>, for one unique identity. The identity is the <strong>metric name</strong> plus its set of <strong>labels</strong> (key=value pairs, also called attributes or dimensions).</p>
+<pre><code>http_requests_total{method="GET",  status="200"}   → (10:00:00, 1500) (10:00:15, 1534) (10:00:30, 1590) …
+http_requests_total{method="GET",  status="500"}   → (10:00:00,    4) (10:00:15,    4) (10:00:30,    9) …
+http_requests_total{method="POST", status="200"}   → (10:00:00,  300) (10:00:15,  311) (10:00:30,  320) …</code></pre>
+  <p>That is <strong>three</strong> different series sharing one metric name. Change any label value and you get a new series. Labels are what let you ask "errors <em>per method</em>" or "only <em>POST</em> traffic".</p>
+
+  <h2>Cardinality = number of series</h2>
+  <p><strong>Cardinality</strong> is how many distinct series exist. For a metric it is (roughly) the <em>product</em> of the number of values of each label. Every series costs memory, CPU and disk, forever, for as long as it is active. This multiplication is why one careless label is dangerous.</p>
+
+  <h2>Cardinality calculator</h2>
+  <div class="widget">
+    <p class="muted">Tick the labels you attach to <code>http_requests_total</code>:</p>
+    <div id="labels"></div>
+    <div class="big" id="series">1</div>
+    <div id="series-note" class="muted"></div>
+    <div id="series-name" style="margin-top:8px"></div>
+  </div>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>You track <code>checkout_duration_seconds</code> as a histogram with 8 buckets (plus <code>_sum</code> and <code>_count</code> = 10 series per label combination). Labels: <code>region</code> (3 values), <code>payment_method</code> (4 values).</p>
+    <ol>
+      <li>How many series in total?</li>
+      <li>A teammate adds <code>customer_id</code> with 50,000 customers. How many series now?</li>
+      <li>At roughly 3 KB of memory per series (a common rule of thumb), how much memory is that?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) 3 × 4 = 12 combinations × 10 = <strong>120 series</strong>.<br>
+      2) 120 × 50,000 = <strong>6,000,000 series</strong>.<br>
+      3) 6,000,000 × 3 KB = 18,000,000 KB ≈ <strong>18 GB</strong> — from one metric. The fix: put high-cardinality identifiers like customer IDs in <em>logs or traces</em>, not metric labels.</p>
+    </details>
+  </div>
+
+  <div class="callout">
+    <h3>Good label vs bad label</h3>
+    <strong>Good:</strong> small, bounded sets — <code>method</code>, <code>status_code</code>, <code>region</code>, <code>service</code>.<br>
+    <strong>Bad (unbounded):</strong> <code>user_id</code>, <code>email</code>, <code>request_id</code>, raw URLs with IDs in them (<code>/orders/48213</code> — use the route template <code>/orders/{id}</code>), timestamps.
+  </div>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"What uniquely identifies a time series?","options":["The metric name only","The metric name plus its full set of label values","The timestamp","The host that stored it"],"answer":1,"why":"Different label values mean a different series, even with the same metric name."},
+ {"q":"A metric has labels method (4 values), status (5 values), endpoint (10 values). Max series?","options":["19","40","200","50"],"answer":2,"why":"4 × 5 × 10 = 200. Cardinality multiplies."},
+ {"q":"Which label is the most dangerous to add to a metric?","options":["status_code","region","user_id","http_method"],"answer":2,"why":"user_id is unbounded: every new user creates new series. Put it in logs or trace attributes instead."},
+ {"q":"Your route is <code>/orders/48213</code>. What should the metric label contain?","options":["The raw path","The route template <code>/orders/{id}</code>","The order ID as a separate label","The full URL with query string"],"answer":1,"why":"Templates keep the value set small and bounded."}
+]
+</script>
+<script src="course.js"></script>
+<script>
+(function(){
+  const dims=[["method",4,"GET"],["status",5,"200"],["endpoint",20,"/api/orders"],["region",3,"eu-west"],["user_id",10000,"u_48213"]];
+  const on=new Set(["method","status"]);
+  const box=document.getElementById("labels");
+  dims.forEach(d=>{
+    const l=document.createElement("label");l.className="pill";l.style.cursor="pointer";
+    l.innerHTML=`<input type="checkbox" ${on.has(d[0])?"checked":""}> ${d[0]} <span class="muted">(${d[1].toLocaleString()} values)</span>`;
+    l.querySelector("input").onchange=e=>{e.target.checked?on.add(d[0]):on.delete(d[0]);calc()};
+    box.appendChild(l);
+  });
+  function calc(){
+    let n=1;dims.forEach(d=>{if(on.has(d[0]))n*=d[1]});
+    const el=document.getElementById("series");
+    el.textContent=n.toLocaleString()+" series";
+    el.className="big "+(n>100000?"err":"");
+    const mb=n*3/1024;
+    document.getElementById("series-note").textContent=`≈ ${mb<1024?mb.toFixed(1)+" MB":(mb/1024).toFixed(1)+" GB"} of memory at ~3 KB/series (rule of thumb)`+(n>100000?" — ⚠ cardinality explosion":"");
+    const lab=dims.filter(d=>on.has(d[0])).map(d=>`${d[0]}="${d[2]}"`).join(",");
+    document.getElementById("series-name").innerHTML=`One example series: <code>http_requests_total{${lab}}</code>`;
+  }
+  calc();
+})();
+</script>
+</body>
+</html>

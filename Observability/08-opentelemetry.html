@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>8. OpenTelemetry · Observability from zero</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-lesson="8">
+<main>
+  <span class="tag">Lesson 8</span>
+  <h1>OpenTelemetry</h1>
+  <p class="lead">You now know metrics, logs and traces. OpenTelemetry (OTel) is the open standard for <em>producing and shipping</em> all three, so you aren't locked to one vendor.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Name the OTel components (API, SDK, OTLP, Collector), read a Collector config, and decode a <code>traceparent</code> header by hand to explain how context propagates between services.
+  </div>
+
+  <h2>The problem OTel solves</h2>
+  <p>Before OTel every vendor had its own agent and format. Switching from one backend to another meant re-instrumenting all your code. OpenTelemetry (a CNCF project) defines one set of APIs, SDKs, data formats and conventions. You instrument once; you choose where data goes by <em>configuration</em>.</p>
+
+  <h2>The pieces</h2>
+  <table>
+    <tr><th>Piece</th><th>What it is</th></tr>
+    <tr><td><strong>API</strong></td><td>The interfaces your code calls (<code>tracer.start_span</code>, <code>meter.create_counter</code>). Safe to depend on from libraries: with no SDK it does nothing.</td></tr>
+    <tr><td><strong>SDK</strong></td><td>The implementation: samples, batches and exports data. Configured once at app start.</td></tr>
+    <tr><td><strong>Instrumentation libraries</strong></td><td>Ready-made wrappers for frameworks (Flask, Express, JDBC…) so you get spans and metrics with little or no code ("auto-instrumentation").</td></tr>
+    <tr><td><strong>OTLP</strong></td><td>OpenTelemetry Protocol: the wire format (gRPC on 4317, HTTP on 4318) for traces, metrics and logs.</td></tr>
+    <tr><td><strong>Collector</strong></td><td>A standalone service that receives, processes and exports telemetry. Sits between your apps and your backends.</td></tr>
+    <tr><td><strong>Semantic conventions</strong></td><td>Agreed attribute names (<code>http.request.method</code>, <code>db.system</code>, <code>service.name</code>) so data from different languages looks the same.</td></tr>
+    <tr><td><strong>Resource</strong></td><td>Attributes describing <em>who</em> is emitting: <code>service.name</code>, <code>service.version</code>, <code>k8s.pod.name</code>, <code>cloud.region</code>.</td></tr>
+  </table>
+
+  <h2>The Collector pipeline</h2>
+  <div class="widget">
+    <svg viewBox="0 0 700 140" width="100%" aria-label="Collector pipeline">
+      <rect class="box" x="5" y="45" width="100" height="50" rx="8"/><text x="55" y="75" text-anchor="middle">Your apps</text>
+      <rect class="box" x="170" y="25" width="360" height="90" rx="10" stroke-dasharray="5 4"/><text x="350" y="20" text-anchor="middle" font-size="12" class="muted">Collector</text>
+      <rect class="box" x="185" y="50" width="90" height="40" rx="6"/><text x="230" y="75" text-anchor="middle" font-size="13">receivers</text>
+      <rect class="box" x="305" y="50" width="90" height="40" rx="6"/><text x="350" y="75" text-anchor="middle" font-size="13">processors</text>
+      <rect class="box" x="425" y="50" width="90" height="40" rx="6"/><text x="470" y="75" text-anchor="middle" font-size="13">exporters</text>
+      <rect class="box" x="590" y="20" width="105" height="30" rx="6"/><text x="642" y="40" text-anchor="middle" font-size="12">Prometheus</text>
+      <rect class="box" x="590" y="55" width="105" height="30" rx="6"/><text x="642" y="75" text-anchor="middle" font-size="12">Tempo / Jaeger</text>
+      <rect class="box" x="590" y="90" width="105" height="30" rx="6"/><text x="642" y="110" text-anchor="middle" font-size="12">Loki / vendor</text>
+      <path class="line" d="M105 70H185M275 70H305M395 70H425M515 70L590 35M515 70H590M515 70L590 105"/>
+      <circle r="6" class="acc"><animateMotion dur="4s" repeatCount="indefinite" path="M55 70 H230 H350 H470 H642"/></circle>
+    </svg>
+    <p class="muted">Receivers accept data (OTLP, Prometheus scrape…). Processors transform it (batch, add attributes, sample, drop). Exporters send it on. Changing backend = editing the exporters, not your app.</p>
+  </div>
+
+<pre><code>receivers:
+  otlp:
+    protocols:
+      grpc:
+      http:
+processors:
+  batch:
+exporters:
+  debug:
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]</code></pre>
+
+  <h2>Instrumenting by hand (Python)</h2>
+<pre><code>from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource
+
+provider = TracerProvider(resource=Resource.create({"service.name": "checkout"}))
+provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint="http://localhost:4317")))
+trace.set_tracer_provider(provider)
+tracer = trace.get_tracer(__name__)
+
+with tracer.start_as_current_span("charge-card") as span:
+    span.set_attribute("payment.provider", "stripe")
+    ...  # your code; child spans nest automatically</code></pre>
+
+  <h2>Context propagation — how a trace crosses services</h2>
+  <p>For service B's span to join service A's trace, A must pass the trace identity along with the request. OTel uses the W3C <code>traceparent</code> HTTP header:</p>
+<pre><code>traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+             │  └────────── trace-id (32 hex) ─────┘ └ parent span-id ┘ └ flags (01 = sampled)
+             └ version</code></pre>
+  <p>The receiving service reads it, keeps the same <strong>trace-id</strong>, and creates its own spans with the incoming span-id as <strong>parent</strong>. Then it passes a header downstream with <em>its</em> span-id.</p>
+
+  <div class="widget">
+    <h3>Follow the header</h3>
+    <div class="row"><button id="hop">Send request →</button><button class="ghost" id="hopReset">Reset</button></div>
+    <div id="hops"></div>
+  </div>
+
+  <div class="widget">
+    <h3>traceparent decoder</h3>
+    <input id="tp" style="width:100%;font-family:monospace" value="00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01">
+    <div id="tpout"></div>
+  </div>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>Service A receives no header, so it starts a new trace and calls B with <code>traceparent: 00-aaaa…aaaa-1111111111111111-01</code>. B calls C.</p>
+    <ol>
+      <li>What trace-id does C see?</li>
+      <li>B creates a span with id <code>2222222222222222</code>. What is that span's parent id, and what span-id goes in the header B sends to C?</li>
+      <li>Decode the flags in <code>…-00</code>. What does it mean for sampling?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) The same <code>aaaa…aaaa</code> — the trace-id never changes. 2) Parent id = <code>1111111111111111</code> (A's span). The header to C carries <code>2222222222222222</code> (or a deeper child span's id) as the parent. 3) Flags <code>00</code> mean "not sampled": the trace is propagated so IDs still correlate, but spans are not recorded/exported.</p>
+    </details>
+  </div>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"What is the main benefit of OpenTelemetry?","options":["It stores your data","One vendor-neutral way to instrument and export telemetry","It replaces Prometheus","It makes apps faster"],"answer":1,"why":"OTel standardises producing and shipping telemetry; storage and UI remain backend choices."},
+ {"q":"What does the Collector's <code>processors</code> stage do?","options":["Accept data from apps","Transform data (batch, add attributes, sample, filter) before export","Draw dashboards","Run your code"],"answer":1,"why":"Receivers → processors → exporters. Processors change or filter the data in flight."},
+ {"q":"In <code>traceparent: 00-T-S-01</code>, what is S?","options":["The trace ID","The span ID of the caller's span, which becomes the parent","The sampling rate","The service name"],"answer":1,"why":"T is the trace ID shared by the whole trace; S identifies the calling span so the child can link to it."},
+ {"q":"Why can library authors safely depend on the OTel <em>API</em> only?","options":["It is faster","Without an SDK configured, API calls are no-ops, so the app owner decides what happens","It is encrypted","It forces a vendor"],"answer":1,"why":"The API/SDK split lets libraries add instrumentation without choosing exporters; the application configures the SDK."}
+]
+</script>
+<script src="course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  const hex=n=>Array.from({length:n},()=>Math.floor(Math.random()*16).toString(16)).join("");
+  let trace=hex(32),hops=[],svc=["Frontend","Checkout","Payment","Database"];
+  function renderHops(){
+    $("hops").innerHTML=hops.length?'<table><tr><th>from → to</th><th>traceparent sent</th></tr>'+hops.map(h=>`<tr><td>${h.from} → ${h.to}</td><td><code>00-<mark style="background:var(--accent-soft)">${trace}</mark>-<strong>${h.span}</strong>-01</code></td></tr>`).join("")+'</table><p class="muted">The trace-id (highlighted) never changes; the span-id (bold) is new at each hop.</p>':'<p class="muted">Click "Send request" to follow the header.</p>';
+  }
+  $("hop").onclick=()=>{if(hops.length>=svc.length-1)return;hops.push({from:svc[hops.length],to:svc[hops.length+1],span:hex(16)});renderHops()};
+  $("hopReset").onclick=()=>{hops=[];trace=hex(32);renderHops()};
+  renderHops();
+  function decode(){
+    const v=$("tp").value.trim(),m=v.match(/^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/);
+    if(!m){$("tpout").innerHTML='<p class="err">Invalid traceparent (expected 00-&lt;32 hex&gt;-&lt;16 hex&gt;-&lt;2 hex&gt;).</p>';return}
+    const sampled=(parseInt(m[4],16)&1)===1;
+    $("tpout").innerHTML=`<table><tr><th>version</th><td>${m[1]}</td></tr><tr><th>trace-id</th><td><code>${m[2]}</code></td></tr><tr><th>parent span-id</th><td><code>${m[3]}</code></td></tr><tr><th>flags</th><td>${m[4]} → ${sampled?"sampled ✅":"not sampled ⛔"}</td></tr></table>`;
+  }
+  $("tp").oninput=decode;decode();
+})();
+</script>
+</body>
+</html>

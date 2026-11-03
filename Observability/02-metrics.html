@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>2. Metrics · Observability from zero</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-lesson="2">
+<main>
+  <span class="tag">Lesson 2</span>
+  <h1>Metrics: counters, gauges, histograms</h1>
+  <p class="lead">Almost every metric you will ever meet is one of three shapes. Learn these and dashboards stop being magic.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Pick the right metric type for a measurement, and build a histogram's bucket counts from raw numbers by hand.
+  </div>
+
+  <h2>1. Counter — only goes up</h2>
+  <p>A counter counts events: requests served, errors, bytes sent. It starts at 0 and only increases (it resets to 0 only when the process restarts). Its raw value is rarely interesting; the <em>rate of change</em> is. Name them with <code>_total</code>, e.g. <code>http_requests_total</code>.</p>
+
+  <h2>2. Gauge — goes up and down</h2>
+  <p>A gauge is a current level: active connections, queue length, memory in use, temperature. Its raw value is the interesting part.</p>
+
+  <h2>Try both</h2>
+  <div class="widget">
+    <div class="grid3">
+      <div class="card">
+        <strong>Counter</strong> <code>requests_total</code>
+        <div class="big" id="cnt">0</div>
+        <div class="row"><button id="req">+1 request</button><button class="ghost" id="restart">Restart app</button></div>
+        <div class="muted" id="cnt-note">Counters never decrease…</div>
+      </div>
+      <div class="card">
+        <strong>Gauge</strong> <code>active_connections</code>
+        <div class="big" id="gau">0</div>
+        <div class="row"><button id="up">Connect</button><button class="ghost" id="down">Disconnect</button></div>
+        <div class="muted">…gauges move both ways.</div>
+      </div>
+    </div>
+  </div>
+
+  <h2>3. Histogram — how are values distributed?</h2>
+  <p>Averages hide pain: ten requests at 10 ms and one at 10 seconds average ~920 ms, which describes nobody. A histogram counts how many observations fell into pre-chosen <strong>buckets</strong>. In Prometheus-style histograms buckets are <strong>cumulative</strong>: bucket <code>le="0.5"</code> ("less than or equal to 0.5 s") counts <em>everything</em> ≤ 0.5, including the faster ones. A histogram also stores <code>_sum</code> (total of all values) and <code>_count</code> (number of observations).</p>
+
+  <div class="widget">
+    <h3>Build a histogram</h3>
+    <div class="row">
+      <label>Request duration (s): <input id="dur" type="number" step="0.01" min="0" value="0.2" style="width:90px"></label>
+      <button id="rec">Record</button>
+      <button class="ghost" id="ex">Load the example below</button>
+      <button class="ghost" id="clr">Clear</button>
+    </div>
+    <div id="hist"></div>
+    <div class="muted" id="hist-vals"></div>
+  </div>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>Five requests took: <code>0.03, 0.2, 0.07, 0.9, 0.4</code> seconds. Buckets: <code>le=0.1</code>, <code>le=0.5</code>, <code>le=1</code>, <code>le=+Inf</code>.</p>
+    <ol>
+      <li>Fill in the cumulative count for each bucket.</li>
+      <li>What are <code>_count</code> and <code>_sum</code>?</li>
+      <li>What is the average? Why might it mislead?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <table><tr><th>bucket</th><th>values included</th><th>count</th></tr>
+      <tr><td>le=0.1</td><td>0.03, 0.07</td><td>2</td></tr>
+      <tr><td>le=0.5</td><td>+ 0.2, 0.4</td><td>4</td></tr>
+      <tr><td>le=1</td><td>+ 0.9</td><td>5</td></tr>
+      <tr><td>le=+Inf</td><td>everything</td><td>5</td></tr></table>
+      <p><code>_count</code> = 5, <code>_sum</code> = 0.03+0.2+0.07+0.9+0.4 = <strong>1.6</strong>. Average = 1.6 ÷ 5 = <strong>0.32 s</strong>, yet only one request was near that; the histogram shows 2 were very fast and one nearly hit 1 s.</p>
+    </details>
+  </div>
+
+  <div class="callout">
+    <h3>Rule of thumb</h3>
+    Counting events → <strong>counter</strong>. A level right now → <strong>gauge</strong>. Latency or size where you care about percentiles → <strong>histogram</strong>.
+  </div>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"Which metric type fits <em>number of items currently in a queue</em>?","options":["Counter","Gauge","Histogram","None, use logs"],"answer":1,"why":"The queue length goes up and down, so it's a gauge."},
+ {"q":"A counter shows 500, then after the app restarts it shows 3. What happened?","options":["The counter is broken","The counter reset to 0 on restart and has counted 3 since","The gauge was decremented","Requests were deleted"],"answer":1,"why":"Counters reset on process restart. Query functions like rate() detect and handle this (lesson 5)."},
+ {"q":"Durations: 0.05, 0.3, 0.6. Buckets le=0.1, le=0.5, le=1. What are the cumulative counts?","options":["1, 1, 1","1, 2, 3","1, 1, 2","3, 2, 1"],"answer":1,"why":"≤0.1: 0.05 → 1. ≤0.5: 0.05, 0.3 → 2. ≤1: all three → 3. Buckets are cumulative."},
+ {"q":"Why use a histogram instead of an average latency?","options":["Averages are expensive to compute","Averages hide the slow tail that real users feel","Histograms are exact","Averages can't be stored"],"answer":1,"why":"A few very slow requests barely move the average, but a histogram exposes them so you can compute p95/p99."}
+]
+</script>
+<script src="course.js"></script>
+<script>
+(function(){
+  let c=0,g=0;
+  const $=id=>document.getElementById(id);
+  $("req").onclick=()=>{$("cnt").textContent=++c;$("cnt-note").textContent="Counters never decrease…"};
+  $("restart").onclick=()=>{c=0;$("cnt").textContent=0;$("cnt-note").textContent="Process restarted: counter reset to 0. This is a 'counter reset'."};
+  $("up").onclick=()=>{$("gau").textContent=++g};
+  $("down").onclick=()=>{g=Math.max(0,g-1);$("gau").textContent=g};
+
+  const buckets=[0.1,0.5,1,Infinity];
+  let vals=[];
+  function draw(){
+    const counts=buckets.map(b=>vals.filter(v=>v<=b).length);
+    const max=Math.max(1,vals.length);
+    let html='<table><tr><th>bucket</th><th>cumulative count</th><th></th></tr>';
+    buckets.forEach((b,i)=>{html+=`<tr><td><code>le="${b===Infinity?"+Inf":b}"</code></td><td>${counts[i]}</td><td style="width:50%"><div style="background:var(--accent);height:14px;border-radius:3px;width:${counts[i]/max*100}%;transition:width .4s"></div></td></tr>`});
+    const sum=vals.reduce((a,b)=>a+b,0);
+    html+=`</table><p><code>_count</code> = <strong>${vals.length}</strong> &nbsp; <code>_sum</code> = <strong>${sum.toFixed(2)}</strong> &nbsp; average = <strong>${vals.length?(sum/vals.length).toFixed(3):"–"}</strong></p>`;
+    $("hist").innerHTML=html;
+    $("hist-vals").textContent=vals.length?"Recorded: "+vals.join(", "):"Nothing recorded yet.";
+  }
+  $("rec").onclick=()=>{const v=parseFloat($("dur").value);if(!isNaN(v)&&v>=0){vals.push(v);draw()}};
+  $("ex").onclick=()=>{vals=[0.03,0.2,0.07,0.9,0.4];draw()};
+  $("clr").onclick=()=>{vals=[];draw()};
+  draw();
+})();
+</script>
+</body>
+</html>

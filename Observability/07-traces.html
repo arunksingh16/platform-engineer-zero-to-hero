@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>7. Traces and spans · Observability from zero</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-lesson="7">
+<main>
+  <span class="tag">Lesson 7</span>
+  <h1>Traces and spans</h1>
+  <p class="lead">A trace is the story of one request as it travels through your system. Each chapter of that story is a span.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Read a trace waterfall, explain parent/child relationships, and calculate a span's <em>self time</em> by hand to find the real bottleneck.
+  </div>
+
+  <h2>Vocabulary</h2>
+  <ul>
+    <li><strong>Trace</strong> — everything that happened for one request, identified by a <code>trace_id</code>.</li>
+    <li><strong>Span</strong> — one unit of work (an HTTP handler, a DB query, a call to another service). It has a name, a <code>span_id</code>, a <code>parent_span_id</code>, a start time, a duration, a status and <strong>attributes</strong> (key/value details like <code>db.system="postgres"</code>).</li>
+    <li>The span with no parent is the <strong>root span</strong>. Together, spans form a tree.</li>
+  </ul>
+
+  <p>Raw spans are just rows:</p>
+  <table>
+    <tr><th>span_id</th><th>parent</th><th>name</th><th>start (ms)</th><th>duration (ms)</th></tr>
+    <tr><td>a</td><td>—</td><td>GET /checkout</td><td>0</td><td>500</td></tr>
+    <tr><td>b</td><td>a</td><td>auth.verify</td><td>10</td><td>50</td></tr>
+    <tr><td>c</td><td>a</td><td>inventory.reserve</td><td>70</td><td>100</td></tr>
+    <tr><td>d</td><td>a</td><td>payment.charge</td><td>180</td><td>300</td></tr>
+    <tr><td>e</td><td>d</td><td>stripe.api</td><td>200</td><td>260</td></tr>
+  </table>
+
+  <h2>Draw the waterfall</h2>
+  <p>A tracing UI (Jaeger, Tempo, Zipkin) draws those rows as a <strong>waterfall</strong>. Click a span to see its self time.</p>
+  <div class="widget">
+    <div class="row"><button id="play">▶ Replay</button><span class="muted">Click a bar for details</span></div>
+    <div id="wf"></div>
+    <div id="info" class="card" style="margin-top:10px">Click a span.</div>
+  </div>
+
+  <h2>Self time — where the time really went</h2>
+  <p>A parent's duration includes its children. To find the actual bottleneck, subtract them:</p>
+  <p><code>self time = duration − sum of (non-overlapping) child durations</code></p>
+  <p>If children run in parallel, subtract the time covered by their union, not the sum.</p>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>Using the table above:</p>
+    <ol>
+      <li>Self time of the root span <code>GET /checkout</code>?</li>
+      <li>Self time of <code>payment.charge</code>?</li>
+      <li>Which <em>service</em> is the biggest contributor to the 500 ms?</li>
+      <li>The <code>auth.verify</code> and <code>inventory.reserve</code> spans were changed to run <em>in parallel</em> (starting together). New root duration, if everything else is unchanged?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) 500 − (50 + 100 + 300) = <strong>50 ms</strong>. 2) 300 − 260 = <strong>40 ms</strong>. 3) The external call <code>stripe.api</code> at 260 ms (52%) — larger than any of our own code. 4) Sequential they cost 50 + 100 = 150 ms of the root; in parallel they cost only max(50, 100) = 100 ms of wall-clock time, so the root drops by <strong>50 ms → 450 ms</strong>.</p>
+    </details>
+  </div>
+
+  <div class="callout">
+    <h3>What traces are good and bad at</h3>
+    <strong>Good:</strong> finding which hop is slow, spotting N+1 query patterns, seeing fan-out, understanding dependencies.<br>
+    <strong>Costly:</strong> tracing every request at high traffic is expensive, so systems use <em>sampling</em>: keep 1% at random (head sampling), or decide after seeing the whole trace (tail sampling, e.g. keep all errors and slow ones). You'll meet that in the advanced topics.
+  </div>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"Which span is the root of a trace?","options":["The longest one","The one with no parent span","The last one to finish","The one with the most attributes"],"answer":1,"why":"The root has no parent; every other span descends from it."},
+ {"q":"A span lasts 200 ms and has two sequential children of 60 ms and 90 ms. Self time?","options":["50 ms","150 ms","110 ms","200 ms"],"answer":0,"why":"200 − (60 + 90) = 50 ms spent in the span's own code."},
+ {"q":"Why do traces make finding a slow service easier than metrics alone?","options":["They are averages","They show the time spent in each hop of a single request","They are free to store","They replace logs"],"answer":1,"why":"Metrics aggregate across requests; a trace decomposes one request across components."},
+ {"q":"What does tail-based sampling let you do?","options":["Sample before the request starts","Decide to keep a trace after seeing it (e.g. keep errors and slow ones)","Delete all traces","Avoid propagating trace IDs"],"answer":1,"why":"Tail sampling waits for the whole trace, so it can keep interesting ones. Head sampling decides up-front, blindly."}
+]
+</script>
+<script src="course.js"></script>
+<script>
+(function(){
+  const S=[
+    {id:"a",name:"GET /checkout",svc:"frontend",start:0,dur:500,depth:0,children:["b","c","d"],attrs:'http.method="GET", http.route="/checkout"'},
+    {id:"b",name:"auth.verify",svc:"auth",start:10,dur:50,depth:1,children:[],attrs:'auth.method="jwt"'},
+    {id:"c",name:"inventory.reserve",svc:"inventory",start:70,dur:100,depth:1,children:[],attrs:'db.system="postgres"'},
+    {id:"d",name:"payment.charge",svc:"payment",start:180,dur:300,depth:1,children:["e"],attrs:'payment.provider="stripe"'},
+    {id:"e",name:"stripe.api",svc:"external",start:200,dur:260,depth:2,children:[],attrs:'http.url="https://api.stripe.com/v1/charges"'}
+  ];
+  const byId=Object.fromEntries(S.map(s=>[s.id,s]));
+  const wf=document.getElementById("wf"),info=document.getElementById("info");
+  const colors={frontend:"#6366f1",auth:"#0ea5e9",inventory:"#10b981",payment:"#f59e0b",external:"#ef4444"};
+  function build(){
+    wf.innerHTML="";
+    S.forEach(s=>{
+      const row=document.createElement("div");
+      row.style.cssText="display:flex;align-items:center;margin:4px 0;font-size:.85rem";
+      row.innerHTML=`<div style="width:170px;padding-left:${s.depth*14}px;flex:none">${s.name}</div><div style="flex:1;position:relative;height:22px;background:var(--code);border-radius:4px"><div class="bar" data-id="${s.id}" style="position:absolute;left:${s.start/500*100}%;width:0;height:100%;background:${colors[s.svc]};border-radius:4px;cursor:pointer;transition:width .6s"></div></div>`;
+      wf.appendChild(row);
+    });
+    S.forEach((s,i)=>setTimeout(()=>{wf.querySelector(`[data-id="${s.id}"]`).style.width=s.dur/500*100+"%"},150+i*350));
+    wf.querySelectorAll(".bar").forEach(b=>b.onclick=()=>{
+      const s=byId[b.dataset.id];
+      const kids=s.children.reduce((a,c)=>a+byId[c].dur,0);
+      info.innerHTML=`<strong>${s.name}</strong> <span class="pill">${s.svc}</span><br>start ${s.start} ms · duration ${s.dur} ms · <strong>self time ${s.dur-kids} ms</strong> (${s.dur} − ${kids} from children)<br><code>${s.attrs}</code>`;
+    });
+  }
+  document.getElementById("play").onclick=build;build();
+})();
+</script>
+</body>
+</html>

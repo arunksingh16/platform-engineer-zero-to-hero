@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>4. How a time series database stores data · Observability from zero</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-lesson="4">
+<main>
+  <span class="tag">Lesson 4</span>
+  <h1>How a time series database stores data</h1>
+  <p class="lead">Why can Prometheus hold millions of samples in a few bytes each? Because time series data is very predictable, and a TSDB exploits that.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Explain pull (scrape) vs push, describe the write path (memory → WAL → blocks), and compute delta-of-delta compression by hand.
+  </div>
+
+  <h2>Why not just use a normal database?</h2>
+  <p>Metrics workloads are unusual: writes are constant, append-only and ordered by time; you almost never update old data; reads ask for a time range of one or a few series; and old data gets less valuable. A <strong>time series database (TSDB)</strong> such as Prometheus's built-in TSDB, VictoriaMetrics, InfluxDB or Mimir is built for exactly that.</p>
+
+  <h2>Getting data in: scrape (pull) vs push</h2>
+  <p><strong>Pull:</strong> Prometheus visits each app's <code>/metrics</code> page every <em>scrape interval</em> (commonly 15 s) and records the values with the scrape timestamp. <strong>Push:</strong> the app (or an OpenTelemetry Collector) sends samples to the store. Pull makes "is the target alive?" trivial (<code>up</code> metric); push suits short-lived jobs.</p>
+
+  <div class="widget">
+    <h3>Watch a scrape happen</h3>
+    <svg viewBox="0 0 700 110" width="100%">
+      <rect class="box" x="10" y="25" width="150" height="60" rx="8"/><text x="85" y="50" text-anchor="middle">Your app</text><text x="85" y="70" text-anchor="middle" font-size="12" class="muted">/metrics</text>
+      <rect class="box" x="520" y="25" width="170" height="60" rx="8"/><text x="605" y="50" text-anchor="middle">TSDB</text><text x="605" y="70" text-anchor="middle" font-size="12">stores samples</text>
+      <path class="line" d="M160 45H520" stroke-dasharray="4 4"/>
+      <text x="340" y="38" text-anchor="middle" font-size="12">GET /metrics every 15 s</text>
+      <circle id="dot" r="7" class="acc" cx="520" cy="70" opacity="0"/>
+    </svg>
+    <div class="row"><button id="scrapeBtn">Start scraping</button><span class="muted">(sped up: 1 scrape per second)</span></div>
+    <table id="samples"><tr><th>time</th><th>requests_total</th></tr></table>
+  </div>
+
+  <h2>Writing: memory, WAL, blocks</h2>
+  <ol>
+    <li>New samples go into the in-memory <strong>head block</strong> (fast, recent data).</li>
+    <li>They are also appended to a <strong>write-ahead log (WAL)</strong> on disk so a crash doesn't lose them.</li>
+    <li>Every ~2 hours the head is compacted into an immutable, compressed <strong>block</strong> on disk with its own <strong>index</strong>. Older blocks are merged into bigger ones.</li>
+    <li><strong>Retention</strong> deletes blocks older than a limit (Prometheus defaults to 15 days). Long-term systems (Thanos, Mimir) ship blocks to object storage and may <strong>downsample</strong> (keep one point per 5 min instead of per 15 s).</li>
+  </ol>
+  <p>To find series fast, the index is an <strong>inverted index</strong>: for each label pair (e.g. <code>method="GET"</code>) it keeps a list of the series IDs that have it. A query for <code>{method="GET",status="500"}</code> intersects the two lists.</p>
+
+  <h2>Compression: why it is so small</h2>
+  <p>A naive sample is a 64-bit timestamp + 64-bit float = <strong>16 bytes</strong>. Facebook's Gorilla paper (the basis for Prometheus-style compression) showed an average of about 1.37 bytes per sample on their data, using two observations:</p>
+  <ul>
+    <li><strong>Timestamps are regular.</strong> Scrapes happen at a fixed interval, so store the <em>delta</em> (difference from the previous timestamp), then the <em>delta of the delta</em>. When the interval is perfect, that is 0 — encoded in a single bit.</li>
+    <li><strong>Values change slowly.</strong> XOR a value with the previous one; if they are identical, the result is all zeros and costs about one bit.</li>
+  </ul>
+
+  <div class="widget">
+    <h3>Delta-of-delta calculator</h3>
+    <p class="muted">Edit the timestamps (seconds, comma separated) and see the encoding.</p>
+    <textarea id="ts" rows="2">1000, 1015, 1030, 1045, 1061, 1076</textarea>
+    <div class="row"><button id="calc">Calculate</button></div>
+    <div id="dod"></div>
+  </div>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>Timestamps: <code>1000, 1060, 1120, 1181, 1241</code>.</p>
+    <ol>
+      <li>Write the deltas (differences between neighbours).</li>
+      <li>Write the delta-of-delta (differences between neighbouring deltas).</li>
+      <li>Which samples are "perfect" and cost ~1 bit each?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) Deltas: 60, 60, 61, 60. 2) Delta-of-delta: 0, 1, −1. 3) Only a delta-of-delta of 0 is a perfect one-bit sample. Here the scrape was 1 s late once (181 instead of 180), costing two small non-zero numbers. Jitter is cheap; a small non-zero value fits in a few bits, not 64.</p>
+    </details>
+  </div>
+
+  <div class="callout">
+    <h3>Gorilla bit budget used by the calculator</h3>
+    dod = 0 → 1 bit · −63…64 → 9 bits · −255…256 → 12 bits · −2047…2048 → 16 bits · else 36 bits. (Simplified: the first timestamp and first delta are stored in full and ignored here.)
+  </div>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"Prometheus scrapes your app every 15 s. What is that called, and which model is it?","options":["Retention, push","Scrape interval, pull","Compaction, pull","Downsampling, push"],"answer":1,"why":"The scrape interval is how often the server pulls /metrics."},
+ {"q":"Why does the TSDB write samples to a write-ahead log (WAL)?","options":["To make queries faster","To survive a crash without losing recent in-memory data","To compress data","To delete old data"],"answer":1,"why":"The head block lives in memory; the WAL on disk lets it be rebuilt after a crash."},
+ {"q":"Timestamps: 500, 530, 560, 590. What are the deltas-of-delta?","options":["30, 30, 30","0, 0","30, 0","0, 30"],"answer":1,"why":"Deltas are 30, 30, 30. Their differences are 0, 0 — the cheapest case."},
+ {"q":"Why is cardinality (lesson 3) especially painful for a TSDB?","options":["Each series adds index entries and in-memory head data","Timestamps get longer","Labels disable compression of values only","It slows the scrape interval"],"answer":0,"why":"Every active series occupies head memory and index space, so millions of series cost a lot even if each has few samples."}
+]
+</script>
+<script src="course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  let timer=null,t=0,v=1500;
+  $("scrapeBtn").onclick=function(){
+    if(timer){clearInterval(timer);timer=null;this.textContent="Start scraping";return}
+    this.textContent="Stop";
+    timer=setInterval(()=>{
+      const dot=$("dot");
+      dot.setAttribute("opacity","1");
+      dot.animate([{transform:"translateX(0)"},{transform:"translateX(-360px)"}],{duration:700,easing:"ease-in-out"}).onfinish=()=>dot.setAttribute("opacity","0");
+      dot.setAttribute("cx","520");
+      t+=15;v+=Math.floor(Math.random()*40)+10;
+      const tr=document.createElement("tr");
+      tr.innerHTML=`<td>t=${t}s</td><td>${v}</td>`;
+      $("samples").appendChild(tr);
+      if($("samples").rows.length>9)$("samples").deleteRow(1);
+    },1000);
+  };
+  function bits(d){return d===0?1:(d>=-63&&d<=64)?9:(d>=-255&&d<=256)?12:(d>=-2047&&d<=2048)?16:36}
+  function calc(){
+    const ts=$("ts").value.split(",").map(s=>parseFloat(s.trim())).filter(x=>!isNaN(x));
+    if(ts.length<3){$("dod").textContent="Enter at least 3 timestamps.";return}
+    const d=[];for(let i=1;i<ts.length;i++)d.push(ts[i]-ts[i-1]);
+    const dd=[];for(let i=1;i<d.length;i++)dd.push(d[i]-d[i-1]);
+    const total=dd.reduce((a,x)=>a+bits(x),0),naive=dd.length*64;
+    $("dod").innerHTML=`<table><tr><th>timestamps</th><td>${ts.join(", ")}</td></tr><tr><th>deltas</th><td>${d.join(", ")}</td></tr><tr><th>delta-of-delta</th><td>${dd.join(", ")}</td></tr><tr><th>bits each</th><td>${dd.map(bits).join(", ")}</td></tr></table><p>Encoded: <strong>${total} bits</strong> vs naive <strong>${naive} bits</strong> (${(100-total/naive*100).toFixed(0)}% smaller)</p>`;
+  }
+  $("calc").onclick=calc;calc();
+})();
+</script>
+</body>
+</html>

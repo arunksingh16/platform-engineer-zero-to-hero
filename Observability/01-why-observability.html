@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>1. Why observability? · Observability from zero</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-lesson="1">
+<main>
+  <span class="tag">Lesson 1</span>
+  <h1>Why observability?</h1>
+  <p class="lead">Your checkout page is slow and customers are complaining. How do you find out <em>what</em> is wrong, <em>where</em>, and <em>why</em> — without guessing?</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Explain monitoring vs observability, name the three signals (metrics, logs, traces) and say which question each one answers.
+  </div>
+
+  <h2>Monitoring vs observability</h2>
+  <p><strong>Monitoring</strong> means watching things you already know can go wrong: "alert me if CPU &gt; 90%". You decided the questions in advance.</p>
+  <p><strong>Observability</strong> is a property of a system: can you understand what is happening <em>inside</em> it by looking at the data it emits — including for problems you never predicted? A system is observable when you can ask new questions ("why are only users in Germany on the iOS app slow?") without shipping new code.</p>
+  <p>To do that, software emits <strong>telemetry</strong>. There are three main kinds, called <em>signals</em>.</p>
+
+  <div class="grid3">
+    <div class="card"><strong>📈 Metrics</strong><br>Numbers over time. Cheap, great for "is something wrong, and since when?"</div>
+    <div class="card"><strong>📜 Logs</strong><br>Timestamped event records. Great for "what exactly happened?"</div>
+    <div class="card"><strong>🧵 Traces</strong><br>The path of one request across services. Great for "where was the time spent?"</div>
+  </div>
+
+  <h2>Watch a request travel</h2>
+  <div class="widget">
+    <svg viewBox="0 0 700 120" width="100%" role="img" aria-label="A request flowing from user to frontend to checkout to database">
+      <g>
+        <rect class="box" x="10" y="35" width="110" height="50" rx="8"/><text x="65" y="65" text-anchor="middle">User</text>
+        <rect class="box" x="190" y="35" width="110" height="50" rx="8"/><text x="245" y="65" text-anchor="middle">Frontend</text>
+        <rect class="box" x="380" y="35" width="110" height="50" rx="8"/><text x="435" y="65" text-anchor="middle">Checkout</text>
+        <rect class="box" x="570" y="35" width="110" height="50" rx="8"/><text x="625" y="65" text-anchor="middle">Database</text>
+        <path class="line" d="M120 60H190M300 60H380M490 60H570"/>
+      </g>
+      <circle r="8" class="acc">
+        <animateMotion dur="5s" repeatCount="indefinite" path="M65 60 H245 H435 H625" keyPoints="0;0.33;0.4;0.66;0.8;1" keyTimes="0;0.2;0.3;0.5;0.8;1" calcMode="linear"/>
+      </circle>
+      <text x="435" y="20" text-anchor="middle" font-size="12" class="muted">slow hop ⚠</text>
+    </svg>
+    <p class="muted">Each service emits metrics (how many / how slow), logs (what happened) and trace spans (how long this request spent here).</p>
+  </div>
+
+  <h2>Play detective</h2>
+  <p>Customers report a slow checkout. Click the three signals <strong>in order</strong> and notice what each one tells you.</p>
+  <div class="widget" id="detective">
+    <div class="row">
+      <button data-s="metrics">1. Open Metrics</button>
+      <button data-s="logs" class="ghost">2. Open Logs</button>
+      <button data-s="traces" class="ghost">3. Open Traces</button>
+    </div>
+    <div id="panel" class="muted">Pick a signal above.</div>
+    <p id="verdict" class="ok"></p>
+  </div>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>In one minute, 1,000 checkout requests arrived and 50 of them returned an error.</p>
+    <ol>
+      <li>What is the <strong>error rate</strong> as a percentage?</li>
+      <li>If traffic doubles to 2,000 requests per minute at the same error rate, how many errors per minute is that?</li>
+      <li>Which signal gave you these numbers — metrics, logs or traces?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) 50 ÷ 1000 = 0.05 = <strong>5%</strong>. 2) 5% of 2000 = <strong>100 errors/min</strong>. 3) <strong>Metrics</strong> — aggregate numbers over time. Notice a metric tells you <em>that</em> 5% fail, but not <em>why</em>.</p>
+    </details>
+  </div>
+
+  <div class="callout">
+    <h3>The investigation loop you will use for the rest of your career</h3>
+    <strong>Metrics</strong> tell you something is wrong and when → <strong>traces</strong> tell you which service or call is responsible → <strong>logs</strong> tell you the exact error. Telemetry that can be linked (same trace ID in logs and spans) makes this loop fast. That linking is what OpenTelemetry standardises, in lesson 8.
+  </div>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"Which statement best describes observability?","options":["Having dashboards for every server","Being able to understand internal behaviour from the data a system emits, including for unexpected problems","Alerting when CPU is high","Storing all logs forever"],"answer":1,"why":"Observability is about answering new questions from telemetry without changing the code. Dashboards and alerts are tools, not the property itself."},
+ {"q":"Error rate dropped from 5% to 0.5% after a fix at 1,000 requests/min. How many errors per minute now?","options":["5","50","0.5","500"],"answer":0,"why":"0.5% of 1000 = 5 errors per minute."},
+ {"q":"You see p95 latency jump at 14:05. Which signal is best to find <em>which downstream call</em> became slow?","options":["Metrics","Traces","A CPU gauge","The deploy calendar"],"answer":1,"why":"A trace shows the time spent in each hop of one request. Metrics told you when; traces tell you where."},
+ {"q":"Which pairing is correct?","options":["Metrics → exact error text","Logs → cheap trend over months","Traces → path of one request across services","Metrics → full request payloads"],"answer":2,"why":"Traces follow a request. Metrics are cheap aggregates; logs hold detailed event text."}
+]
+</script>
+<script src="course.js"></script>
+<script>
+(function(){
+  const bars=[210,220,205,215,230,225,240,1800,2400,2300,2100,2250];
+  const labels=bars.map((_,i)=>"14:"+String(i).padStart(2,"0"));
+  const content={
+    metrics:()=>{
+      const max=2600,w=40;
+      let s='<p><strong>p95 latency of /checkout (ms) per minute</strong></p><svg viewBox="0 0 520 170" width="100%">';
+      bars.forEach((v,i)=>{const h=v/max*120;s+=`<rect x="${10+i*42}" y="${140-h}" width="${w}" height="${h}" rx="3" fill="${v>1000?'var(--bad)':'var(--accent)'}"/><text x="${30+i*42}" y="156" font-size="9" text-anchor="middle">${labels[i].slice(3)}</text>`});
+      return s+'</svg><p>Latency jumped around minute 07. <strong>Metrics answered: "something is wrong, since 14:07."</strong> They can\'t say where.</p>';
+    },
+    logs:()=>'<pre><code>14:07:03 WARN  checkout  payment call took 2310ms trace_id=ab12\n14:07:04 ERROR checkout  payment-service timeout after 2000ms trace_id=ab12\n14:07:09 ERROR checkout  payment-service timeout after 2000ms trace_id=cd34</code></pre><p><strong>Logs answered: "the payment service is timing out."</strong> Notice the trace_id — a link to the next signal.</p>',
+    traces:()=>{
+      const spans=[["GET /checkout",0,2400,"var(--muted)"],["auth.verify",20,60,"var(--accent)"],["inventory.reserve",90,120,"var(--accent)"],["payment.charge",230,2100,"var(--bad)"]];
+      let s='<p><strong>Trace ab12 (2.4 s total)</strong></p><svg viewBox="0 0 520 130" width="100%">';
+      spans.forEach((sp,i)=>{const x=130+sp[1]/2400*380,w=Math.max(4,sp[2]/2400*380);s+=`<text x="5" y="${22+i*28}" font-size="11">${sp[0]}</text><rect x="${x}" y="${10+i*28}" width="${w}" height="18" rx="3" fill="${sp[3]}"/>`});
+      return s+'</svg><p><strong>Traces answered: "88% of the time is in payment.charge."</strong> Now you know exactly where to look.</p>';
+    }
+  };
+  const seen=new Set();
+  const panel=document.getElementById("panel"),verdict=document.getElementById("verdict");
+  document.querySelectorAll("#detective button").forEach(b=>b.onclick=()=>{
+    panel.innerHTML=content[b.dataset.s]();panel.className="";
+    seen.add(b.dataset.s);
+    if(seen.size===3)verdict.textContent="✅ Root cause: the payment provider got slow at 14:07. Three signals, three different questions answered.";
+  });
+})();
+</script>
+</body>
+</html>
