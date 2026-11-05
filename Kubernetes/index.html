@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kubernetes from zero</title>
+<meta name="description" content="Kubernetes from the control loop up: Pods, scheduling, requests and limits, HPA, KEDA, Karpenter and operators. Vendor-neutral, with every claim sourced.">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-page="index">
+<main>
+  <span class="tag">9 lessons, about 25 minutes each</span>
+  <h1>Kubernetes from zero</h1>
+  <p class="lead">Kubernetes looks like a hundred unrelated features. It is closer to one idea applied a hundred times. Learn the control loop properly in lesson 1 and the autoscalers, the scheduler and operators all turn out to be the same thing pointed at different objects.</p>
+
+  <div class="goal">
+    <h3>How each lesson works</h3>
+    <ol>
+      <li><strong>Idea</strong> in plain words with a tiny example.</li>
+      <li><strong>Play</strong> with an animation or interactive widget.</li>
+      <li><strong>Do it by hand</strong> — a short exercise with a hidden answer.</li>
+      <li><strong>Quiz</strong> — pass it to complete the lesson.</li>
+    </ol>
+  </div>
+
+  <h2>Lessons</h2>
+  <ol class="lessons" id="lessons"></ol>
+
+  <div class="callout">
+    <h3>This course is deliberately vendor-neutral</h3>
+    <p>Everything here works the same on any conformant cluster — your laptop, a managed service, or bare metal. Where something is provider-specific it is named as such and left for the platform courses rather than quietly assuming AWS.</p>
+    <p>Lesson 7 is the clearest case. Karpenter's NodePool and NodeClaim are vendor-neutral, but the NodeClass that actually provisions a machine is not, so the concepts are taught here and the YAML belongs next door.</p>
+  </div>
+
+  <h2>Platform-specific courses</h2>
+  <p>These build directly on the lessons above and assume you have done them. They are planned, not yet written:</p>
+  <div class="grid3">
+    <article class="card">
+      <span class="tag">Planned</span>
+      <h3>EKS</h3>
+      <p>Managed control plane, IRSA and Pod Identity, VPC CNI and IP exhaustion, EC2NodeClass, load balancer controller.</p>
+    </article>
+    <article class="card">
+      <span class="tag">Planned</span>
+      <h3>AKS</h3>
+      <p>Node pools, workload identity, Azure CNI modes, and the cluster autoscaler profile.</p>
+    </article>
+    <article class="card">
+      <span class="tag">Planned</span>
+      <h3>OpenShift</h3>
+      <p>Routes, SecurityContextConstraints, the Operator Lifecycle Manager, and MachineSets.</p>
+    </article>
+  </div>
+
+  <h2>What you will be able to do</h2>
+  <p>Read a <code>Pending</code> Pod and say exactly which constraint blocked it. Set requests and limits deliberately rather than by copying a template. Predict what an HPA will do before it does it, and know why it sometimes does nothing. Choose between CPU, request rate and queue depth as a scaling signal. Explain why a node disappeared at 2am, and what a PodDisruptionBudget would have changed.</p>
+
+  <h2>Before you start</h2>
+  <p>No Kubernetes experience is assumed. Some of the reasoning is sharper if you have done the <a href="../Observability/index.html">Observability course</a> — lessons 3, 5 and 6 here all depend on choosing and measuring a metric, and they link back to it rather than repeating it.</p>
+
+  <p class="muted">Every quoted claim is sourced on the <a href="09-references.html">references page</a>. Progress is stored only in your browser. No tracking, no dependencies.</p>
+</main>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+</body>
+</html>

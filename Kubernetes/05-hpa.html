@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>5. Horizontal Pod Autoscaling · Kubernetes from zero</title>
+<meta name="description" content="The HPA algorithm, the 10% tolerance, stabilization windows, and why CPU is a poor scaling signal.">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-lesson="5">
+<main>
+  <span class="tag">Lesson 5</span>
+  <h1>Horizontal Pod Autoscaling</h1>
+  <p class="lead">The HPA is lesson 1's control loop with one new trick: instead of you writing the replica count, it computes one from a metric. The formula is a single line, and knowing it exactly is the difference between trusting the autoscaler and fighting it.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Apply the HPA formula by hand, explain the tolerance and the stabilization window, say why a request value from lesson 3 changes autoscaling behaviour, and choose a better signal than CPU.
+  </div>
+
+  <h2>The formula</h2>
+  <p>This is the whole algorithm, quoted from the documentation:</p>
+  <pre><code>desiredReplicas = ceil[ currentReplicas × ( currentMetricValue / desiredMetricValue ) ]</code></pre>
+  <p>A ratio, scaled by the current count, rounded up. Work one through: 4 replicas averaging 80% CPU, target 50%.</p>
+  <pre><code>ceil[ 4 × (80 / 50) ] = ceil[ 6.4 ] = 7 replicas</code></pre>
+  <p>Note what is <em>not</em> in there. No PID controller, no history, no prediction, no learning. It is proportional control: the loop runs again shortly and recomputes from scratch. If 7 replicas bring the average to 46%, the next pass computes <code>ceil[7 × (46/50)] = 7</code> and stops.</p>
+
+  <div class="callout">
+    <h3>The target is a percentage of the <em>request</em>, not of the node</h3>
+    <p>With <code>averageUtilization: 50</code> and <code>cpu: requests: 200m</code>, the target is 100m per Pod — half of what the Pod asked for. The node's actual size never enters the calculation.</p>
+    <p>So changing a CPU request silently rewrites your autoscaling behaviour. Halve the request and every Pod's utilisation percentage doubles, so the HPA scales out roughly twice as far on identical traffic. <a href="03-requests-and-limits.html">Lesson 3</a> and this lesson are the same dial seen from two ends.</p>
+  </div>
+
+  <h2>Three things that stop it oscillating</h2>
+  <p>A naive proportional loop on noisy data would thrash. Three dampers prevent that, and all three are why "the HPA is slow" is usually "the HPA is working".</p>
+
+  <h3>Tolerance: 10%</h3>
+  <p>The HPA <q>uses a tolerance of 10% (0.1)</q> and takes no action while the metric sits within that band of the target. With a 50% target, anything from 45% to 55% is left alone. Without it, every passing fluctuation would produce a scaling event.</p>
+
+  <h3>Sync period: 15 seconds</h3>
+  <p>The controller re-evaluates on an interval — <code>--horizontal-pod-autoscaler-sync-period</code>, default <strong>15 seconds</strong>. Nothing happens between passes, so the fastest possible reaction is one interval plus however long your metrics pipeline lags.</p>
+
+  <h3>Stabilization: 5 minutes down, none up</h3>
+  <p>The default scale-<em>down</em> stabilization window is <strong>300 seconds</strong>. The controller looks at its recommendations over that window and picks the highest, so a brief dip in traffic cannot immediately remove Pods.</p>
+  <p>Scaling <em>up</em> has no such delay by default. That asymmetry is deliberate: being slow to add capacity costs you an outage, while being slow to remove it costs you a few minutes of compute. You can tune both under <code>behavior</code>:</p>
+  <pre><code>behavior:
+  scaleDown:
+    stabilizationWindowSeconds: 300    # the default
+  scaleUp:
+    stabilizationWindowSeconds: 0      # the default: react at once</code></pre>
+
+  <h2>Try the formula</h2>
+  <div class="widget">
+    <h3>HPA calculator</h3>
+    <div class="row">
+      <label>current replicas <input id="cur" type="number" min="1" max="100" value="4" style="width:62px"></label>
+      <label>current metric <input id="now" type="number" min="0" step="1" value="80" style="width:62px"></label>
+      <label>target <input id="tgt" type="number" min="1" step="1" value="50" style="width:62px"></label>
+    </div>
+    <div class="row">
+      <label>minReplicas <input id="mn" type="number" min="0" max="100" value="2" style="width:62px"></label>
+      <label>maxReplicas <input id="mx" type="number" min="1" max="200" value="10" style="width:62px"></label>
+    </div>
+    <table id="out"></table>
+    <p id="expl"></p>
+  </div>
+
+  <h2>Where the metrics come from</h2>
+  <p>The HPA computes nothing itself; it reads one of three APIs.</p>
+  <table>
+    <tr><th>API</th><th>Serves</th><th>Provided by</th></tr>
+    <tr><td><code>metrics.k8s.io</code></td><td>CPU and memory per Pod</td><td>metrics-server — not installed by default on most clusters</td></tr>
+    <tr><td><code>custom.metrics.k8s.io</code></td><td>Any metric attached to a Kubernetes object</td><td>An adapter, commonly the Prometheus Adapter</td></tr>
+    <tr><td><code>external.metrics.k8s.io</code></td><td>Metrics from outside the cluster entirely</td><td>An adapter — this is the door KEDA uses in lesson 6</td></tr>
+  </table>
+  <p>If <code>kubectl top pods</code> does not work, neither will a CPU-based HPA; both need metrics-server. The HPA will report <code>unknown</code> for the metric and do nothing.</p>
+
+  <div class="callout">
+    <h3>The metrics pipeline is the one from the other course</h3>
+    <p>Custom metrics usually mean Prometheus plus an adapter, which is the stack in the <a href="../Observability/index.html">Observability course</a>. Scaling on request rate means a <a href="../Observability/05-querying.html"><code>rate()</code> query</a> over a counter; "requests in flight" is a gauge.</p>
+    <p>The <a href="../Observability/09-slos.html">SLO lesson</a> transfers directly too. Choosing a scaling signal is the same skill as choosing an SLI: pick something that tracks user-visible pain, and be careful what you divide by.</p>
+  </div>
+
+  <h2>Why CPU is usually the wrong signal</h2>
+  <p>CPU is the default because it is the metric that is always available, not because it is a good proxy for load. It fails in a specific, common way: for an IO-bound service, CPU barely moves while latency climbs. A Pod waiting on a slow database is not busy — it is blocked, using almost no CPU, and serving users terribly.</p>
+  <p>Scale on CPU and nothing happens, because by CPU there is no problem.</p>
+  <table>
+    <tr><th>Workload</th><th>Better signal</th></tr>
+    <tr><td>HTTP service</td><td>Requests per second per Pod, or concurrent in-flight requests</td></tr>
+    <tr><td>Queue consumer</td><td>Queue depth, or consumer lag — lesson 6</td></tr>
+    <tr><td>Genuinely CPU-bound work</td><td>CPU, legitimately</td></tr>
+  </table>
+  <p>A second trap: an HPA on a memory target rarely does what people hope. Many runtimes hold memory after they stop needing it, so usage goes up and stays up, and the HPA scales out and never back in.</p>
+
+  <h2>Scaling to zero</h2>
+  <p>Ordinarily <code>minReplicas</code> must be at least 1 — the HPA holds a floor. Zero is governed by the <code>HPAScaleToZero</code> feature gate, which ran as alpha and off by default from v1.16, and became beta and on by default in v1.37.</p>
+  <p>So on a cluster older than that, HPA alone will not idle a workload down to nothing. That gap is a large part of why the next lesson exists.</p>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>An HPA targets <code>averageUtilization: 60</code> on CPU. Pods request <code>cpu: 500m</code>. Currently 3 replicas, <code>minReplicas: 2</code>, <code>maxReplicas: 12</code>.</p>
+    <ol>
+      <li>What CPU figure, in millicores per Pod, is the HPA aiming for?</li>
+      <li>Pods average 540m. How many replicas does the formula ask for?</li>
+      <li>Pods average 320m. What does the HPA do?</li>
+      <li>Traffic collapses and the metric hits 10%. How long before replicas actually drop, and why?</li>
+      <li>Someone lowers the request to 250m, changing nothing else. What happens on identical traffic?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) 60% of the 500m request = <strong>300m per Pod</strong>. The node's size is irrelevant.</p>
+      <p>2) 540m against a 300m target is 180% — outside the 10% tolerance. <code>ceil[3 × (540/300)] = ceil[5.4] = <strong>6</strong></code>.</p>
+      <p>3) <strong>Nothing.</strong> 320/300 = 1.067, inside the ±10% tolerance band (270m–330m), so the controller takes no action even though usage is above target. This is the behaviour people report as "the HPA is stuck".</p>
+      <p>4) At least <strong>5 minutes</strong>, the default scale-down stabilization window — the controller takes the highest recommendation across that window. Scale-up has no such delay.</p>
+      <p>5) The target becomes 60% of 250m = 150m. The same real usage now reads as double the utilisation, so the HPA scales to roughly <strong>twice as many replicas</strong>. A change to a resource request quietly re-tuned the autoscaler.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>The HPA can only scale on what the metrics APIs expose, and only down to one replica. Lesson 6 is KEDA, which fixes both by plugging into the external metrics API — and which turns out to still be an HPA underneath.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"6 replicas, average CPU 90%, target 60%. How many replicas does the formula ask for?","options":["9","8","10","6"],"answer":0,"why":"ceil[6 × (90/60)] = ceil[9] = 9. Proportional control: ratio times current count, rounded up."},
+ {"q":"<code>averageUtilization: 50</code> with <code>cpu: requests: 200m</code>. What is the per-Pod target?","options":["50% of the node's CPU","100m — half the request","200m","Depends on the limit"],"answer":1,"why":"Utilisation is a percentage of the request, so changing a request silently retunes the autoscaler."},
+ {"q":"Metric sits at 54% against a 50% target. What does the HPA do?","options":["Scales up by one","Nothing — it is inside the 10% tolerance band","Scales up proportionally","Waits for the stabilization window"],"answer":1,"why":"The 10% tolerance means 45–55% is left alone, preventing constant churn on noise."},
+ {"q":"Why is CPU often a poor scaling signal for an IO-bound service?","options":["CPU metrics are inaccurate","A Pod blocked on a slow dependency uses little CPU while serving users badly, so CPU never triggers a scale-up","CPU is only sampled hourly","CPU cannot be averaged"],"answer":1,"why":"Waiting is not busy. Request rate, in-flight requests or queue depth track the actual pressure."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  const TOL=0.1;              // documented HPA tolerance
+  const ids=["cur","now","tgt","mn","mx"];
+
+  function calc(){
+    const cur=Math.max(1,Math.round(+$("cur").value||1));
+    const now=Math.max(0,+$("now").value||0);
+    const tgt=Math.max(1,+$("tgt").value||1);
+    let mn=Math.max(0,Math.round(+$("mn").value||0));
+    let mx=Math.max(1,Math.round(+$("mx").value||1));
+    if(mn>mx)mn=mx;
+
+    const ratio=now/tgt;
+    const raw=cur*ratio;
+    const ceiled=Math.ceil(raw);
+    // epsilon: |1.1 - 1| is 0.10000000000000009 in floating point, which would
+    // put an exactly-at-the-boundary ratio outside a band it belongs in
+    const within=Math.abs(ratio-1)<=TOL+1e-9;
+    const clamped=Math.min(mx,Math.max(mn,ceiled));
+    const final=within?cur:clamped;
+
+    $("out").innerHTML=
+      `<tr><th>ratio (current ÷ target)</th><td>${ratio.toFixed(3)}</td></tr>`+
+      `<tr><th>tolerance band</th><td>${(tgt*(1-TOL)).toFixed(1)} – ${(tgt*(1+TOL)).toFixed(1)} <span class="muted">(±10%)</span></td></tr>`+
+      `<tr><th>formula</th><td>ceil[${cur} × ${ratio.toFixed(3)}] = ceil[${raw.toFixed(2)}] = ${ceiled}</td></tr>`+
+      `<tr><th>after min/max clamp</th><td>${clamped}</td></tr>`+
+      `<tr><th>HPA sets replicas to</th><td><strong class="${final!==cur?"ok":""}">${final}</strong></td></tr>`;
+
+    let m;
+    if(within){
+      m=`<strong>No action.</strong> ${now} is inside the ±10% tolerance around ${tgt}, so the controller leaves the count alone. `+
+        `This is the single most common reason an HPA "does nothing".`;
+    }else if(ceiled!==clamped){
+      m=`<strong class="err">Clamped.</strong> The formula wants ${ceiled} replicas but min/max caps it at ${clamped}. `+
+        (ceiled>mx?`Hitting <code>maxReplicas</code> means the HPA has given you everything it can and the service may still be overloaded — this is worth alerting on.`
+                  :`<code>minReplicas</code> is holding the floor.`);
+    }else if(final===cur){
+      m=`<strong>No change.</strong> The formula asks for ${ceiled}, which after clamping is the ${cur} replicas you already have.`;
+    }else if(final>cur){
+      m=`<strong>Scale up to ${final}.</strong> No stabilization delay applies to scale-up by default, so this takes effect on the next pass — within about 15 seconds, plus metrics lag.`;
+    }else{
+      m=`<strong>Scale down to ${final}</strong> — eventually. The default 300-second scale-down stabilization window means the controller takes the highest recommendation over the last 5 minutes, so a brief dip will not shrink the deployment.`;
+    }
+    $("expl").innerHTML=m;
+  }
+  ids.forEach(i=>{$(i).addEventListener("input",calc);$(i).addEventListener("change",calc)});
+  calc();
+})();
+</script>
+</body>
+</html>

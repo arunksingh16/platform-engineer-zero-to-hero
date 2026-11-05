@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>1. Desired state and the control loop · Kubernetes from zero</title>
+<meta name="description" content="Spec versus status, controllers as non-terminating loops, and why Kubernetes heals itself.">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-lesson="1">
+<main>
+  <span class="tag">Lesson 1</span>
+  <h1>Desired state and the control loop</h1>
+  <p class="lead">Kubernetes has a reputation for being enormous. It is — but almost all of it is one idea repeated. Learn the idea properly now and the other eight lessons are variations on it, including the ones about autoscaling and operators.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Explain the difference between spec and status, describe what a controller does, say why Kubernetes is declarative rather than imperative, and predict what happens when something in the cluster breaks.
+  </div>
+
+  <h2>You describe the destination, not the journey</h2>
+  <p>Most tools you have used are <strong>imperative</strong>: you issue commands and they run. <code>ssh web01 && systemctl restart nginx</code> does a thing, once. If the process dies an hour later, nothing brings it back, because nothing recorded that you wanted it running.</p>
+  <p>Kubernetes is <strong>declarative</strong>. You do not say "start three copies". You write down "three copies should exist" and leave it written down. Something else makes it true, and keeps making it true.</p>
+  <p>Every object in Kubernetes has two halves, and the whole system is the gap between them:</p>
+  <table>
+    <tr><th>Field</th><th>Who writes it</th><th>Means</th></tr>
+    <tr><td><code>spec</code></td><td>You</td><td>What should be true</td></tr>
+    <tr><td><code>status</code></td><td>The cluster</td><td>What is actually true right now</td></tr>
+  </table>
+  <pre><code>spec:
+  replicas: 3          # you wrote this: what you want
+status:
+  replicas: 2          # the cluster wrote this: what there is
+  readyReplicas: 2</code></pre>
+  <p>That mismatch is not an error state. It is the normal, expected condition of a running system, and it is the thing that makes work happen.</p>
+
+  <h2>The control loop</h2>
+  <p>A <strong>controller</strong> is the thing that closes that gap. The Kubernetes documentation describes controllers as <q>control loops that watch the state of your cluster, then make or request changes where needed</q>, where each one <q>tries to move the current cluster state closer to the desired state</q>.</p>
+  <p>It borrows the term from engineering: <q>In robotics and automation, a control loop is a non-terminating loop that regulates the state of a system.</q> The docs reach for a thermostat, and it is worth taking the analogy seriously:</p>
+  <div class="callout">
+    <h3>The thermostat</h3>
+    <p><q>When you set the temperature, that's telling the thermostat about your desired state. The actual room temperature is the current state. The thermostat acts to bring the current state closer to the desired state, by turning equipment on or off.</q></p>
+    <p>Note what the thermostat does <em>not</em> do. It does not compute a heating schedule in advance. It does not care how the room got cold — open window, failed boiler, winter. It observes, compares, acts, and then does it again. That indifference to history is the source of Kubernetes' self-healing, and also of its most confusing behaviour.</p>
+  </div>
+  <p>Written out, every controller in the system does this:</p>
+  <pre><code>loop forever:
+    observe   current state
+    compare   against spec
+    act       to reduce the difference</code></pre>
+  <p>That is the whole pattern. The Deployment controller runs it over ReplicaSets. The ReplicaSet controller runs it over Pods. The HorizontalPodAutoscaler in lesson 5 runs it over replica counts. Karpenter in lesson 7 runs it over nodes. An operator you write in lesson 8 runs it over whatever you invent.</p>
+
+  <div class="callout">
+    <h3>You have met this loop in another course</h3>
+    <p>In <a href="../CodeAnalysis/02-ast-call-graph.html">Code analysis lesson 2</a> you propagated IO marks through a call graph by sweeping repeatedly until a sweep changed nothing. Same shape: observe, act, repeat, converge. The difference is that a call graph is finite and stops, while a cluster never does — nodes fail, traffic shifts, so the loop is deliberately non-terminating.</p>
+  </div>
+
+  <h2>Where the state lives</h2>
+  <p>Controllers do not talk to each other. They all talk to one place.</p>
+  <table>
+    <tr><th>Component</th><th>Job</th></tr>
+    <tr><td><strong>API server</strong></td><td>The only way in. Validates and serves every object. Everything else is a client.</td></tr>
+    <tr><td><strong>etcd</strong></td><td>The database behind the API server. Where spec and status are actually stored.</td></tr>
+    <tr><td><strong>Controller manager</strong></td><td>Runs the built-in controllers — Deployment, ReplicaSet, Job and dozens more.</td></tr>
+    <tr><td><strong>Scheduler</strong></td><td>Decides which node each new Pod should run on (lesson 4).</td></tr>
+    <tr><td><strong>kubelet</strong></td><td>On every node. Starts the containers it has been assigned and reports back what they are doing.</td></tr>
+  </table>
+  <p>This matters more than it looks. Because controllers only read and write objects through the API server, nothing has to know about anything else. The scheduler never calls the kubelet. It writes a node name onto a Pod; the kubelet on that node notices a Pod assigned to it and acts. Components communicate by changing shared state, not by issuing commands.</p>
+  <p>That is why <code>kubectl apply</code> returns instantly. It did not deploy anything. It updated a record, and the loops took it from there.</p>
+
+  <h2>Watch it converge</h2>
+  <p>Change the desired count, or break something, and watch the loop respond. Nothing here is scripted — the controller only ever compares the two numbers and acts on the difference.</p>
+
+  <div class="widget">
+    <h3>A ReplicaSet controller, slowed down</h3>
+    <svg viewBox="0 0 520 150" width="100%" aria-label="Pods appearing and disappearing as the controller reconciles current state towards the desired replica count.">
+      <text x="10" y="18" font-size="11" fill="var(--muted)">spec.replicas</text>
+      <text id="specN" x="104" y="18" font-size="13" font-weight="700">3</text>
+      <text x="150" y="18" font-size="11" fill="var(--muted)">status.replicas</text>
+      <text id="statusN" x="258" y="18" font-size="13" font-weight="700">3</text>
+      <g id="pods"></g>
+      <text id="action" x="10" y="140" font-size="11.5" fill="var(--muted)"></text>
+    </svg>
+    <div class="row">
+      <button class="ghost" id="dec">− replica</button>
+      <span class="muted">desired: <strong id="want">3</strong></span>
+      <button class="ghost" id="inc">+ replica</button>
+      <button id="kill">Kill a running Pod</button>
+    </div>
+    <p id="narrate" class="muted">Steady. Current state matches spec, so the controller has nothing to do — it keeps checking anyway.</p>
+  </div>
+
+  <h2>Three consequences worth internalising</h2>
+
+  <h3>Deleting things does not work the way you expect</h3>
+  <p><code>kubectl delete pod web-xyz</code> deletes the Pod. Seconds later there is a new one, with a different name. You did not fight Kubernetes and lose; you removed a Pod while leaving a written instruction saying three should exist. The loop did exactly its job. To actually reduce the count, change the spec.</p>
+
+  <h3>Failure and change are the same event</h3>
+  <p>A node dying and you editing <code>replicas</code> both show up identically: current state no longer matches desired state. The controller does not distinguish them, which is why you get self-healing for free rather than as a separate feature.</p>
+
+  <h3>Nothing is instant, and that is on purpose</h3>
+  <p>Loops have intervals. Controllers batch work, back off when they fail, and converge over seconds rather than immediately. When lesson 5's autoscaler appears slow, it is not broken — you are watching a loop with deliberate damping, for reasons that lesson will make painfully clear.</p>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>A Deployment has <code>spec.replicas: 5</code>. Right now <code>status.readyReplicas: 5</code>.</p>
+    <ol>
+      <li>A node holding 2 of those Pods loses power. What does <code>status</code> show, and what does the controller do?</li>
+      <li>You run <code>kubectl delete pod</code> on one healthy Pod. What happens, and why?</li>
+      <li>You edit the Deployment to <code>replicas: 2</code>. Is this different in kind from case 1 or the same?</li>
+      <li>Someone scales to 50 and every new Pod sits in <code>Pending</code>. Is the controller broken?</li>
+      <li>Why does the API server not simply tell the kubelet to start a container?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) <code>status</code> drops towards 3. The gap is now 2, so the ReplicaSet controller creates 2 replacement Pods, which the scheduler places on surviving nodes. No human action required.</p>
+      <p>2) A replacement appears almost immediately. You changed current state, not desired state — and only the spec decides what should exist.</p>
+      <p>3) <strong>The same in kind</strong>, opposite direction. The controller sees current 5, desired 2, and deletes 3. It has no concept of "failure" versus "intent".</p>
+      <p>4) <strong>No.</strong> The controller's job is to create the Pod objects, and it did. Placing them is the scheduler's job, and <code>Pending</code> means it cannot find anywhere to put them — lesson 4, and the trigger for node autoscaling in lesson 7.</p>
+      <p>5) Because then the API server would need to know which kubelets exist, whether they are reachable, and what to do when one is not. Instead it stores a fact; each kubelet watches for facts about itself and acts. Components stay independent and restartable.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>You have the loop. Lesson 2 is about the objects it runs over — why you almost never create a Pod yourself, and what actually happens during a rolling update.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"What is the relationship between <code>spec</code> and <code>status</code>?","options":["spec is the old value, status is the new one","spec is what you want, status is what is actually true; controllers work to close the gap","They are always identical in a healthy cluster","status is written by you, spec by the cluster"],"answer":1,"why":"The gap between them is not an error — it is the signal that drives every controller in the system."},
+ {"q":"You delete a Pod managed by a Deployment. A new one appears. Why?","options":["Kubernetes caches Pods and restored it","The spec still says how many should exist, and the controller acted on the difference","The delete command failed","The node recreated it independently"],"answer":1,"why":"You changed current state while leaving desired state untouched. To actually remove it, change the spec."},
+ {"q":"Why does the scheduler write a node name onto the Pod rather than telling the kubelet to start a container?","options":["It is faster","Components communicate by changing shared state through the API server, so none needs to know about the others","The kubelet has no network access","To keep a record for auditing"],"answer":1,"why":"Each component watches the API server for facts relevant to it. That decoupling is why individual components can restart without coordination."},
+ {"q":"A node fails and you manually scale down — how does a controller see these two events?","options":["As a failure and an intent, handled by different code paths","Identically: current state no longer matches desired state","The failure is urgent, the scale-down is queued","Only the failure triggers reconciliation"],"answer":1,"why":"Controllers compare two numbers. Self-healing is not a separate feature; it falls out of treating both the same way."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  let want=3, pods=[{id:1,state:"ready"},{id:2,state:"ready"},{id:3,state:"ready"}];
+  let next=4, timer=null;
+
+  function draw(){
+    const g=$("pods"); g.replaceChildren();
+    pods.forEach((p,i)=>{
+      const x=14+i*62;
+      const r=document.createElementNS("http://www.w3.org/2000/svg","rect");
+      r.setAttribute("x",x); r.setAttribute("y",46);
+      r.setAttribute("width",52); r.setAttribute("height",46);
+      r.setAttribute("rx","3"); r.setAttribute("class","box");
+      r.style.fill=p.state==="ready"?"var(--good-soft)":"var(--signal-soft)";
+      r.style.stroke=p.state==="ready"?"var(--good)":"var(--signal-fill)";
+      const t=document.createElementNS("http://www.w3.org/2000/svg","text");
+      t.setAttribute("x",x+26); t.setAttribute("y",74);
+      t.setAttribute("text-anchor","middle"); t.setAttribute("font-size","10.5");
+      t.textContent=p.state==="ready"?"Ready":"Pending";
+      g.append(r,t);
+    });
+    $("specN").textContent=want;
+    $("statusN").textContent=pods.filter(p=>p.state==="ready").length;
+    $("want").textContent=want;
+  }
+
+  function note(action,msg){
+    $("action").textContent=action;
+    $("narrate").innerHTML=msg;
+  }
+
+  function tick(){
+    // one pass of the loop: observe, compare, act on the difference
+    const pending=pods.find(p=>p.state==="pending");
+    if(pending){
+      pending.state="ready";
+      draw();
+      note("act: Pod became Ready",
+        "A Pod finished starting. The controller does not track it individually — it just counts again next time round.");
+      return;
+    }
+    if(pods.length<want){
+      pods.push({id:next++,state:"pending"});
+      draw();
+      note(`act: create Pod (have ${pods.length-1}, want ${want})`,
+        `Current state is below spec, so the controller created one Pod. It creates them one pass at a time, then re-observes.`);
+      return;
+    }
+    if(pods.length>want){
+      pods.pop();
+      draw();
+      note(`act: delete Pod (have ${pods.length+1}, want ${want})`,
+        "Current state is above spec, so the controller removed one. Same comparison, opposite direction.");
+      return;
+    }
+    $("action").textContent="observe: no difference";
+    if(!$("narrate").dataset.steady){
+      $("narrate").textContent="Steady. Current state matches spec, so the controller has nothing to do — it keeps checking anyway.";
+    }
+  }
+
+  $("inc").onclick=()=>{ want=Math.min(6,want+1); draw();
+    note("spec changed","You edited the spec. Nothing has happened yet — the loop has to come round and notice."); };
+  $("dec").onclick=()=>{ want=Math.max(0,want-1); draw();
+    note("spec changed","You edited the spec. The controller will reconcile on its next pass."); };
+  $("kill").onclick=()=>{
+    if(!pods.length)return;
+    pods.splice(Math.floor(Math.random()*pods.length),1); draw();
+    note("current state changed",
+      "A Pod is gone, but <strong>the spec did not change</strong>. To the controller this looks exactly like you asking for one more — and it will replace it.");
+  };
+
+  draw();
+  timer=setInterval(tick,1100);
+  addEventListener("pagehide",()=>clearInterval(timer));
+})();
+</script>
+</body>
+</html>

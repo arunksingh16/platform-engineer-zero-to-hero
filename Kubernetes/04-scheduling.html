@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>4. Scheduling, and why Pods stay Pending · Kubernetes from zero</title>
+<meta name="description" content="Filtering and scoring, taints and tolerations, affinity and topology spread, and how to read a Pending Pod.">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-lesson="4">
+<main>
+  <span class="tag">Lesson 4</span>
+  <h1>Scheduling, and why Pods stay Pending</h1>
+  <p class="lead"><code>Pending</code> is not a failure. It is the scheduler telling you, precisely, that no node currently satisfies the constraints you wrote — and the event message usually names which one.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Describe filtering and scoring, say what taints, tolerations, affinity and topology spread each do, and diagnose a <code>Pending</code> Pod from its events.
+  </div>
+
+  <h2>Two steps, in order</h2>
+  <p>The scheduler watches for Pods with no node assigned and runs a <q>2-step operation</q> on each:</p>
+  <table>
+    <tr><th>Step</th><th>What it does</th></tr>
+    <tr><td><strong>Filtering</strong></td><td><q>Finds the set of Nodes where it's feasible to schedule the Pod.</q> A hard yes or no per node.</td></tr>
+    <tr><td><strong>Scoring</strong></td><td><q>Ranks the remaining nodes to choose the most suitable Pod placement.</q> Best score wins.</td></tr>
+  </table>
+  <p>Nodes surviving the filter are called <strong>feasible</strong>: <q>Nodes that meet the scheduling requirements for a Pod are called feasible nodes.</q> And the critical sentence for debugging: <q>If the list is empty, that Pod isn't (yet) schedulable</q> — it <q>remains unscheduled until the scheduler is able to place it.</q></p>
+  <p>Note "yet". The scheduler does not give up or fail the Pod. It re-tries forever, which is exactly what makes node autoscaling possible in lesson 7: something else can notice the Pending Pod and create a node for it.</p>
+  <p>Once a node wins, the scheduler <q>notifies the API server about this decision in a process called binding</q>. It writes a name onto the Pod — lesson 1's pattern again. The kubelet on that node takes it from there.</p>
+
+  <h2>What filtering actually checks</h2>
+  <table>
+    <tr><th>Filter</th><th>Rejects the node when…</th></tr>
+    <tr><td>Resource fit</td><td>Remaining <strong>requests</strong> cannot cover this Pod's requests (lesson 3)</td></tr>
+    <tr><td>Taints</td><td>The node is tainted and the Pod lacks a matching toleration</td></tr>
+    <tr><td>Node selector / affinity</td><td>Node labels do not match what the Pod requires</td></tr>
+    <tr><td>Port conflicts</td><td>A requested <code>hostPort</code> is already taken</td></tr>
+    <tr><td>Volume constraints</td><td>The Pod's volume cannot attach there — commonly a zone mismatch</td></tr>
+  </table>
+
+  <h2>Taints and tolerations: nodes refusing Pods</h2>
+  <p>Everything else is the Pod choosing nodes. Taints are the reverse — the node repelling Pods by default.</p>
+  <pre><code># on the node
+kubectl taint nodes gpu-1 workload=gpu:NoSchedule
+
+# in a Pod that is allowed there
+tolerations:
+  - key: workload
+    operator: Equal
+    value: gpu
+    effect: NoSchedule</code></pre>
+  <p>Three effects, and the difference matters:</p>
+  <table>
+    <tr><th>Effect</th><th>Meaning</th></tr>
+    <tr><td><code>NoSchedule</code></td><td>Do not place new Pods here without a toleration. Existing Pods stay.</td></tr>
+    <tr><td><code>PreferNoSchedule</code></td><td>Try not to. A scoring preference, not a filter — it will still land here if nothing else fits.</td></tr>
+    <tr><td><code>NoExecute</code></td><td>As <code>NoSchedule</code>, and <em>evict</em> Pods already running that do not tolerate it.</td></tr>
+  </table>
+  <p>A toleration permits; it never attracts. Tolerating the GPU taint does not send your Pod to a GPU node, it only stops that node refusing. To actually aim at it you need a node selector or affinity as well. Pairing a taint with a label is the standard way to reserve nodes for a workload.</p>
+  <p>Kubernetes taints nodes itself too — <code>node.kubernetes.io/not-ready</code>, <code>unreachable</code>, <code>disk-pressure</code> and others. A sudden wave of evictions usually means a node picked up a <code>NoExecute</code> taint.</p>
+
+  <h2>Affinity and spread: shaping placement</h2>
+  <table>
+    <tr><th>Mechanism</th><th>Expresses</th></tr>
+    <tr><td><code>nodeSelector</code></td><td>"only on nodes with this label". Simple, exact, hard.</td></tr>
+    <tr><td>Node affinity</td><td>Same idea with operators (<code>In</code>, <code>NotIn</code>, <code>Exists</code>) and a soft variant.</td></tr>
+    <tr><td>Pod affinity</td><td>"near Pods like these" — co-locate with a cache, for example.</td></tr>
+    <tr><td>Pod anti-affinity</td><td>"away from Pods like these" — keep replicas off the same node.</td></tr>
+    <tr><td>Topology spread constraints</td><td>"spread evenly across zones or nodes, within a skew I choose".</td></tr>
+  </table>
+  <p>Each comes in two strengths, and the names are a mouthful but the distinction is the important part:</p>
+  <ul>
+    <li><code>requiredDuringSchedulingIgnoredDuringExecution</code> — a <strong>filter</strong>. Not satisfiable means <code>Pending</code>, forever.</li>
+    <li><code>preferredDuringSchedulingIgnoredDuringExecution</code> — a <strong>score</strong>. Honoured if possible, ignored if not.</li>
+  </ul>
+  <p><code>IgnoredDuringExecution</code> appears in both: these rules are checked when placing a Pod and never re-checked. A Pod does not move because conditions changed later. Pods never move at all (lesson 2).</p>
+  <div class="callout">
+    <h3>The most common self-inflicted Pending</h3>
+    <p>Required anti-affinity on hostname with more replicas than nodes. "No two replicas on the same node" with 5 replicas and 3 nodes means 2 Pods are unschedulable by construction, and they will wait forever.</p>
+    <p>Use topology spread constraints with a <code>maxSkew</code> instead when you want balance rather than an absolute rule — it degrades gracefully instead of deadlocking.</p>
+  </div>
+
+  <h2>Diagnose a Pending Pod</h2>
+  <p>Place Pods on a small cluster and watch which filter rejects what. The message format mirrors what <code>kubectl describe pod</code> actually prints.</p>
+
+  <div class="widget">
+    <h3>Scheduler simulator</h3>
+    <p class="muted">Three nodes. <code>node-c</code> is tainted <code>workload=gpu:NoSchedule</code> and labelled <code>disk=ssd</code>.</p>
+    <svg viewBox="0 0 520 170" width="100%" aria-label="Three nodes showing allocated CPU against capacity.">
+      <g id="nodes"></g>
+    </svg>
+    <div class="row">
+      <label>cpu request <input id="req" value="500m" style="width:76px"></label>
+      <label><input type="checkbox" id="tol"> tolerates gpu taint</label>
+      <label><input type="checkbox" id="ssd"> requires <code>disk=ssd</code></label>
+    </div>
+    <div class="row">
+      <button id="place">Schedule a Pod</button>
+      <button class="ghost" id="clear">Clear cluster</button>
+    </div>
+    <p id="result" class="muted">Each node has 2 CPU allocatable.</p>
+  </div>
+
+  <h2>Reading the real thing</h2>
+  <p><code>kubectl describe pod</code> gives you a one-line tally, and it is almost always enough:</p>
+  <pre><code>0/3 nodes are available:
+  1 node(s) had untolerated taint {workload: gpu},
+  2 Insufficient cpu.</code></pre>
+  <p>Read it as arithmetic. Three nodes, three rejections, every node accounted for. Each clause names a filter and a count, so you know exactly which constraint to relax — add a toleration, lower the request, or get more nodes.</p>
+  <table>
+    <tr><th>Message</th><th>Usually means</th></tr>
+    <tr><td><code>Insufficient cpu</code> / <code>memory</code></td><td>Requests do not fit. Lower them, or add capacity.</td></tr>
+    <tr><td><code>had untolerated taint</code></td><td>Reserved nodes. Add the toleration — and a selector if you meant to target them.</td></tr>
+    <tr><td><code>didn't match Pod's node affinity/selector</code></td><td>No node carries the label. Check for a typo before adding nodes.</td></tr>
+    <tr><td><code>didn't match pod anti-affinity rules</code></td><td>Usually more replicas than nodes under a required rule.</td></tr>
+    <tr><td><code>had volume node affinity conflict</code></td><td>The volume is in one zone and the feasible nodes are in another.</td></tr>
+  </table>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>Three nodes, 4 CPU allocatable each. <code>node-3</code> is tainted <code>team=data:NoSchedule</code>. Current requests: node-1 3.5, node-2 3.8, node-3 0.</p>
+    <ol>
+      <li>A Pod requests <code>cpu: 1</code> with no tolerations. What happens?</li>
+      <li>The same Pod with a matching toleration?</li>
+      <li>Does adding the toleration guarantee it lands on node-3?</li>
+      <li>A Deployment has 4 replicas with required anti-affinity on hostname. How many schedule?</li>
+      <li>How would you express "spread across nodes, but do not block the rollout"?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) <strong>Pending.</strong> node-1 has 0.5 free and node-2 has 0.2, so both fail the resource filter; node-3 fails on the taint. The message would read <code>0/3 nodes are available: 1 node(s) had untolerated taint {team: data}, 2 Insufficient cpu</code>.</p>
+      <p>2) It schedules on <strong>node-3</strong> — now the only feasible node.</p>
+      <p>3) <strong>No.</strong> A toleration only stops a node refusing; it does not attract. Here node-3 wins because the others are full. If node-1 had room, scoring would decide, and it might well prefer the emptier node — but that is a preference, not a promise. To guarantee it, add a node selector.</p>
+      <p>4) <strong>Three.</strong> One per node, and the fourth is Pending forever, because a required rule cannot be relaxed.</p>
+      <p>5) A <strong>topology spread constraint</strong> over <code>kubernetes.io/hostname</code> with <code>maxSkew: 1</code> and <code>whenUnsatisfiable: ScheduleAnyway</code>. You get balance when it is available, and placement rather than deadlock when it is not.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>So far the replica count has been a number you chose. Lesson 5 hands it to a controller that changes it based on live metrics — using the requests from lesson 3 as its denominator.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"What are the two steps the scheduler runs for each unscheduled Pod?","options":["Validation then admission","Filtering then scoring","Binding then starting","Scoring then filtering"],"answer":1,"why":"Filtering finds the feasible nodes — a hard yes or no. Scoring ranks the survivors. If filtering leaves nothing, the Pod stays Pending."},
+ {"q":"A Pod tolerates the taint on a GPU node. Does it now run there?","options":["Yes, tolerations attract Pods to matching nodes","Not necessarily — a toleration only stops the node refusing it; you need a selector or affinity to target it","Only if the node is empty","Only with NoExecute"],"answer":1,"why":"Tolerations permit, they never attract. Pairing a taint with a label and a selector is the standard way to reserve nodes for a workload."},
+ {"q":"5 replicas, required pod anti-affinity on hostname, 3 nodes. What happens?","options":["All 5 schedule, 2 share a node","3 schedule and 2 stay Pending forever","The scheduler relaxes the rule","Pods are evicted in rotation"],"answer":1,"why":"A required rule is a filter and cannot be relaxed. Topology spread constraints with whenUnsatisfiable: ScheduleAnyway degrade gracefully instead."},
+ {"q":"What does <code>IgnoredDuringExecution</code> mean in affinity rule names?","options":["The rule is optional","The rule is checked when placing the Pod and never re-checked afterwards","The rule applies only to init containers","Execution errors are ignored"],"answer":1,"why":"Placement is a one-time decision. A Pod does not move if conditions change later — Pods never move at all, they are replaced."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  const CAP=2; // CPU allocatable per node
+  const NODES=[
+    {name:"node-a",used:0,taint:null,labels:{}},
+    {name:"node-b",used:0,taint:null,labels:{}},
+    {name:"node-c",used:0,taint:"workload=gpu",labels:{disk:"ssd"}},
+  ];
+
+  function cpu(v){ v=(v||"").trim(); if(!v)return NaN;
+    return v.endsWith("m")?parseFloat(v)/1000:parseFloat(v); }
+
+  function draw(){
+    const g=$("nodes"); g.replaceChildren();
+    NODES.forEach((n,i)=>{
+      const x=12+i*172;
+      const box=document.createElementNS("http://www.w3.org/2000/svg","rect");
+      box.setAttribute("x",x); box.setAttribute("y",14);
+      box.setAttribute("width",156); box.setAttribute("height",120);
+      box.setAttribute("rx","3"); box.setAttribute("class","box");
+      g.appendChild(box);
+
+      const label=document.createElementNS("http://www.w3.org/2000/svg","text");
+      label.setAttribute("x",x+10); label.setAttribute("y",34);
+      label.setAttribute("font-size","11.5"); label.setAttribute("font-weight","700");
+      label.textContent=n.name;
+      g.appendChild(label);
+
+      const meta=document.createElementNS("http://www.w3.org/2000/svg","text");
+      meta.setAttribute("x",x+10); meta.setAttribute("y",50);
+      meta.setAttribute("font-size","9.5"); meta.style.fill="var(--muted)";
+      meta.textContent=n.taint?"taint: "+n.taint:(Object.keys(n.labels).length?"disk=ssd":"no taint");
+      g.appendChild(meta);
+
+      // allocation bar: requests against capacity
+      const bg=document.createElementNS("http://www.w3.org/2000/svg","rect");
+      bg.setAttribute("x",x+10); bg.setAttribute("y",62);
+      bg.setAttribute("width",136); bg.setAttribute("height",16);
+      bg.setAttribute("rx","2"); bg.style.fill="var(--code)";
+      g.appendChild(bg);
+      const fill=document.createElementNS("http://www.w3.org/2000/svg","rect");
+      fill.setAttribute("x",x+10); fill.setAttribute("y",62);
+      fill.setAttribute("width",Math.min(136,136*n.used/CAP));
+      fill.setAttribute("height",16); fill.setAttribute("rx","2");
+      fill.style.fill=n.used>=CAP?"var(--bad)":"var(--signal-fill)";
+      g.appendChild(fill);
+
+      const amt=document.createElementNS("http://www.w3.org/2000/svg","text");
+      amt.setAttribute("x",x+10); amt.setAttribute("y",96);
+      amt.setAttribute("font-size","10.5");
+      amt.textContent=`${n.used.toFixed(1)} / ${CAP} CPU requested`;
+      g.appendChild(amt);
+
+      const free=document.createElementNS("http://www.w3.org/2000/svg","text");
+      free.setAttribute("x",x+10); free.setAttribute("y",114);
+      free.setAttribute("font-size","10.5"); free.style.fill="var(--muted)";
+      free.textContent=`${(CAP-n.used).toFixed(1)} free`;
+      g.appendChild(free);
+    });
+  }
+
+  $("place").onclick=()=>{
+    const want=cpu($("req").value);
+    if(Number.isNaN(want)||want<=0){
+      $("result").innerHTML='<span class="err">Could not read that request. Try <code>500m</code> or <code>1</code>.</span>'; return;
+    }
+    const tolerates=$("tol").checked, needsSsd=$("ssd").checked;
+    const reasons=[];
+    const feasible=NODES.filter(n=>{
+      if(n.taint&&!tolerates){ reasons.push(`${n.name}: untolerated taint {${n.taint}}`); return false; }
+      if(needsSsd&&n.labels.disk!=="ssd"){ reasons.push(`${n.name}: didn't match node selector disk=ssd`); return false; }
+      if(CAP-n.used<want){ reasons.push(`${n.name}: Insufficient cpu`); return false; }
+      return true;
+    });
+    if(!feasible.length){
+      $("result").innerHTML=`<strong class="err">Pending.</strong> <code>0/${NODES.length} nodes are available:</code><br>`+
+        reasons.map(r=>"&nbsp;&nbsp;"+r).join("<br>")+
+        `<br><span class="muted">The scheduler keeps retrying — it never fails the Pod.</span>`;
+      return;
+    }
+    // scoring: prefer the node with most free capacity (least-allocated, roughly)
+    feasible.sort((a,b)=>(CAP-b.used)-(CAP-a.used));
+    const picked=feasible[0];
+    picked.used=Math.round((picked.used+want)*100)/100;
+    draw();
+    $("result").innerHTML=`<strong class="ok">Bound to ${picked.name}.</strong> `+
+      `${feasible.length} node${feasible.length>1?"s were":" was"} feasible; scoring preferred the one with the most free capacity.`+
+      (reasons.length?`<br><span class="muted">Filtered out — ${reasons.join("; ")}.</span>`:"");
+  };
+  $("clear").onclick=()=>{ NODES.forEach(n=>n.used=0); draw();
+    $("result").textContent="Cluster cleared. Each node has 2 CPU allocatable."; };
+  draw();
+})();
+</script>
+</body>
+</html>

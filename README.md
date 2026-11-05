@@ -9,8 +9,10 @@ Access github pages - https://arunksingh16.github.io/platform-engineer-zero-to-h
 | --- | --- | --- |
 | Observability | Available | Metrics, time series, logs, traces, OpenTelemetry, SLIs, SLOs, and burn-rate alerting |
 | Code analysis | Available | Pure functions and IO, abstract syntax trees, call graphs, runtime detection, and measuring a detector honestly |
+| Kubernetes | Available | Control loops, Pods and controllers, scheduling, requests and limits, HPA, KEDA, Karpenter, and operators |
+| Kubernetes on EKS / AKS / OpenShift | Planned | Provider specifics layered on the vendor-neutral course, in child directories |
 | Infrastructure foundations | Planned | Linux, networking, Git, and containers |
-| Platform systems | Planned | Kubernetes, cloud fundamentals, infrastructure as code, and CI/CD |
+| Platform systems | Planned | Cloud fundamentals, infrastructure as code, and CI/CD |
 | Reliability and operations | Planned | Site reliability engineering, incident response, and production operations |
 
 The intended progression is from foundational concepts to operating production systems and, eventually, advanced topics. A topic is not considered complete just because it appears on this roadmap.
@@ -49,7 +51,16 @@ CodeAnalysis/              Course
   lessons.js
   01-...html to 05-...html Interactive lessons
   solution/                Runnable Python for the final lesson
+Kubernetes/                Course
+  index.html
+  lessons.js
+  01-...html to 09-...html Interactive lessons, ending in a references page
+  eks/ aks/ openshift/     Planned child courses, each with its own lessons.js
 ```
+
+Courses nest. A child course is just a course one level deeper: it gets its own
+`lessons.js` with its own `key`, and reaches the shared assets with `../../`.
+Nothing in `course.js` assumes a depth.
 
 `style.css` and `course.js` live at the repository root so a change applies to
 every course at once. Each course folder supplies only its own data, in
@@ -94,6 +105,14 @@ Primary references for Code analysis:
 - [Python asyncio: running blocking code](https://docs.python.org/3/library/asyncio-dev.html#running-blocking-code)
 - [Bazel: hermeticity](https://bazel.build/basics/hermeticity)
 - [scikit-learn: model evaluation](https://scikit-learn.org/stable/modules/model_evaluation.html)
+
+Primary references for Kubernetes are listed claim by claim on the course's own
+[references page](Kubernetes/09-references.html). The principal ones:
+
+- [Kubernetes documentation](https://kubernetes.io/docs/)
+- [Kubernetes API reference](https://kubernetes.io/docs/reference/kubernetes-api/) — field-level defaults
+- [KEDA documentation](https://keda.sh/docs/latest/)
+- [Karpenter documentation](https://karpenter.sh/docs/)
 
 ## License
 

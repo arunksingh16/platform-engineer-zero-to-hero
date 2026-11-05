@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>2. Pods, and the controllers that run them · Kubernetes from zero</title>
+<meta name="description" content="What a Pod really is, why you never create one directly, and exactly how a rolling update moves between ReplicaSets.">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-lesson="2">
+<main>
+  <span class="tag">Lesson 2</span>
+  <h1>Pods, and the controllers that run them</h1>
+  <p class="lead">A Pod is the thing Kubernetes actually runs, and it is more fragile than most people expect — it cannot move, cannot heal, and cannot be upgraded. Everything that makes workloads durable is a controller stacked on top.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Say what a Pod is and what it is not, explain the Deployment → ReplicaSet → Pod chain, and work out how many Pods exist at each step of a rolling update from <code>maxSurge</code> and <code>maxUnavailable</code>.
+  </div>
+
+  <h2>What a Pod actually is</h2>
+  <p>A Pod is one or more containers that are always scheduled together on one node, sharing a network namespace and optionally some volumes. Containers in a Pod reach each other on <code>localhost</code> and share one IP address.</p>
+  <p>Most Pods hold exactly one container. Multiple containers are for helpers that genuinely cannot be separated — a sidecar that tails the app's log file, a proxy sharing its network. If two things could run on different machines, they want to be two Pods.</p>
+  <p>Now the parts people get wrong:</p>
+  <table>
+    <tr><th>A Pod is not…</th><th>Because</th></tr>
+    <tr><td>movable</td><td>Once scheduled to a node it stays there for life. "Rescheduling" always means deleting it and creating a different one.</td></tr>
+    <tr><td>repairable</td><td>Most of its spec is immutable. Changing the image means a new Pod, not an updated one.</td></tr>
+    <tr><td>durable</td><td>If its node dies, a bare Pod is simply gone. Nothing restores it.</td></tr>
+    <tr><td>stable in identity</td><td>Its name and IP belong to that instance only. The replacement gets new ones.</td></tr>
+  </table>
+  <p>So a bare Pod is a one-shot. That is why you almost never write one — you write something that <em>manages</em> Pods, and lesson 1's loop does the rest.</p>
+
+  <h2>The chain</h2>
+  <p>Three objects, three loops, each watching the one below:</p>
+  <pre><code>Deployment      "I want version v2, rolled out safely"
+   └── ReplicaSet   "I want 3 Pods matching this exact template"
+        └── Pod         "I am one running instance"</code></pre>
+  <table>
+    <tr><th>Object</th><th>Its one job</th></tr>
+    <tr><td><strong>ReplicaSet</strong></td><td>Keep exactly N Pods alive matching one fixed template. It cannot change the template.</td></tr>
+    <tr><td><strong>Deployment</strong></td><td>Own several ReplicaSets and shift replicas between them, which is how versions change.</td></tr>
+  </table>
+  <p>That division is the key to rollouts. A ReplicaSet is deliberately incapable of updating anything — so to change the image, the Deployment makes a <em>second</em> ReplicaSet with the new template and moves replicas across. The docs put it plainly: <q>A new ReplicaSet is created, and the Deployment gradually scales it up while scaling down the old ReplicaSet, ensuring Pods are replaced at a controlled rate.</q></p>
+  <p>The old ReplicaSet is kept, scaled to zero. That is what a rollback is: scale the old one back up. <code>revisionHistoryLimit</code> controls how many are retained, and defaults to 10.</p>
+
+  <h2>The two numbers that control a rollout</h2>
+  <p>"At a controlled rate" means two knobs, both defaulting to 25%:</p>
+  <table>
+    <tr><th>Field</th><th>Meaning</th><th>Default</th></tr>
+    <tr><td><code>maxSurge</code></td><td><q>The maximum number of pods that can be scheduled above the desired number of pods.</q> Percentages round <strong>up</strong>.</td><td>25%</td></tr>
+    <tr><td><code>maxUnavailable</code></td><td><q>The maximum number of pods that can be unavailable during the update.</q> Percentages round <strong>down</strong>.</td><td>25%</td></tr>
+  </table>
+  <p>Together they bound the Pod count for the whole rollout. With 4 replicas and the defaults: at most 5 Pods exist at once (4 + 25%), and at least 3 are available (4 − 25%). The rollout proceeds in whatever steps keep both true.</p>
+  <p>The two edge cases are worth knowing because they are the ones people reach for:</p>
+  <ul>
+    <li><code>maxUnavailable: 0</code> — never drop below full capacity. Requires <code>maxSurge ≥ 1</code>, and needs spare room in the cluster for the extra Pods.</li>
+    <li><code>maxSurge: 0</code> — never exceed the replica count, useful when capacity or licences are fixed. Requires <code>maxUnavailable ≥ 1</code>, so you take a capacity dip.</li>
+    <li>Both <code>0</code> is rejected — it describes a rollout that cannot take a single step.</li>
+  </ul>
+  <p>If a rollout stops making progress for <code>progressDeadlineSeconds</code> (default 600), the Deployment is marked failed. It does not roll back on its own.</p>
+
+  <h2>Step through a rollout</h2>
+  <p>Set the knobs and advance one step at a time. The constraint line shows which rule is blocking the next move.</p>
+
+  <div class="widget">
+    <h3>Rolling update, step by step</h3>
+    <div class="row">
+      <label>replicas <input id="reps" type="number" min="1" max="10" value="4" style="width:58px"></label>
+      <label>maxSurge <input id="surge" type="number" min="0" max="5" value="1" style="width:58px"></label>
+      <label>maxUnavailable <input id="unavail" type="number" min="0" max="5" value="1" style="width:58px"></label>
+    </div>
+    <svg viewBox="0 0 520 132" width="100%" aria-label="Old and new ReplicaSet Pod counts during a rolling update.">
+      <text x="10" y="20" font-size="11" fill="var(--muted)">old ReplicaSet (v1)</text>
+      <g id="oldPods"></g>
+      <text x="10" y="82" font-size="11" fill="var(--muted)">new ReplicaSet (v2)</text>
+      <g id="newPods"></g>
+    </svg>
+    <table id="state"></table>
+    <div class="row">
+      <button id="step">Next step</button>
+      <button class="ghost" id="rst">Restart rollout</button>
+    </div>
+    <p id="why" class="muted"></p>
+  </div>
+
+  <div class="callout">
+    <h3>Deployments are not the only option</h3>
+    <p>They assume Pods are interchangeable. When they are not, the other controllers exist for good reasons:</p>
+    <p><strong>StatefulSet</strong> — stable names (<code>db-0</code>, <code>db-1</code>) and stable storage, updated in order. For databases and anything doing leader election.<br>
+    <strong>DaemonSet</strong> — one Pod per node, automatically on new nodes. For log shippers, CNI and node agents. This one matters in lesson 7: every node Karpenter adds costs you one Pod of every DaemonSet.<br>
+    <strong>Job / CronJob</strong> — run to completion, once or on a schedule.</p>
+  </div>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>A Deployment has <code>replicas: 10</code>, <code>maxSurge: 25%</code>, <code>maxUnavailable: 25%</code>. You change the image.</p>
+    <ol>
+      <li>What are maxSurge and maxUnavailable as absolute numbers? Mind the rounding.</li>
+      <li>What is the most Pods that can exist at once? The fewest available?</li>
+      <li>At the very first step, how many new Pods can be created before anything is torn down?</li>
+      <li>You set <code>maxUnavailable: 0</code> and the cluster is full. What happens?</li>
+      <li>The team wants zero capacity loss <em>and</em> no extra Pods. What do you tell them?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) maxSurge rounds <strong>up</strong>: 25% of 10 = 2.5 → <strong>3</strong>. maxUnavailable rounds <strong>down</strong>: 2.5 → <strong>2</strong>. The asymmetry is deliberate — both defaults err towards keeping capacity.</p>
+      <p>2) At most <strong>13</strong> Pods (10 + 3). At least <strong>8</strong> available (10 − 2).</p>
+      <p>3) <strong>3</strong> — the surge allowance. It can also delete up to 2 old Pods straight away, since that still leaves 8 available.</p>
+      <p>4) The rollout <strong>stalls</strong>. New Pods cannot be created because there is nowhere to put them, and no old Pod may be removed first. It sits there until capacity appears or <code>progressDeadlineSeconds</code> (default 600) marks it failed. This is a very common real-world stall, and lesson 7 is how clusters avoid it.</p>
+      <p>5) It is impossible — both at 0 is rejected, because the rollout could never take a step. They must choose: a brief capacity dip, or temporary extra Pods.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>Every Pod created here has to land on a node with room for it. "Room" has a precise meaning, and getting it wrong is behind most production Kubernetes pain. That is lesson 3.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"Why can't a ReplicaSet perform a rolling update by itself?","options":["It lacks permission","It manages one fixed Pod template and cannot change it — so the Deployment creates a second ReplicaSet and shifts replicas across","Rolling updates need a StatefulSet","It can, Deployments are just convenience"],"answer":1,"why":"The split is deliberate: ReplicaSets keep N identical Pods alive, Deployments own several ReplicaSets. A rollback is just scaling an old ReplicaSet back up."},
+ {"q":"<code>replicas: 10</code>, <code>maxSurge: 25%</code>. How many surge Pods are allowed?","options":["2","3","2.5","25"],"answer":1,"why":"maxSurge rounds up: 25% of 10 is 2.5, so 3. maxUnavailable rounds down to 2. The asymmetry keeps capacity on the safe side."},
+ {"q":"What happens with <code>maxUnavailable: 0</code> on a cluster with no spare capacity?","options":["Old Pods are removed first to make room","The rollout stalls — no new Pod can be scheduled and no old one may be removed","maxUnavailable is ignored","Kubernetes evicts other workloads"],"answer":1,"why":"It stalls until capacity appears or progressDeadlineSeconds marks it failed. This is why node autoscaling matters."},
+ {"q":"A node dies. What happens to a bare Pod on it, created with <code>kubectl run</code> and no controller?","options":["It is rescheduled onto a healthy node","It is gone — nothing recreates it, since no spec says it should exist","It restarts when the node returns","The scheduler moves it automatically"],"answer":1,"why":"Pods never move. Durability comes entirely from a controller holding a desired state, which a bare Pod has nobody to provide."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  let want=4,surge=1,unavail=1,oldN=4,newN=0;
+
+  function readCfg(){
+    want=Math.max(1,Math.min(10,+$("reps").value||1));
+    surge=Math.max(0,Math.min(5,+$("surge").value||0));
+    unavail=Math.max(0,Math.min(5,+$("unavail").value||0));
+  }
+  function reset(){ readCfg(); oldN=want; newN=0; draw(); $("step").disabled=false;
+    $("why").textContent="Rollout not started. The Deployment has created the new ReplicaSet at 0 replicas."; }
+
+  function pods(g,n,cls){
+    g.replaceChildren();
+    for(let i=0;i<n;i++){
+      const r=document.createElementNS("http://www.w3.org/2000/svg","rect");
+      r.setAttribute("x",12+i*38); r.setAttribute("y",cls==="old"?26:88);
+      r.setAttribute("width",30); r.setAttribute("height",26);
+      r.setAttribute("rx","3"); r.setAttribute("class","box");
+      r.style.fill=cls==="old"?"var(--code)":"var(--good-soft)";
+      r.style.stroke=cls==="old"?"var(--line-strong)":"var(--good)";
+      g.appendChild(r);
+    }
+  }
+
+  function draw(){
+    pods($("oldPods"),oldN,"old");
+    pods($("newPods"),newN,"new");
+    const total=oldN+newN;
+    $("state").innerHTML=
+      `<tr><th>Total Pods</th><td>${total}</td><td class="muted">ceiling ${want+surge}</td></tr>`+
+      `<tr><th>Available</th><td>${total>=want?want:total}</td><td class="muted">floor ${want-unavail}</td></tr>`+
+      `<tr><th>old → new</th><td>${oldN} → ${newN}</td><td class="muted">target 0 → ${want}</td></tr>`;
+  }
+
+  $("step").onclick=()=>{
+    readCfg();
+    if(surge===0&&unavail===0){
+      $("why").innerHTML="<strong class='err'>Rejected.</strong> Both at 0 describes a rollout that can never take a step — Kubernetes will not accept it.";
+      return;
+    }
+    if(newN>=want&&oldN===0){ $("why").innerHTML="<strong class='ok'>Rollout complete.</strong> The old ReplicaSet is kept at 0 replicas, which is what makes rollback cheap."; $("step").disabled=true; return; }
+    const total=oldN+newN;
+    // can we surge up a new Pod without breaking the ceiling?
+    if(newN<want&&total<want+surge){
+      newN++; draw();
+      $("why").innerHTML=`Created a new Pod. Total is now ${oldN+newN}, still within the ceiling of ${want+surge} (replicas + maxSurge).`;
+      return;
+    }
+    // otherwise retire an old one, if that keeps us above the availability floor
+    if(oldN>0&&total-1>=want-unavail){
+      oldN--; draw();
+      $("why").innerHTML=`Removed an old Pod. ${oldN+newN} remain, still at or above the floor of ${want-unavail} (replicas − maxUnavailable).`;
+      return;
+    }
+    $("why").innerHTML="<strong class='err'>Stalled.</strong> Surging would exceed the ceiling and retiring would drop below the floor. In a real cluster this sits here until capacity frees up or <code>progressDeadlineSeconds</code> marks it failed.";
+  };
+  $("rst").onclick=reset;
+  ["reps","surge","unavail"].forEach(i=>$(i).addEventListener("change",reset));
+  reset();
+})();
+</script>
+</body>
+</html>

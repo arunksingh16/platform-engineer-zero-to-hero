@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>6. KEDA and event-driven scaling · Kubernetes from zero</title>
+<meta name="description" content="ScaledObjects, the activation phase versus the scaling phase, scaling to zero, and why KEDA still uses an HPA underneath.">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-lesson="6">
+<main>
+  <span class="tag">Lesson 6</span>
+  <h1>KEDA and event-driven scaling</h1>
+  <p class="lead">A queue consumer with an empty queue uses no CPU, so an HPA sees a perfectly healthy idle service — while a million messages pile up. KEDA fixes the signal, and incidentally gets you to zero replicas.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Explain what a ScaledObject does, describe the split between the activation phase and the scaling phase, say why KEDA creates an HPA rather than replacing it, and reason about the default polling and cooldown values.
+  </div>
+
+  <h2>The problem, concretely</h2>
+  <p>A worker reads from a queue. 50,000 messages arrive at once. Each Pod handles maybe 10 a second, so you want many Pods — now.</p>
+  <p>Point an HPA at CPU and nothing happens. The existing Pods are not CPU-bound; they are waiting on IO, which is <a href="05-hpa.html">lesson 5</a>'s failure mode exactly. The number that matters — <em>how much work is waiting</em> — lives in the queue, outside the cluster, and no Kubernetes metric knows about it.</p>
+  <p>KEDA's job is to get that number into Kubernetes. The official Kubernetes documentation describes it as <q>a CNCF-graduated project enabling you to scale your workloads based on the number of events to be processed, for example the amount of messages in a queue</q>, with <q>a wide range of adapters for different event sources to choose from</q>.</p>
+
+  <h2>The ScaledObject</h2>
+  <p>You do not write an HPA. You write a ScaledObject pointing at your workload and naming a trigger:</p>
+  <pre><code>apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: order-worker
+spec:
+  scaleTargetRef:
+    name: order-worker        # an existing Deployment
+  minReplicaCount: 0          # default 0 — idle all the way down
+  maxReplicaCount: 30         # default 100
+  pollingInterval: 30         # seconds, default 30
+  cooldownPeriod: 300         # seconds, default 300
+  triggers:
+    - type: rabbitmq
+      metadata:
+        queueName: orders
+        queueLength: "20"     # messages per Pod you are willing to tolerate</code></pre>
+  <p><code>queueLength: "20"</code> is the one to understand. It is not a threshold — it is a <strong>target per replica</strong>, which makes it the <code>desiredMetricValue</code> in lesson 5's formula. 600 messages waiting with a target of 20 gives <code>ceil[600 / 20] = 30</code> replicas.</p>
+  <p>The defaults are worth memorising because they explain most surprises:</p>
+  <table>
+    <tr><th>Field</th><th>Default</th><th>Meaning</th></tr>
+    <tr><td><code>pollingInterval</code></td><td>30s</td><td>How often KEDA checks the trigger source</td></tr>
+    <tr><td><code>cooldownPeriod</code></td><td>300s</td><td>Wait after the last trigger activity before scaling to zero</td></tr>
+    <tr><td><code>minReplicaCount</code></td><td>0</td><td>Floor KEDA scales down to</td></tr>
+    <tr><td><code>maxReplicaCount</code></td><td>100</td><td>Ceiling for the target workload</td></tr>
+    <tr><td><code>initialCooldownPeriod</code></td><td>0s</td><td>Delay before the cooldown clock starts after creation</td></tr>
+  </table>
+
+  <h2>Two phases, two controllers</h2>
+  <p>This is the part that makes KEDA click, and the documentation is explicit about the split.</p>
+  <table>
+    <tr><th>Phase</th><th>Range</th><th>Who decides</th></tr>
+    <tr><td><strong>Activation</strong></td><td>0 ↔ 1</td><td>KEDA. <q>The activating (or deactivating) phase is the moment when KEDA (operator) has to decide if the workload should be scaled from/to zero.</q></td></tr>
+    <tr><td><strong>Scaling</strong></td><td>1 ↔ N</td><td>The HPA. <q>The scaling phase is the moment when KEDA has decided to scale out to 1 instance and now it is the HPA controller who takes the scaling decisions.</q></td></tr>
+  </table>
+  <p>So KEDA <q>acts to monitor the event source and feed that data to Kubernetes and the HPA (Horizontal Pod Autoscaler) to drive rapid scale of a resource</q>. It <strong>creates an HPA for you</strong> and serves it the queue depth through the external metrics API — the third row of lesson 5's table.</p>
+  <p>Two things follow from that, and both save real debugging time:</p>
+  <ul>
+    <li>Everything from lesson 5 still applies between 1 and N — the formula, the 10% tolerance, the 300-second scale-down stabilization. KEDA did not replace any of it.</li>
+    <li><code>kubectl get hpa</code> shows an HPA named after your ScaledObject that you did not create. <strong>Do not edit it.</strong> KEDA owns it and will reconcile your changes away.</li>
+  </ul>
+  <p>And it explains the one piece KEDA genuinely adds: an HPA cannot reliably take you to zero (lesson 5's feature gate), so KEDA handles 0↔1 itself and delegates the rest.</p>
+
+  <h2>Watch both phases</h2>
+  <div class="widget">
+    <h3>Queue depth to replicas</h3>
+    <div class="row">
+      <label>queue depth <input id="q" type="number" min="0" max="5000" step="10" value="0" style="width:82px"></label>
+      <label>target per replica <input id="t" type="number" min="1" max="500" value="20" style="width:66px"></label>
+      <label>max <input id="mx" type="number" min="1" max="200" value="30" style="width:60px"></label>
+    </div>
+    <div class="row">
+      <button class="ghost" data-q="0">empty</button>
+      <button class="ghost" data-q="5">5 messages</button>
+      <button class="ghost" data-q="600">600</button>
+      <button class="ghost" data-q="50000">50,000</button>
+    </div>
+    <table id="out"></table>
+    <p id="phase"></p>
+  </div>
+
+  <div class="callout">
+    <h3>Picking the trigger is the same skill as picking an SLI</h3>
+    <p>Queue depth works as a scaling signal for the reason a good SLI works: it measures the thing users actually suffer from. <a href="../Observability/09-slos.html">Observability lesson 9</a> is the same reasoning applied to alerting.</p>
+    <p>And the same trap appears. Queue depth tells you work is waiting, not how fast you are draining it. A queue at a steady 500 with consumers keeping pace is fine; a queue at 500 and climbing is an incident. For Kafka, consumer <em>lag</em> is usually the better trigger for exactly this reason — it is a rate-like signal rather than a level.</p>
+  </div>
+
+  <h2>What scale-to-zero actually costs</h2>
+  <p>Zero replicas is the headline feature and it is not free. The first message after an idle period waits for the whole chain: poll interval, then Pod scheduling, then image pull, then your application's startup.</p>
+  <pre><code>message arrives
+  → up to 30s        waiting for the next poll (pollingInterval)
+  → seconds          scheduling (lesson 4) — longer if a node is needed (lesson 7)
+  → seconds–minutes  image pull on a cold node
+  → your startup time
+</code></pre>
+  <p>Tens of seconds is normal, and minutes is possible if a node has to be provisioned first. That is fine for a nightly batch job and unacceptable for anything a user is waiting on. Reach for <code>minReplicaCount: 1</code> when latency matters more than the idle cost.</p>
+  <p>Two other things to know before running it in production:</p>
+  <ul>
+    <li><strong><code>cooldownPeriod</code> only applies to the last step.</strong> It is the wait after trigger activity stops before going to zero — not a general scale-down delay. Between 1 and N you are on the HPA's stabilization window.</li>
+    <li><strong>Set <code>fallback</code>.</strong> If a scaler cannot reach its source — the broker is down, credentials expired — you want a defined replica count rather than undefined behaviour at the worst moment.</li>
+  </ul>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>A ScaledObject with <code>queueLength: "25"</code>, <code>minReplicaCount: 0</code>, <code>maxReplicaCount: 20</code>, and defaults elsewhere.</p>
+    <ol>
+      <li>The queue holds 300 messages. How many replicas, and which controller decided?</li>
+      <li>The queue goes from 0 to 10. What happens, and who did it?</li>
+      <li>The queue holds 900. How many replicas, and what should you be alerted about?</li>
+      <li>The queue empties at 12:00. When does the Deployment reach zero?</li>
+      <li>A teammate edits the HPA KEDA created, raising maxReplicas. What happens?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) <code>ceil[300 / 25] = <strong>12</strong></code>. The workload was already above zero, so this is the scaling phase — the <strong>HPA</strong> decided, using lesson 5's formula.</p>
+      <p>2) KEDA <strong>activates</strong> the workload from 0 to 1. This is the one transition the HPA cannot be relied on for, and the reason KEDA exists as more than a metrics adapter. The jump from 1 to the formula's answer then follows from the HPA.</p>
+      <p>3) <code>ceil[900 / 25] = 36</code>, clamped to <strong>20</strong> by <code>maxReplicaCount</code>. Being pinned at the ceiling means the queue is growing faster than you can drain it — alert on it, because the autoscaler has nothing left to give.</p>
+      <p>4) Around <strong>12:05</strong>: the default <code>cooldownPeriod</code> is 300 seconds after the last trigger activity, and the next poll is up to 30 seconds after that.</p>
+      <p>5) <strong>It is reverted.</strong> KEDA owns that HPA and reconciles it back — lesson 1's loop, now working against you. Change <code>maxReplicaCount</code> on the ScaledObject instead.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>Both autoscalers so far add Pods. Pods need somewhere to run, and lesson 4 showed what happens when there is nowhere: <code>Pending</code>, forever. Lesson 7 is the autoscaler that notices and buys a machine.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"Which controller handles the 0 → 1 transition, and which handles 1 → N?","options":["KEDA does both","The HPA does both","KEDA activates 0 ↔ 1; the HPA decides 1 ↔ N","The scheduler handles both"],"answer":2,"why":"KEDA creates an HPA and feeds it the external metric. It only keeps the activation phase for itself, because an HPA cannot reliably take a workload to zero."},
+ {"q":"<code>queueLength: \"20\"</code> with 600 messages waiting. Replicas?","options":["20","30","600","12"],"answer":1,"why":"queueLength is a target per replica, not a threshold, so it is the desiredMetricValue: ceil[600/20] = 30."},
+ {"q":"You edit the HPA that appeared when you created a ScaledObject. What happens?","options":["The change takes effect","KEDA reconciles it back — it owns that HPA","The ScaledObject is deleted","The HPA is duplicated"],"answer":1,"why":"Lesson 1's control loop, now working against you. Change the ScaledObject instead."},
+ {"q":"Why is scale-to-zero unsuitable for a user-facing API?","options":["KEDA cannot scale HTTP services","The first request waits for the poll interval, scheduling, image pull and startup — tens of seconds or more","Zero replicas breaks the Service object","HPAs forbid it"],"answer":1,"why":"The cold-start chain is fine for batch work and far too slow for an interactive request. Use minReplicaCount: 1 when latency matters."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  function calc(){
+    const q=Math.max(0,Math.round(+$("q").value||0));
+    const t=Math.max(1,Math.round(+$("t").value||1));
+    const mx=Math.max(1,Math.round(+$("mx").value||1));
+    const wanted=Math.ceil(q/t);
+    const final=q===0?0:Math.min(mx,Math.max(1,wanted));
+
+    $("out").innerHTML=
+      `<tr><th>formula</th><td>${q===0?"—":`ceil[${q} / ${t}] = ${wanted}`}</td></tr>`+
+      `<tr><th>after max clamp</th><td>${final}</td></tr>`+
+      `<tr><th>replicas</th><td><strong class="${final?"ok":""}">${final}</strong></td></tr>`+
+      `<tr><th>decided by</th><td>${q===0?"KEDA (deactivation)":(final<=1?"KEDA (activation)":"the HPA KEDA created")}</td></tr>`;
+
+    let m;
+    if(q===0){
+      m="<strong>Deactivation phase.</strong> KEDA scales to zero, but only after <code>cooldownPeriod</code> — 300 seconds by default — has passed since the last trigger activity.";
+    }else if(wanted<=1){
+      m="<strong>Activation phase.</strong> KEDA takes the workload from 0 to 1 itself. The HPA takes over from here.";
+    }else if(wanted>mx){
+      m=`<strong class="err">Pinned at the ceiling.</strong> The formula wants ${wanted} but <code>maxReplicaCount</code> caps it at ${mx}. If the queue keeps growing, you are not draining fast enough and no further scaling is available — alert on this.`;
+    }else{
+      m=`<strong>Scaling phase.</strong> The HPA applies lesson 5's formula to the queue depth KEDA publishes through the external metrics API — including the 10% tolerance and the 300-second scale-down stabilization.`;
+    }
+    $("phase").innerHTML=m;
+  }
+  ["q","t","mx"].forEach(i=>{$(i).addEventListener("input",calc);$(i).addEventListener("change",calc)});
+  document.querySelectorAll("[data-q]").forEach(b=>b.onclick=()=>{$("q").value=b.dataset.q;calc()});
+  calc();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>3. Requests and limits · Kubernetes from zero</title>
+<meta name="description" content="How the scheduler counts capacity, QoS classes, CPU throttling versus OOMKills, and why the two resources behave differently.">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-lesson="3">
+<main>
+  <span class="tag">Lesson 3</span>
+  <h1>Requests and limits</h1>
+  <p class="lead">Two numbers per container, and almost every confusing production incident traces back to them. They sound like the same thing. They are used by different components, at different times, for different purposes.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Explain what requests and limits each do and who enforces them, work out a Pod's QoS class, and predict whether a container gets throttled, OOMKilled or evicted.
+  </div>
+
+  <h2>Two numbers, two readers</h2>
+  <pre><code>resources:
+  requests:        # what the scheduler reserves for you
+    cpu: 100m
+    memory: 256Mi
+  limits:          # what the kubelet will not let you exceed
+    cpu: 500m
+    memory: 512Mi</code></pre>
+  <table>
+    <tr><th></th><th>Request</th><th>Limit</th></tr>
+    <tr><td>Read by</td><td>the scheduler, once</td><td>the kubelet, continuously</td></tr>
+    <tr><td>When</td><td>choosing a node</td><td>while the container runs</td></tr>
+    <tr><td>Means</td><td>"reserve this much for me"</td><td>"never let me exceed this"</td></tr>
+  </table>
+  <p>The documentation is precise about the split: <q>the kube-scheduler uses this information to decide which node to place the Pod on</q> for requests, while for limits <q>the kubelet enforces those limits so that the running container is not allowed to use more of that resource than the limit you set</q>.</p>
+
+  <div class="callout">
+    <h3>The scheduler does not look at actual usage</h3>
+    <p>This single fact explains more confusion than anything else in Kubernetes. A node is "full" when the <strong>sum of requests</strong> reaches its capacity — regardless of what is actually being used.</p>
+    <p>So a node sitting at 9% real CPU can refuse to accept a new Pod, because the Pods on it <em>asked</em> for everything. Requests are an accounting system, and you are paying for what you declare.</p>
+  </div>
+
+  <h2>The units bite people once each</h2>
+  <ul>
+    <li><strong>CPU</strong> is measured in cores. <code>1</code> is one core; <code>500m</code> is 500 millicores, half a core. It is a <em>rate</em>, not an amount.</li>
+    <li><strong>Memory</strong> is bytes, usually with a suffix. Watch the two families: <code>Mi</code> is 2²⁰ (1,048,576) while <code>M</code> is 10⁶ (1,000,000). <code>256Mi</code> and <code>256M</code> differ by about 5%.</li>
+  </ul>
+  <p>The common typo is writing <code>cpu: 1000</code> meaning one core. That asks for a thousand cores, and the Pod stays <code>Pending</code> forever.</p>
+
+  <h2>CPU and memory fail completely differently</h2>
+  <p>CPU is <strong>compressible</strong> — you can have less of it and simply go slower. Memory is not: once bytes are written, the only way to reclaim them is to kill something. Kubernetes enforces this asymmetry exactly.</p>
+  <table>
+    <tr><th>Over its limit</th><th>What happens</th></tr>
+    <tr><td>CPU</td><td><q>cpu limits are enforced by CPU throttling. When a container approaches its cpu limit, the kernel will restrict access to the CPU corresponding to the container's limit.</q> The container survives, and gets slow.</td></tr>
+    <tr><td>Memory</td><td><q>memory limits are enforced by the kernel with out of memory (OOM) kills. When a container uses more than its memory limit, the kernel may terminate it.</q></td></tr>
+  </table>
+  <p>There is a subtlety in that memory quote worth keeping: <q>terminations only happen when the kernel detects memory pressure. Thus, a container that over allocates memory may not be immediately killed.</q> So an over-limit container can run fine for hours and die the moment the node gets busy — which is why OOMKills so often arrive in clusters, not in testing.</p>
+  <p>Practical consequence: a CPU limit that is too low produces a service that is mysteriously slow under load, with no errors and nothing in the logs. Latency rises and nothing looks broken. It is one of the most expensive debugging sessions in platform engineering, and the fix is one number.</p>
+
+  <h2>QoS: what you get when the node runs out</h2>
+  <p>You never set a QoS class. Kubernetes derives it from the numbers you wrote, and it decides who dies first when a node is under pressure.</p>
+  <table>
+    <tr><th>Class</th><th>Condition</th></tr>
+    <tr><td><strong>Guaranteed</strong></td><td>Every container has both CPU and memory requests <em>and</em> limits set, with <strong>limit equal to request</strong> for each.</td></tr>
+    <tr><td><strong>Burstable</strong></td><td>Not Guaranteed, but at least one container has some request or limit set.</td></tr>
+    <tr><td><strong>BestEffort</strong></td><td>No requests or limits anywhere in the Pod.</td></tr>
+  </table>
+  <p>And the consequence, quoted: <q>When a Node runs out of resources, Kubernetes will first evict BestEffort Pods running on that Node, followed by Burstable and finally Guaranteed Pods. When this eviction is due to resource pressure, only Pods exceeding resource requests are candidates for eviction.</q></p>
+  <p>That last sentence is the one to remember. Staying under your request is genuine protection — the eviction logic looks at what you asked for, so a Burstable Pod living within its request is a poor candidate for eviction even under pressure.</p>
+
+  <h2>Work out the class</h2>
+  <div class="widget">
+    <h3>QoS classifier</h3>
+    <p class="muted">One container. Leave a field blank to omit it.</p>
+    <div class="row">
+      <label>cpu request <input id="cr" value="100m" style="width:84px"></label>
+      <label>cpu limit <input id="cl" value="500m" style="width:84px"></label>
+    </div>
+    <div class="row">
+      <label>memory request <input id="mr" value="256Mi" style="width:84px"></label>
+      <label>memory limit <input id="ml" value="512Mi" style="width:84px"></label>
+    </div>
+    <div class="row">
+      <button class="ghost" data-preset="guaranteed">Preset: Guaranteed</button>
+      <button class="ghost" data-preset="besteffort">Preset: BestEffort</button>
+      <button class="ghost" data-preset="nolimit">Preset: request only</button>
+    </div>
+    <table id="qos"></table>
+    <p id="advice"></p>
+  </div>
+
+  <h2>So what should you set?</h2>
+  <p>There is no universal answer, but there is a defensible default position:</p>
+  <table>
+    <tr><th>Setting</th><th>Recommendation</th><th>Why</th></tr>
+    <tr><td>Memory request</td><td>Always set it</td><td>Without it the scheduler cannot reserve anything and you are BestEffort — first to be evicted.</td></tr>
+    <tr><td>Memory limit</td><td>Set it, at or near the request</td><td>Memory is incompressible. An unbounded leak takes down the whole node, not just itself.</td></tr>
+    <tr><td>CPU request</td><td>Always set it</td><td>It is your share of the node under contention, and the scheduler's only input.</td></tr>
+    <tr><td>CPU limit</td><td>Contentious — often leave it off</td><td>Throttling a latency-sensitive service to enforce a ceiling nobody needed is a common self-inflicted wound. Omit it, and the Pod uses spare CPU when it is there.</td></tr>
+  </table>
+  <p>The counter-argument for CPU limits is real: without them, one noisy workload can starve its neighbours, and performance becomes dependent on who else is on the node. If you need predictability more than speed, set them. Just do it knowingly, rather than because a template had the field.</p>
+
+  <div class="callout">
+    <h3>You cannot set these numbers without measuring first</h3>
+    <p>Every value above is a claim about how much your service uses — which means you need the data from the <a href="../Observability/index.html">Observability course</a> before you can set them honestly. Container memory and CPU are <a href="../Observability/02-metrics.html">gauges</a>, and what you want is a high percentile over a realistic window, not an average.</p>
+    <p>Averages are what cause OOMKills. A service averaging 200Mi with a daily peak of 900Mi, given a 256Mi limit, dies once a day at the same time and looks healthy on every dashboard that shows means. <a href="../Observability/05-querying.html">Lesson 5 there</a> is about computing percentiles for exactly this.</p>
+  </div>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>A node has 4 CPU and 8Gi allocatable. Three Pods are running, each requesting <code>cpu: 1</code>, <code>memory: 1Gi</code>. Actual usage across all three is about 0.3 CPU total.</p>
+    <ol>
+      <li>How much CPU can the scheduler still allocate?</li>
+      <li>A new Pod requests <code>cpu: 1500m</code>. Does it schedule?</li>
+      <li>One container sets <code>memory: requests 1Gi / limits 1Gi</code> and <code>cpu: requests 1 / limits 1</code>. QoS class?</li>
+      <li>Another sets only <code>memory: requests 1Gi</code> and nothing else. QoS class, and when is it evicted?</li>
+      <li>A service has <code>cpu: limits 200m</code>. Under load, p99 latency rises from 40ms to 3s with no errors. What do you check?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) <strong>1 CPU.</strong> 4 minus the 3 requested. Actual usage of 0.3 is irrelevant — the scheduler counts requests only.</p>
+      <p>2) <strong>No.</strong> 1500m &gt; the 1000m remaining, so it stays <code>Pending</code> — on a node that is 92% idle. This is the single most surprising behaviour for newcomers, and the trigger for node autoscaling in lesson 7.</p>
+      <p>3) <strong>Guaranteed.</strong> Both resources have request and limit set, and equal. Evicted last.</p>
+      <p>4) <strong>Burstable</strong> — something is set, but not everything. It is evicted after BestEffort Pods, and only if it is exceeding its 1Gi request.</p>
+      <p>5) <strong>CPU throttling.</strong> A 200m limit caps the container at a fifth of a core; past that the kernel throttles it. No errors, nothing logged, just latency. Check the throttling metric, then raise or remove the limit.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>You now know how the scheduler counts. Lesson 4 is about everything else it considers — and why a Pod can stay <code>Pending</code> on a cluster with plenty of room.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"A node is at 9% actual CPU use but refuses a new Pod. Why?","options":["The node is cordoned","The scheduler counts the sum of requests, not actual usage, and the existing Pods already requested the capacity","The kubelet is unhealthy","Actual usage is measured over 5 minutes"],"answer":1,"why":"Requests are an accounting system. A node is full when its requests are allocated, whatever the real utilisation looks like."},
+ {"q":"A container exceeds its CPU limit. What happens?","options":["It is OOMKilled","It is throttled by the kernel — it survives and gets slower","It is evicted","The limit is raised automatically"],"answer":1,"why":"CPU is compressible, so the kernel just restricts access. Memory is not, which is why exceeding a memory limit risks termination instead."},
+ {"q":"A Pod sets memory request 1Gi, memory limit 1Gi, cpu request 1, cpu limit 1. QoS class?","options":["BestEffort","Burstable","Guaranteed","Depends on the node"],"answer":2,"why":"Guaranteed needs both resources to have requests and limits set, and equal, for every container. It is evicted last under node pressure."},
+ {"q":"Why does an over-limit memory container sometimes run for hours before being OOMKilled?","options":["The kubelet checks every hour","Terminations happen when the kernel detects memory pressure, so an over-allocating container may not be killed immediately","Memory limits are advisory","It was throttled first"],"answer":1,"why":"This is why OOMKills show up in busy clusters rather than in testing — the trigger is node pressure, not the moment you cross the line."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  const F=["cr","cl","mr","ml"];
+  const PRESETS={
+    guaranteed:{cr:"500m",cl:"500m",mr:"512Mi",ml:"512Mi"},
+    besteffort:{cr:"",cl:"",mr:"",ml:""},
+    nolimit:{cr:"100m",cl:"",mr:"256Mi",ml:""},
+  };
+
+  // "100m" -> 0.1 cores; "256Mi" -> bytes. Blank is absent.
+  function cpu(v){ v=(v||"").trim(); if(!v)return null;
+    return v.endsWith("m")?parseFloat(v)/1000:parseFloat(v); }
+  function mem(v){ v=(v||"").trim(); if(!v)return null;
+    const m=v.match(/^([\d.]+)\s*(Ki|Mi|Gi|Ti|K|M|G|T)?$/);
+    if(!m)return NaN;
+    const mult={Ki:1024,Mi:1048576,Gi:1073741824,Ti:1099511627776,
+                K:1e3,M:1e6,G:1e9,T:1e12}[m[2]]||1;
+    return parseFloat(m[1])*mult; }
+
+  function classify(){
+    const cr=cpu($("cr").value), cl=cpu($("cl").value);
+    const mr=mem($("mr").value), ml=mem($("ml").value);
+    if([cr,cl,mr,ml].some(v=>Number.isNaN(v))){
+      $("qos").innerHTML='<tr><td class="err">Could not parse one of those values. Try forms like <code>100m</code>, <code>1</code>, <code>256Mi</code>.</td></tr>';
+      $("advice").textContent=""; return;
+    }
+    const none=[cr,cl,mr,ml].every(v=>v===null);
+    const guaranteed = cr!==null&&cl!==null&&mr!==null&&ml!==null&&cr>0&&mr>0&&cr===cl&&mr===ml;
+    const cls = none?"BestEffort":(guaranteed?"Guaranteed":"Burstable");
+    const evict={BestEffort:"first",Burstable:"second",Guaranteed:"last"}[cls];
+    const badge={BestEffort:"err",Burstable:"",Guaranteed:"ok"}[cls];
+
+    $("qos").innerHTML=
+      `<tr><th>QoS class</th><td><strong class="${badge}">${cls}</strong></td></tr>`+
+      `<tr><th>Evicted under node pressure</th><td>${evict}</td></tr>`+
+      `<tr><th>Over CPU limit</th><td>${cl===null?"no limit — uses spare CPU when available":"throttled by the kernel"}</td></tr>`+
+      `<tr><th>Over memory limit</th><td>${ml===null?"no limit — can take down the node":"OOMKilled once the node is under pressure"}</td></tr>`;
+
+    let a=[];
+    if(mr===null)a.push("<strong class='err'>No memory request.</strong> The scheduler reserves nothing for you, and you are a prime eviction candidate.");
+    if(ml===null&&mr!==null)a.push("No memory limit: a leak here is a node-wide problem, not just a Pod-level one.");
+    if(cl!==null&&cr!==null&&cl===cr)a.push("CPU limit equals request, so there is no burst headroom at all — deliberate for Guaranteed, but it does mean throttling starts the moment you exceed your share.");
+    if(cls==="Burstable"&&mr!==null)a.push("Staying under the memory request is real protection: only Pods exceeding their requests are eviction candidates.");
+    if(cls==="BestEffort")a.push("Nothing is set, so this Pod is scheduled anywhere and killed first. Fine for a batch job you can re-run, bad for anything serving traffic.");
+    $("advice").innerHTML=a.join(" ");
+  }
+
+  F.forEach(i=>$(i).addEventListener("input",classify));
+  document.querySelectorAll("[data-preset]").forEach(b=>b.onclick=()=>{
+    const p=PRESETS[b.dataset.preset];
+    F.forEach(k=>$(k).value=p[k]);
+    classify();
+  });
+  classify();
+})();
+</script>
+</body>
+</html>

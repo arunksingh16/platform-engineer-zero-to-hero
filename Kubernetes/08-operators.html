@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>8. Operators and custom resources · Kubernetes from zero</title>
+<meta name="description" content="CRDs, the operator pattern, reconciliation, idempotency and level-triggered design — and when not to write one.">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-lesson="8">
+<main>
+  <span class="tag">Lesson 8</span>
+  <h1>Operators and custom resources</h1>
+  <p class="lead">Everything so far has been lesson 1's loop, written by someone else. An operator is that loop written by you, over an object you invented — and the two courses you have already done turn out to be most of the preparation.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Explain what a CRD adds to the API, describe the operator pattern and why it is a control loop, say what idempotent and level-triggered mean for your reconcile function, and judge when writing one is a mistake.
+  </div>
+
+  <h2>Teaching the API server a new noun</h2>
+  <p>A <strong>CustomResourceDefinition</strong> registers a new kind of object. Apply one and the API server starts serving a new endpoint — with validation, RBAC, <code>kubectl</code> support and watches, exactly like a built-in type:</p>
+  <pre><code>kubectl get postgresclusters
+kubectl describe postgrescluster orders-db</code></pre>
+  <p>A CRD on its own does <em>nothing</em>. It gives you somewhere to write a spec, and the API server will dutifully store it. No database appears. You have a well-typed record in etcd and nothing watching it.</p>
+  <p>The thing that makes it real is a controller, and the two together are the pattern.</p>
+
+  <h2>The operator pattern</h2>
+  <p>From the documentation: <q>Operators are software extensions to Kubernetes that make use of custom resources to manage applications and their components. Operators follow Kubernetes principles, notably the control loop.</q></p>
+  <p>And more precisely on the mechanism: the pattern <q>lets you extend the cluster's behaviour without modifying the code of Kubernetes itself by linking controllers to one or more custom resources. Operators are clients of the Kubernetes API that act as controllers for a Custom Resource.</q></p>
+  <pre><code>CRD          a new type the API server understands
+   +
+controller   a program that watches objects of that type and acts
+   =
+operator     automated operational knowledge for one application</code></pre>
+  <p>The word "operator" is the point. It is the job a human operator used to do — provision, back up, fail over, upgrade — written down as code that runs continuously. The docs list exactly that: <q>deploying an application on demand</q>, <q>taking and restoring backups of that application's state</q>, <q>handling upgrades of the application code alongside related changes such as database schemas</q>, and <q>choosing a leader for a distributed application without an internal member election process</q>.</p>
+  <p>Note that an operator is <q>a client of the Kubernetes API</q>. It is an ordinary program, usually a Deployment in your cluster, holding credentials and a watch. There is no privileged plugin mechanism. KEDA is one of these. So is Karpenter.</p>
+
+  <h2>Writing the loop correctly</h2>
+  <p>A controller is one function: given the name of an object, make the world match it. Two properties make the difference between one that works and one that corrupts things at 3am.</p>
+
+  <h3>Idempotent</h3>
+  <p>Reconcile will be called many more times than things actually change — on a resync timer, on unrelated edits, on restart. It must be safe to run when there is nothing to do. So the body is never "create the StatefulSet"; it is "ensure a StatefulSet matching this spec exists", which on most calls does nothing at all.</p>
+
+  <h3>Level-triggered, not edge-triggered</h3>
+  <p>A natural instinct is to react to events: "on update, do X". That is edge-triggered, and it breaks the moment an event is missed — which happens, because controllers restart and watches drop.</p>
+  <p>Instead, reconcile reads the <em>current</em> desired state and the <em>current</em> actual state and closes the gap. It does not need to know what changed, or how many times. If your operator crashes during an upgrade and restarts, it re-reads both sides and carries on. This is the thermostat from lesson 1: it never asks why the room got cold.</p>
+
+  <div class="callout">
+    <h3>Both courses prepared you for this</h3>
+    <p><a href="01-desired-state.html">Lesson 1</a> gave you the loop. <a href="../CodeAnalysis/02-ast-call-graph.html">Code analysis lesson 2</a> gave you convergence — sweeping repeatedly until a pass changes nothing, which is what "idempotent" buys you here.</p>
+    <p>And an operator is IO all the way down, in the <a href="../CodeAnalysis/01-what-is-io.html">precise sense of that course</a>: every reconcile reads cluster state and writes to the API server. It can never be a pure function, which is exactly why it must be safe to re-run.</p>
+  </div>
+
+  <h2>Status is how it talks back</h2>
+  <p>Your CRD gets a <code>status</code> subresource, and your controller owns it. This is not decoration — it is the only way users and other controllers learn what happened:</p>
+  <pre><code>status:
+  phase: Ready
+  readyReplicas: 3
+  conditions:
+    - type: Available
+      status: "True"
+      reason: AllReplicasReady
+      lastTransitionTime: "2026-11-05T09:14:22Z"</code></pre>
+  <p>Use <code>conditions</code> rather than inventing a phase enum. It is the convention built-in types follow, tooling understands it, and conditions compose where a single phase field forces you to collapse independent facts into one value.</p>
+
+  <h2>A reconcile loop, stepped</h2>
+  <div class="widget">
+    <h3>A small database operator</h3>
+    <p class="muted">You edit the custom resource on the left. The operator reconciles the objects on the right.</p>
+    <div class="row">
+      <label>spec.replicas <input id="want" type="number" min="0" max="5" value="3" style="width:58px"></label>
+      <label><input type="checkbox" id="backup" checked> spec.backupEnabled</label>
+    </div>
+    <table id="world"></table>
+    <div class="row">
+      <button id="reconcile">Reconcile</button>
+      <button class="ghost" id="break">Someone deletes the Service</button>
+      <button class="ghost" id="rst">Reset</button>
+    </div>
+    <p id="log" class="muted"></p>
+  </div>
+
+  <h2>When not to write one</h2>
+  <p>Operators are the most over-applied pattern in the ecosystem. The honest test is whether your application needs <em>ongoing operational judgement</em> that cannot be expressed as static configuration.</p>
+  <table>
+    <tr><th>Need</th><th>Reach for</th></tr>
+    <tr><td>Install an app with some values filled in</td><td>Helm or Kustomize. No operator.</td></tr>
+    <tr><td>Keep the cluster matching git</td><td>GitOps — Argo CD or Flux.</td></tr>
+    <tr><td>Run a stateful app needing ordered failover, backups and version-aware upgrades</td><td>An operator — very likely one that already exists.</td></tr>
+    <tr><td>Expose an internal platform API to your own developers</td><td>A CRD plus a controller, which is a genuinely good use.</td></tr>
+  </table>
+  <p>Two cautions from practice. First, check whether one exists — databases, message brokers and certificate management are thoroughly covered, and a maintained operator encodes failure modes you have not met yet. Second, an operator is production software with cluster-wide credentials: it needs tests, upgrades and an on-call owner. A half-maintained operator is worse than a runbook, because it acts on its own at three in the morning.</p>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>You are writing a <code>CertificateRotator</code> operator that renews TLS certificates 30 days before expiry.</p>
+    <ol>
+      <li>Your reconcile function issues a new certificate every time it runs. What goes wrong?</li>
+      <li>You restructure it as "on update event, renew". Why is that still wrong?</li>
+      <li>What should the function actually do?</li>
+      <li>Renewal takes 10 minutes and reconcile is called again after 30 seconds. How do you avoid a second renewal?</li>
+      <li>The CA is unreachable. What do you do?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) It is <strong>not idempotent</strong>. Reconcile runs on resyncs and restarts, not only on changes, so you would issue certificates continuously — exhausting rate limits and churning secrets.</p>
+      <p>2) It is <strong>edge-triggered</strong>. Miss the event — controller restart, dropped watch — and the certificate silently expires. Nothing re-checks, because nothing is comparing state.</p>
+      <p>3) Read the current certificate's expiry, compare against the 30-day threshold, and renew only if needed. On the vast majority of calls it does nothing. That is a healthy reconcile function.</p>
+      <p>4) Record it in <code>status</code> — a condition like <code>Renewing</code> with a timestamp — and check that first. Status is how a level-triggered controller remembers, since it cannot rely on its own memory across restarts.</p>
+      <p>5) Return an error so the controller retries with backoff, and set a condition explaining why. Do not crash and do not pretend it succeeded: a wrong <code>status</code> is worse than a visibly failing one, because everything downstream trusts it.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>That is the core of Kubernetes: one loop, applied to Pods, replicas, metrics, nodes and now your own objects. Lesson 9 collects every source this course quoted, so you can check any of it.</p>
+  <p>From here, the platform-specific courses take over — the same concepts with real provider configuration, where NodeClasses stop being generic and load balancers, IAM and storage classes start to matter.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"You apply a CRD for a new <code>PostgresCluster</code> type, then create one. What happens?","options":["A database is provisioned","Nothing — the object is stored and served by the API server, but no controller is watching it","The API server rejects it without a controller","A default controller is generated"],"answer":1,"why":"A CRD only adds a type. The operator is CRD plus controller; without the controller you have a well-typed record in etcd and nothing acting on it."},
+ {"q":"Why must a reconcile function be idempotent?","options":["To make it faster","It is called on resyncs and restarts, not only when something changes, so it must be safe when there is nothing to do","Kubernetes requires pure functions","To allow parallel execution"],"answer":1,"why":"That is why the body is \"ensure X exists matching this spec\" rather than \"create X\" — on most calls it correctly does nothing."},
+ {"q":"What is wrong with an edge-triggered controller that acts on update events?","options":["Events are too slow","If an event is missed — a restart, a dropped watch — nothing ever re-checks, and the state silently stays wrong","It uses too much memory","Events cannot carry the spec"],"answer":1,"why":"Level-triggered means comparing current desired state to current actual state every time, so a missed event is harmless: the next pass sees the same gap."},
+ {"q":"Which of these is a poor reason to write an operator?","options":["Running a database needing ordered failover and version-aware upgrades","Exposing an internal platform API to your developers","Installing an application with some values filled in","Automating backups and restores for a stateful app"],"answer":2,"why":"That is templating — Helm or Kustomize. An operator is production software with cluster-wide credentials and needs an owner; reach for one only when ongoing operational judgement is required."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  let world;   // what actually exists
+
+  function desired(){
+    return {
+      statefulSetReplicas:Math.max(0,Math.min(5,+$("want").value||0)),
+      service:true,
+      cronJob:$("backup").checked,
+    };
+  }
+  function reset(){
+    world={statefulSetReplicas:0,service:false,cronJob:false,observed:null};
+    draw();
+    $("log").innerHTML="Custom resource created. Nothing exists yet — the operator has not reconciled.";
+  }
+  function row(label,want,have){
+    const ok=String(want)===String(have);
+    return `<tr><th>${label}</th><td>${want}</td><td class="${ok?'ok':'err'}">${have}</td>`+
+           `<td class="muted">${ok?"matches":"needs work"}</td></tr>`;
+  }
+  function draw(){
+    const d=desired();
+    $("world").innerHTML=
+      '<tr><th></th><th>spec (desired)</th><th>actual</th><th></th></tr>'+
+      row("StatefulSet replicas",d.statefulSetReplicas,world.statefulSetReplicas)+
+      row("Service",d.service?"present":"absent",world.service?"present":"absent")+
+      row("Backup CronJob",d.cronJob?"present":"absent",world.cronJob?"present":"absent")+
+      `<tr><th>status.phase</th><td colspan="3">${world.observed||"<span class='muted'>not set</span>"}</td></tr>`;
+  }
+
+  $("reconcile").onclick=()=>{
+    const d=desired(); const acts=[];
+    // ensure, never create: each step is a no-op when already correct
+    if(world.statefulSetReplicas!==d.statefulSetReplicas){
+      acts.push(`set StatefulSet replicas to ${d.statefulSetReplicas}`);
+      world.statefulSetReplicas=d.statefulSetReplicas;
+    }
+    if(world.service!==d.service){ acts.push(d.service?"create Service":"delete Service"); world.service=d.service; }
+    if(world.cronJob!==d.cronJob){ acts.push(d.cronJob?"create backup CronJob":"delete backup CronJob"); world.cronJob=d.cronJob; }
+    world.observed=d.statefulSetReplicas>0?"Ready":"Suspended";
+    draw();
+    $("log").innerHTML=acts.length
+      ? `<strong>Acted:</strong> ${acts.join(", ")}. Then wrote <code>status</code>.`
+      : `<strong class="ok">Nothing to do.</strong> Everything already matches the spec, so reconcile made no changes — which is what it does on the overwhelming majority of calls. That is idempotency, not a wasted run.`;
+  };
+  $("break").onclick=()=>{
+    world.service=false; draw();
+    $("log").innerHTML="Someone deleted the Service by hand. The spec never changed, so the next reconcile will simply observe the gap and close it — no event required.";
+  };
+  $("rst").onclick=reset;
+  ["want","backup"].forEach(i=>$(i).addEventListener("change",()=>{
+    draw();
+    $("log").innerHTML="Spec edited. Nothing has happened yet — a controller acts on its own schedule, not on your keystroke.";
+  }));
+  reset();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>9. References · Kubernetes from zero</title>
+<meta name="description" content="Every quoted claim in this course, the primary source it came from, and how to check it against your own cluster.">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-lesson="9">
+<main>
+  <span class="tag">Lesson 9</span>
+  <h1>References</h1>
+  <p class="lead">Every number and quotation in this course came from primary documentation, and this page says which. If something here disagrees with your cluster, your cluster is right — these are defaults, and defaults get overridden and change between versions.</p>
+
+  <div class="goal">
+    <h3>How to use this page</h3>
+    Check anything you plan to rely on. Each row names the claim, the source, and where relevant the exact field so you can confirm it against the version you actually run.
+  </div>
+
+  <h2>A warning about version drift</h2>
+  <p>This course was written against documentation current in <strong>November 2026</strong>. Kubernetes ships roughly three releases a year, and defaults do move — the <code>HPAScaleToZero</code> gate in lesson 5 changed stage and default between v1.16 and v1.37, which is exactly the kind of change that quietly invalidates a tutorial.</p>
+  <p>Two habits protect you:</p>
+  <ul>
+    <li><strong>Pin the docs to your version.</strong> The Kubernetes site serves older releases; use the version selector rather than reading <code>/latest</code> when something matters.</li>
+    <li><strong>Ask the cluster, not the internet.</strong> <code>kubectl explain</code> reads the schema from your own API server, so it is always right for you:
+      <pre><code>kubectl explain deployment.spec.strategy.rollingUpdate
+kubectl explain hpa.spec.behavior.scaleDown
+kubectl api-resources            # everything your cluster serves, CRDs included
+kubectl version</code></pre>
+    </li>
+  </ul>
+
+  <h2>Lesson 1 — Desired state and the control loop</h2>
+  <table>
+    <tr><th>Claim</th><th>Source</th></tr>
+    <tr><td>Controllers are <q>control loops that watch the state of your cluster, then make or request changes where needed</q>, each trying <q>to move the current cluster state closer to the desired state</q></td><td><a href="https://kubernetes.io/docs/concepts/architecture/controller/">Controllers</a></td></tr>
+    <tr><td><q>In robotics and automation, a control loop is a non-terminating loop that regulates the state of a system</q>; the thermostat analogy</td><td><a href="https://kubernetes.io/docs/concepts/architecture/controller/">Controllers</a></td></tr>
+    <tr><td>Control plane components and their roles</td><td><a href="https://kubernetes.io/docs/concepts/architecture/">Cluster architecture</a></td></tr>
+  </table>
+
+  <h2>Lesson 2 — Pods and controllers</h2>
+  <table>
+    <tr><th>Claim</th><th>Source</th></tr>
+    <tr><td><q>A new ReplicaSet is created, and the Deployment gradually scales it up while scaling down the old ReplicaSet, ensuring Pods are replaced at a controlled rate</q></td><td><a href="https://kubernetes.io/docs/concepts/workloads/controllers/deployment/">Deployments</a></td></tr>
+    <tr><td><code>maxSurge</code> <q>Defaults to 25%</q>; absolute number <q>calculated from percentage by rounding up</q></td><td><a href="https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/deployment-v1/">Deployment API — RollingUpdateDeployment</a></td></tr>
+    <tr><td><code>maxUnavailable</code> <q>Defaults to 25%</q>; <q>calculated from percentage by rounding down</q></td><td><a href="https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/deployment-v1/">Deployment API — RollingUpdateDeployment</a></td></tr>
+    <tr><td>Neither may be 0 if the other is 0</td><td><a href="https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/deployment-v1/">Deployment API</a></td></tr>
+    <tr><td><code>revisionHistoryLimit</code> defaults to 10; <code>progressDeadlineSeconds</code> defaults to 600</td><td><a href="https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/deployment-v1/">Deployment API</a></td></tr>
+    <tr><td>Pod concepts; StatefulSet, DaemonSet, Job</td><td><a href="https://kubernetes.io/docs/concepts/workloads/pods/">Pods</a>, <a href="https://kubernetes.io/docs/concepts/workloads/controllers/">Workload controllers</a></td></tr>
+  </table>
+
+  <h2>Lesson 3 — Requests and limits</h2>
+  <table>
+    <tr><th>Claim</th><th>Source</th></tr>
+    <tr><td><q>the kube-scheduler uses this information to decide which node to place the Pod on</q> (requests)</td><td><a href="https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/">Resource management</a></td></tr>
+    <tr><td><q>the kubelet enforces those limits so that the running container is not allowed to use more of that resource than the limit you set</q></td><td><a href="https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/">Resource management</a></td></tr>
+    <tr><td><q>cpu limits are enforced by CPU throttling… a cpu limit is a hard limit the kernel enforces</q></td><td><a href="https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/">Resource management</a></td></tr>
+    <tr><td><q>memory limits are enforced by the kernel with out of memory (OOM) kills… terminations only happen when the kernel detects memory pressure</q></td><td><a href="https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/">Resource management</a></td></tr>
+    <tr><td>CPU in cores/millicores; memory in bytes with <code>Mi</code>/<code>M</code> distinct</td><td><a href="https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/">Resource management</a></td></tr>
+    <tr><td>Exact conditions for Guaranteed, Burstable and BestEffort</td><td><a href="https://kubernetes.io/docs/concepts/workloads/pods/pod-qos/">Pod QoS classes</a></td></tr>
+    <tr><td><q>Kubernetes will first evict BestEffort Pods… followed by Burstable and finally Guaranteed</q>; <q>only Pods exceeding resource requests are candidates for eviction</q></td><td><a href="https://kubernetes.io/docs/concepts/workloads/pods/pod-qos/">Pod QoS classes</a></td></tr>
+  </table>
+
+  <h2>Lesson 4 — Scheduling</h2>
+  <table>
+    <tr><th>Claim</th><th>Source</th></tr>
+    <tr><td>Scheduling is a <q>2-step operation</q>: filtering then scoring</td><td><a href="https://kubernetes.io/docs/concepts/scheduling-eviction/kube-scheduler/">kube-scheduler</a></td></tr>
+    <tr><td><q>Nodes that meet the scheduling requirements for a Pod are called feasible nodes</q>; <q>If the list is empty, that Pod isn't (yet) schedulable</q></td><td><a href="https://kubernetes.io/docs/concepts/scheduling-eviction/kube-scheduler/">kube-scheduler</a></td></tr>
+    <tr><td><q>the pod remains unscheduled until the scheduler is able to place it</q></td><td><a href="https://kubernetes.io/docs/concepts/scheduling-eviction/kube-scheduler/">kube-scheduler</a></td></tr>
+    <tr><td><q>The scheduler then notifies the API server about this decision in a process called binding</q></td><td><a href="https://kubernetes.io/docs/concepts/scheduling-eviction/kube-scheduler/">kube-scheduler</a></td></tr>
+    <tr><td>Taint effects; tolerations permit rather than attract; built-in node condition taints</td><td><a href="https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/">Taints and tolerations</a></td></tr>
+    <tr><td>Affinity, anti-affinity, required vs preferred</td><td><a href="https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/">Assigning Pods to Nodes</a></td></tr>
+    <tr><td><code>maxSkew</code>, <code>whenUnsatisfiable</code></td><td><a href="https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/">Topology spread constraints</a></td></tr>
+  </table>
+
+  <h2>Lesson 5 — Horizontal Pod Autoscaling</h2>
+  <table>
+    <tr><th>Claim</th><th>Source</th></tr>
+    <tr><td><code>desiredReplicas = ceil[currentReplicas × (currentMetricValue / desiredMetricValue)]</code></td><td><a href="https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/">HorizontalPodAutoscaler</a></td></tr>
+    <tr><td>Tolerance of <q>10% (0.1)</q></td><td><a href="https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/">HorizontalPodAutoscaler</a></td></tr>
+    <tr><td><code>--horizontal-pod-autoscaler-sync-period</code> defaults to 15 seconds</td><td><a href="https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/">HorizontalPodAutoscaler</a>, <a href="https://kubernetes.io/docs/reference/command-line-tools-reference/kube-controller-manager/">kube-controller-manager</a></td></tr>
+    <tr><td>Default scale-down stabilization window of 300 seconds; scale-up has none by default</td><td><a href="https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/">HorizontalPodAutoscaler</a></td></tr>
+    <tr><td>Current API is <code>autoscaling/v2</code></td><td><a href="https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/">HorizontalPodAutoscaler</a></td></tr>
+    <tr><td><code>HPAScaleToZero</code>: alpha and <code>false</code> from v1.16; beta and <code>true</code> from v1.37</td><td><a href="https://kubernetes.io/docs/reference/command-line-tools-reference/feature-gates/">Feature gates</a></td></tr>
+    <tr><td>The three metrics APIs and their providers</td><td><a href="https://kubernetes.io/docs/tasks/debug/debug-cluster/resource-metrics-pipeline/">Resource metrics pipeline</a></td></tr>
+  </table>
+
+  <h2>Lesson 6 — KEDA</h2>
+  <table>
+    <tr><th>Claim</th><th>Source</th></tr>
+    <tr><td>KEDA is <q>a CNCF-graduated project enabling you to scale your workloads based on the number of events to be processed</q></td><td><a href="https://kubernetes.io/docs/concepts/workloads/autoscaling/">Autoscaling workloads</a></td></tr>
+    <tr><td><q>KEDA acts to monitor the event source and feed that data to Kubernetes and the HPA… to drive rapid scale of a resource</q></td><td><a href="https://keda.sh/docs/latest/concepts/scaling-deployments/">KEDA — scaling deployments</a></td></tr>
+    <tr><td>Activation phase <q>is the moment when KEDA (operator) has to decide if the workload should be scaled from/to zero</q></td><td><a href="https://keda.sh/docs/latest/concepts/scaling-deployments/">KEDA — scaling deployments</a></td></tr>
+    <tr><td>Scaling phase: <q>it is the HPA controller who takes the scaling decisions</q></td><td><a href="https://keda.sh/docs/latest/concepts/scaling-deployments/">KEDA — scaling deployments</a></td></tr>
+    <tr><td>Defaults: <code>pollingInterval</code> 30s, <code>cooldownPeriod</code> 300s, <code>minReplicaCount</code> 0, <code>maxReplicaCount</code> 100, <code>initialCooldownPeriod</code> 0s</td><td><a href="https://keda.sh/docs/latest/reference/scaledobject-spec/">ScaledObject specification</a></td></tr>
+    <tr><td><code>fallback</code> behaviour when a scaler errors</td><td><a href="https://keda.sh/docs/latest/reference/scaledobject-spec/">ScaledObject specification</a></td></tr>
+    <tr><td>Trigger types and their metadata fields</td><td><a href="https://keda.sh/docs/latest/scalers/">KEDA scalers</a></td></tr>
+  </table>
+
+  <h2>Lesson 7 — Node autoscaling and Karpenter</h2>
+  <table>
+    <tr><th>Claim</th><th>Source</th></tr>
+    <tr><td><q>Karpenter's job is to add nodes to handle unschedulable pods, schedule pods on those nodes, and remove the nodes when they are not needed</q></td><td><a href="https://karpenter.sh/docs/concepts/">Karpenter concepts</a></td></tr>
+    <tr><td><q>efficiently address the full range of instance types</q>; the older solution <q>wasn't designed for hundreds of options</q></td><td><a href="https://karpenter.sh/docs/concepts/">Karpenter concepts</a></td></tr>
+    <tr><td><q>manages each instance directly, without use of additional orchestration mechanisms like node groups… retry in milliseconds instead of minutes</q></td><td><a href="https://karpenter.sh/docs/concepts/">Karpenter concepts</a></td></tr>
+    <tr><td>NodePool, NodeClass and NodeClaim roles</td><td><a href="https://karpenter.sh/docs/concepts/">Karpenter concepts</a></td></tr>
+    <tr><td>Consolidation <q>actively reduce[s] cluster cost by identifying when nodes can be removed because empty, workloads will run elsewhere, or nodes can be replaced with cheaper variants</q></td><td><a href="https://karpenter.sh/docs/concepts/disruption/">Karpenter disruption</a></td></tr>
+    <tr><td>Disruption triggers: expiration, drift, interruption</td><td><a href="https://karpenter.sh/docs/concepts/disruption/">Karpenter disruption</a></td></tr>
+    <tr><td>Cluster Autoscaler and node groups</td><td><a href="https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler">Cluster Autoscaler</a></td></tr>
+    <tr><td>PodDisruptionBudgets</td><td><a href="https://kubernetes.io/docs/concepts/workloads/pods/disruptions/">Disruptions</a></td></tr>
+  </table>
+
+  <h2>Lesson 8 — Operators and custom resources</h2>
+  <table>
+    <tr><th>Claim</th><th>Source</th></tr>
+    <tr><td><q>Operators are software extensions to Kubernetes that make use of custom resources to manage applications and their components. Operators follow Kubernetes principles, notably the control loop.</q></td><td><a href="https://kubernetes.io/docs/concepts/extend-kubernetes/operator/">Operator pattern</a></td></tr>
+    <tr><td><q>lets you extend the cluster's behaviour without modifying the code of Kubernetes itself by linking controllers to one or more custom resources</q></td><td><a href="https://kubernetes.io/docs/concepts/extend-kubernetes/operator/">Operator pattern</a></td></tr>
+    <tr><td><q>Operators are clients of the Kubernetes API that act as controllers for a Custom Resource</q></td><td><a href="https://kubernetes.io/docs/concepts/extend-kubernetes/operator/">Operator pattern</a></td></tr>
+    <tr><td>Examples: deploy on demand, backups, upgrades, leader election</td><td><a href="https://kubernetes.io/docs/concepts/extend-kubernetes/operator/">Operator pattern</a></td></tr>
+    <tr><td>CustomResourceDefinitions and the status subresource</td><td><a href="https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/custom-resources/">Custom resources</a></td></tr>
+    <tr><td>Conditions convention for status</td><td><a href="https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md">API conventions</a></td></tr>
+  </table>
+
+  <div class="callout">
+    <h3>What is <em>not</em> sourced above</h3>
+    <p>Three kinds of statement in this course are judgement, not documentation, and should be read that way:</p>
+    <p><strong>Recommendations</strong> — "often leave the CPU limit off", "set a memory request always". These are defensible positions with real counter-arguments, and lesson 3 gives the counter-argument alongside.<br>
+    <strong>Typical failure stories</strong> — the slow service with a low CPU limit, the queue consumer invisible to CPU autoscaling. Common patterns, not measurements.<br>
+    <strong>Worked numbers</strong> — every exercise is arithmetic on the documented formulas, not data from a real cluster.</p>
+  </div>
+
+  <h2>Going further</h2>
+  <table>
+    <tr><th>Topic</th><th>Where</th></tr>
+    <tr><td>The API conventions every resource follows</td><td><a href="https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md">sig-architecture API conventions</a></td></tr>
+    <tr><td>Building controllers in Go</td><td><a href="https://book.kubebuilder.io/">The Kubebuilder Book</a></td></tr>
+    <tr><td>Vertical Pod Autoscaler — right-sizing requests instead of counting replicas</td><td><a href="https://github.com/kubernetes/autoscaler/tree/master/vertical-pod-autoscaler">VPA</a></td></tr>
+    <tr><td>Gateway API — the successor to Ingress</td><td><a href="https://gateway-api.sigs.k8s.io/">Gateway API</a></td></tr>
+    <tr><td>Hardening a cluster</td><td><a href="https://kubernetes.io/docs/concepts/security/">Kubernetes security concepts</a></td></tr>
+    <tr><td>Cost and capacity on top of the autoscalers here</td><td><a href="https://www.cncf.io/projects/">CNCF project landscape</a></td></tr>
+  </table>
+
+  <h2>🎓 You made it</h2>
+  <p>Nine lessons, and almost all of it was one idea. A controller compares desired state to actual state and acts on the difference; everything else — Deployments, the scheduler, the HPA, KEDA, Karpenter, your own operator — is that loop pointed at something new.</p>
+  <p>Next are the platform-specific courses, where the same concepts meet real provider configuration: managed control planes, load balancers, IAM, storage classes, and the NodeClasses lesson 7 deliberately left generic.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"The docs say the scale-down stabilization window defaults to 300 seconds, but your cluster scales down faster. Who is right?","options":["The docs — the cluster is misconfigured","Your cluster — defaults can be overridden, and they change between versions","Neither, the window is random","It depends on the metric"],"answer":1,"why":"Documented defaults are a starting point. Use kubectl explain and your own cluster's configuration when the answer matters."},
+ {"q":"Which command tells you what your own API server actually supports?","options":["kubectl get nodes","kubectl explain and kubectl api-resources","kubectl logs","kubectl top"],"answer":1,"why":"Both read the schema from your API server, so they reflect your version and your installed CRDs rather than whatever the internet says."},
+ {"q":"Which statement in this course is a recommendation rather than documented behaviour?","options":["CPU limits are enforced by throttling","BestEffort Pods are evicted first","You should often leave the CPU limit unset","maxSurge defaults to 25%"],"answer":2,"why":"That is a defensible position with a real counter-argument, which lesson 3 gives alongside it. The other three are quoted from documentation."},
+ {"q":"Why does this course leave NodeClass to the platform-specific courses?","options":["It is deprecated","NodePool and NodeClaim are vendor-neutral, but NodeClass carries provider-specific configuration like AMIs and subnets","It is only needed on large clusters","It is part of the HPA"],"answer":1,"why":"The concepts are portable; the YAML that actually provisions a machine is not."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+</body>
+</html>

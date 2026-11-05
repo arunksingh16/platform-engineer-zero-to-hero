@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>7. Node autoscaling and Karpenter · Kubernetes from zero</title>
+<meta name="description" content="Pending Pods as the trigger, Cluster Autoscaler versus Karpenter, NodePools, consolidation and disruption.">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-lesson="7">
+<main>
+  <span class="tag">Lesson 7</span>
+  <h1>Node autoscaling and Karpenter</h1>
+  <p class="lead">Lessons 5 and 6 create Pods. Lesson 4 showed what happens when there is nowhere to put them: <code>Pending</code>, indefinitely. Something has to notice and buy a machine — and the way that is done changed significantly with Karpenter.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Explain what triggers node autoscaling, say how Karpenter differs from the Cluster Autoscaler and why, describe consolidation and the disruption controls, and anticipate what breaks when nodes come and go constantly.
+  </div>
+
+  <h2>The trigger is a Pending Pod</h2>
+  <p>Node autoscalers do not watch CPU graphs. They watch for <strong>unschedulable Pods</strong> — the exact condition lesson 4 described, where filtering leaves no feasible node and the Pod <q>remains unscheduled until the scheduler is able to place it</q>.</p>
+  <p>Karpenter's own summary of its job is one sentence: <q>Karpenter's job is to add nodes to handle unschedulable pods, schedule pods on those nodes, and remove the nodes when they are not needed.</q></p>
+  <p>Notice the chain this completes. An HPA scales replicas on a metric → new Pods have nowhere to go → they sit Pending → the node autoscaler sees them and provisions capacity → the scheduler places them. Four controllers, none aware of the others, communicating only through the API server. Lesson 1's architecture doing real work.</p>
+
+  <h2>The older model: node groups</h2>
+  <p>The Cluster Autoscaler, which came first and is still very widely used, works through <strong>node groups</strong> — a cloud provider's own scaling group, where every machine is identical and pre-configured.</p>
+  <p>To scale, it increases the group's desired count and waits for the provider to produce a machine. That works, and it has two structural costs:</p>
+  <ul>
+    <li><strong>You choose instance types in advance.</strong> A Pod needing 1 GPU and a Pod needing 2 vCPU require different groups, so teams end up maintaining many, each with its own configuration.</li>
+    <li><strong>You scale a template, not a machine.</strong> The request goes to the group and the group creates the node, which adds a layer of indirection and latency.</li>
+  </ul>
+
+  <h2>What Karpenter changed</h2>
+  <p>Karpenter removes the group. Its docs name two improvements over the older approach.</p>
+  <p>On <strong>flexibility</strong>: it <q>has the ability to efficiently address the full range of instance types available through AWS</q>, where the older solution <q>wasn't designed for hundreds of options</q>. Rather than you pre-deciding which shapes exist, Karpenter looks at the actual Pending Pods and picks something that fits them.</p>
+  <p>On <strong>speed</strong>: it <q>manages each instance directly, without use of additional orchestration mechanisms like node groups. This enables it to retry in milliseconds instead of minutes.</q></p>
+  <p>The model is "look at the work that is waiting, then buy a machine shaped like it", instead of "pick from the shapes you declared months ago".</p>
+
+  <h2>The objects</h2>
+  <table>
+    <tr><th>Resource</th><th>Purpose</th></tr>
+    <tr><td><strong>NodePool</strong></td><td><q>Define how Karpenter manages unschedulable pods and configures nodes</q> — the constraints it must respect and the disruption behaviour it may use.</td></tr>
+    <tr><td><strong>NodeClass</strong></td><td>The provider-specific settings for the machines themselves.</td></tr>
+    <tr><td><strong>NodeClaim</strong></td><td><q>Represents individual node requests created by Karpenter.</q> One per machine it is asking for.</td></tr>
+  </table>
+  <p>A NodePool says what is <em>allowed</em> — instance families, architectures, zones, capacity types, limits — not what to create. Karpenter picks within those bounds based on what is actually Pending. Constrain it loosely and it can bin-pack well; constrain it tightly and you are most of the way back to node groups.</p>
+
+  <div class="callout">
+    <h3>Which half of this is portable</h3>
+    <p>NodePool and NodeClaim are part of the vendor-neutral core, now developed as a Kubernetes SIG project with more than one provider implementation. <strong>NodeClass is not</strong> — on AWS it is an <code>EC2NodeClass</code>, carrying AMI selection, subnets, security groups and instance profiles.</p>
+    <p>That line is why this course stops here. The concepts above hold anywhere; the YAML that provisions a machine does not. Provider specifics belong in the per-platform courses alongside this one.</p>
+  </div>
+
+  <h2>Removing nodes is the harder half</h2>
+  <p>Adding capacity is comparatively easy — there are Pending Pods, so buy something. Removing it means deciding that running workloads can be moved, which risks disrupting them.</p>
+  <p>Karpenter calls this <strong>consolidation</strong>, and performs it to <q>actively reduce cluster cost by identifying when nodes can be removed because empty, workloads will run elsewhere, or nodes can be replaced with cheaper variants</q>.</p>
+  <p>Three distinct moves hide in that sentence, and the third surprises people:</p>
+  <ol>
+    <li><strong>Empty</strong> — nothing is running. Remove it.</li>
+    <li><strong>Consolidatable</strong> — everything on it fits elsewhere. Move the Pods, remove the node.</li>
+    <li><strong>Replaceable</strong> — a cheaper machine would hold the same workloads. Launch that one, move everything, remove the old.</li>
+  </ol>
+  <p>The third means nodes can be replaced while nothing is wrong, purely for cost. Combined with the other <strong>disruption</strong> triggers — <q>expiration, drift detection, and interruption handling</q> — node lifetimes get much shorter than teams expect.</p>
+  <table>
+    <tr><th>Trigger</th><th>Fires when</th></tr>
+    <tr><td>Consolidation</td><td>A cheaper or tighter packing exists</td></tr>
+    <tr><td>Drift</td><td>A node no longer matches its NodePool or NodeClass spec</td></tr>
+    <tr><td>Expiration</td><td>A node exceeds a configured maximum lifetime</td></tr>
+    <tr><td>Interruption</td><td>The provider signals the machine is going away, as with a spot reclaim</td></tr>
+  </table>
+
+  <div class="callout">
+    <h3>Node churn is a feature, and it will find your bugs</h3>
+    <p>A cluster that constantly replaces nodes to save money is also constantly evicting Pods. Everything below is normally invisible and becomes load-bearing:</p>
+    <p><strong>PodDisruptionBudgets</strong> — without one, nothing stops all your replicas being evicted together. Karpenter respects a PDB; it cannot respect one you never wrote.<br>
+    <strong>Graceful shutdown</strong> — your app must handle SIGTERM, stop accepting work and finish in flight requests. If it exits immediately, users see errors every time a node is consolidated.<br>
+    <strong>DaemonSets</strong> — every new node pays for one Pod of each. On small nodes that overhead can dominate.<br>
+    <strong>Long-running jobs</strong> — a 6-hour job on a consolidatable node may be killed at hour 5. Use <code>karpenter.sh/do-not-disrupt</code> on Pods that genuinely cannot move.</p>
+  </div>
+
+  <h2>Watch it provision and consolidate</h2>
+  <div class="widget">
+    <h3>Node autoscaling, stepped</h3>
+    <svg viewBox="0 0 520 160" width="100%" aria-label="Nodes with their allocated capacity, plus a queue of pending pods.">
+      <g id="cluster"></g>
+    </svg>
+    <table id="tally"></table>
+    <div class="row">
+      <button id="addpod">Add a Pod (1 CPU)</button>
+      <button class="ghost" id="rmpod">Remove a Pod</button>
+      <button id="recon">Run Karpenter</button>
+      <button class="ghost" id="reset">Reset</button>
+    </div>
+    <p id="log" class="muted">Two nodes, 4 CPU each. Add Pods until they stop fitting.</p>
+  </div>
+
+  <h2>Pending does not always mean "buy a node"</h2>
+  <p>A node autoscaler only helps when more capacity would actually help. These stay Pending forever regardless of how many machines you add, and recognising them saves both money and an afternoon:</p>
+  <table>
+    <tr><th>Cause</th><th>Why a new node will not fix it</th></tr>
+    <tr><td>Required anti-affinity, replicas &gt; nodes</td><td>A new node may help — but only if the rule is on hostname, and the cost is a node per replica</td></tr>
+    <tr><td>A Pod requesting more CPU than any permitted instance type</td><td>Nothing in the NodePool can ever satisfy it</td></tr>
+    <tr><td>A node selector for a label nothing carries</td><td>Usually a typo. Check before adding capacity</td></tr>
+    <tr><td>Volume zone conflict</td><td>The volume exists in one zone; the node must be in that zone</td></tr>
+    <tr><td>NodePool limits reached</td><td>Karpenter is deliberately refusing. This is the guardrail working</td></tr>
+  </table>
+  <p>Always set limits on a NodePool. Without them, one runaway Deployment with a broken readiness probe can provision machines until someone notices the bill.</p>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>A cluster of 3 nodes with 8 CPU each, each about 50% allocated. A Deployment scales from 10 to 25 replicas, each requesting <code>cpu: 1</code>.</p>
+    <ol>
+      <li>How much free capacity exists, and how many of the new Pods fit?</li>
+      <li>What state are the rest in, and what does Karpenter do?</li>
+      <li>Traffic drops and the Deployment returns to 10. What does Karpenter do, and when?</li>
+      <li>One node runs a 6-hour report job. What is the risk?</li>
+      <li>The Deployment has a broken readiness probe and the HPA keeps scaling. What stops this?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) 3 × 8 = 24 CPU total, about 12 allocated, so roughly <strong>12 free</strong> — enough for 12 of the 15 new Pods, minus whatever DaemonSets take on each node.</p>
+      <p>2) The remaining 3 are <strong>Pending</strong>. Karpenter sees unschedulable Pods and provisions a node sized for the work that is actually waiting, rather than from a fixed template.</p>
+      <p>3) Nodes become empty or consolidatable, and Karpenter removes them — possibly also <em>replacing</em> remaining nodes with cheaper ones that still fit the load. Not instant: it respects PodDisruptionBudgets and graceful termination.</p>
+      <p>4) Consolidation may evict it before it finishes, since the node looks like a cost saving. Mark the Pod <code>karpenter.sh/do-not-disrupt</code>, or run such work somewhere it will not be interrupted.</p>
+      <p>5) Only two things: <code>maxReplicas</code> on the HPA, and <strong>limits on the NodePool</strong>. Without the second, the cluster will keep buying machines for Pods that will never become ready.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>Four controllers so far, all variations on lesson 1. Lesson 8 is how you write your own — which is also what Karpenter and KEDA themselves are.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"What triggers a node autoscaler to add capacity?","options":["High CPU across existing nodes","Unschedulable (Pending) Pods","A scheduled scaling policy","Memory pressure on the kubelet"],"answer":1,"why":"It watches for Pods the scheduler could not place. That is why an HPA scaling up eventually causes nodes to appear — through four independent controllers that never talk to each other."},
+ {"q":"What is Karpenter's main structural difference from the Cluster Autoscaler?","options":["It runs outside the cluster","It manages instances directly instead of through node groups, so it can pick from the full range of instance types and retry in milliseconds","It only works with spot instances","It replaces the scheduler"],"answer":1,"why":"Removing the node-group layer is what buys both the flexibility and the speed its docs claim."},
+ {"q":"Which consolidation behaviour most surprises teams?","options":["Removing empty nodes","Removing nodes whose Pods fit elsewhere","Replacing a perfectly healthy node with a cheaper one and moving the workloads","Removing nodes that failed health checks"],"answer":2,"why":"Nodes get replaced when nothing is wrong, purely for cost. That makes PodDisruptionBudgets and SIGTERM handling load-bearing rather than optional."},
+ {"q":"A Pod requests more CPU than any instance type the NodePool permits. What happens?","options":["Karpenter provisions the largest available node","It stays Pending forever — no permitted machine can satisfy it","The request is reduced automatically","It is scheduled and throttled"],"answer":1,"why":"Node autoscaling only helps when more capacity would help. Recognising the Pending causes it cannot fix saves both money and time."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  const CAP=4;
+  let nodes,pending,podsOn;
+
+  function reset(){
+    nodes=[{id:1,pods:2},{id:2,pods:2}];   // 2 CPU used of 4 on each
+    pending=0;
+    draw();
+    $("log").textContent="Two nodes, 4 CPU each, 2 CPU already allocated on each. Add Pods until they stop fitting.";
+  }
+
+  function free(){ return nodes.reduce((a,n)=>a+(CAP-n.pods),0); }
+
+  function draw(){
+    const g=$("cluster"); g.replaceChildren();
+    nodes.forEach((n,i)=>{
+      const x=12+i*120;
+      const r=document.createElementNS("http://www.w3.org/2000/svg","rect");
+      r.setAttribute("x",x); r.setAttribute("y",14);
+      r.setAttribute("width",104); r.setAttribute("height",96);
+      r.setAttribute("rx","3"); r.setAttribute("class","box");
+      if(n.pods===0){ r.style.stroke="var(--bad)"; r.style.strokeDasharray="4 3"; }
+      g.appendChild(r);
+      const lab=document.createElementNS("http://www.w3.org/2000/svg","text");
+      lab.setAttribute("x",x+52); lab.setAttribute("y",32);
+      lab.setAttribute("text-anchor","middle"); lab.setAttribute("font-size","10.5");
+      lab.textContent="node-"+n.id;
+      g.appendChild(lab);
+      for(let p=0;p<CAP;p++){
+        const c=document.createElementNS("http://www.w3.org/2000/svg","rect");
+        c.setAttribute("x",x+10+(p%2)*46); c.setAttribute("y",42+Math.floor(p/2)*30);
+        c.setAttribute("width",40); c.setAttribute("height",24);
+        c.setAttribute("rx","2");
+        c.style.fill=p<n.pods?"var(--good-soft)":"var(--code)";
+        c.style.stroke=p<n.pods?"var(--good)":"var(--line)";
+        g.appendChild(c);
+      }
+    });
+    if(pending>0){
+      const t=document.createElementNS("http://www.w3.org/2000/svg","text");
+      t.setAttribute("x",12+nodes.length*120+10); t.setAttribute("y",60);
+      t.setAttribute("font-size","11"); t.style.fill="var(--bad)";
+      t.textContent=pending+" Pending";
+      g.appendChild(t);
+    }
+    $("tally").innerHTML=
+      `<tr><th>Nodes</th><td>${nodes.length}</td></tr>`+
+      `<tr><th>Pods running</th><td>${nodes.reduce((a,n)=>a+n.pods,0)}</td></tr>`+
+      `<tr><th>Free CPU</th><td>${free()}</td></tr>`+
+      `<tr><th>Pending</th><td class="${pending?"err":""}">${pending}</td></tr>`;
+  }
+
+  $("addpod").onclick=()=>{
+    const n=nodes.find(n=>n.pods<CAP);
+    if(n){ n.pods++; draw(); $("log").innerHTML=`Scheduled onto node-${n.id}. Still room — no node needed.`; }
+    else { pending++; draw();
+      $("log").innerHTML="<strong class='err'>Pending.</strong> No node has room. The scheduler keeps retrying; nothing else happens until a node autoscaler notices."; }
+  };
+  $("rmpod").onclick=()=>{
+    if(pending>0){ pending--; draw(); $("log").textContent="Removed a pending Pod."; return; }
+    const n=[...nodes].reverse().find(n=>n.pods>0);
+    if(n){ n.pods--; draw(); $("log").innerHTML=`Removed a Pod from node-${n.id}. Free capacity is now ${free()} CPU — enough for consolidation to become possible.`; }
+  };
+  $("recon").onclick=()=>{
+    if(pending>0){
+      const add=Math.ceil(pending/CAP);
+      for(let i=0;i<add;i++){
+        const id=Math.max(...nodes.map(n=>n.id))+1;
+        const take=Math.min(CAP,pending); pending-=take;
+        nodes.push({id,pods:take});
+      }
+      draw();
+      $("log").innerHTML=`<strong class='ok'>Provisioned ${add} node${add>1?"s":""}.</strong> `+
+        `Karpenter sized ${add>1?"them":"it"} for the Pods that were actually waiting, rather than from a fixed template.`;
+      return;
+    }
+    // consolidation: can we empty the least-loaded node into the others?
+    const sorted=[...nodes].sort((a,b)=>a.pods-b.pods);
+    const victim=sorted[0];
+    const capacityElsewhere=nodes.filter(n=>n!==victim).reduce((a,n)=>a+(CAP-n.pods),0);
+    if(nodes.length>1&&victim.pods<=capacityElsewhere){
+      let move=victim.pods;
+      nodes.filter(n=>n!==victim).forEach(n=>{
+        const take=Math.min(CAP-n.pods,move); n.pods+=take; move-=take;
+      });
+      nodes=nodes.filter(n=>n!==victim);
+      draw();
+      $("log").innerHTML=`<strong class='ok'>Consolidated.</strong> Everything on node-${victim.id} fitted elsewhere, so its Pods were moved and the node removed. `+
+        `In a real cluster those Pods were <em>evicted and recreated</em> — which is why PodDisruptionBudgets and SIGTERM handling matter.`;
+      return;
+    }
+    $("log").textContent="Nothing to do. No Pending Pods, and no node whose workloads would fit elsewhere.";
+  };
+  $("reset").onclick=reset;
+  reset();
+})();
+</script>
+</body>
+</html>
