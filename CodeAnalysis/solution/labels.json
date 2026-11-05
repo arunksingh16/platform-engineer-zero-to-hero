@@ -1,0 +1,24 @@
+{
+  "_comment": "Ground truth: does this function perform IO? Labelled by hand by reading the code. Note the 45% positive rate -- this is a demo file built to contain hard cases, NOT a realistic base rate. Real codebases are far more imbalanced, which is exactly what makes accuracy misleading (lesson 4).",
+
+  "banner": true,
+  "dispatch": false,
+  "emit": true,
+  "from_file": true,
+  "header": false,
+  "join_path": false,
+  "load_config": true,
+  "log_done": true,
+  "normalize": false,
+  "now_stamp": true,
+  "pct": false,
+  "read_text": true,
+  "render": false,
+  "run_plugin": true,
+  "shout": false,
+  "slugify": false,
+  "summarise": false,
+  "to_json": false,
+  "total": false,
+  "write_report": true
+}

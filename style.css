@@ -131,6 +131,11 @@ textarea{width:100%;min-height:72px}
   display:grid;place-items:center;font:700 .95rem var(--mono);flex:none}
 .lessons .done .n{background:var(--good);color:var(--on-signal)}
 
+/* syntax-tree listing (code analysis course) */
+.asttree{font:.82rem/1.65 var(--mono);margin:14px 0;overflow-x:auto;padding:10px 0}
+.astnode{white-space:nowrap;color:var(--muted)}
+.astnode.iscall{color:var(--signal);font-weight:700}
+
 /* svg widgets */
 svg text{fill:var(--ink);font-family:var(--mono);font-variant-numeric:tabular-nums}
 svg .box{fill:var(--card);stroke:var(--line-strong);stroke-width:1.5}

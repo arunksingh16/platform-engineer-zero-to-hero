@@ -9,7 +9,7 @@
 </head>
 <body data-page="index">
 <main>
-  <span class="tag">In progress, 1 of 5 lessons published</span>
+  <span class="tag">5 lessons, about 25 minutes each</span>
   <h1>Code analysis from zero</h1>
   <p class="lead">Build caches, test runners, sandboxes and linters all have to answer the same question before they can do their job: what does this code actually do? Learn how they work it out — and how to tell whether the answer is any good.</p>
 
@@ -26,15 +26,9 @@
   <h2>Lessons</h2>
   <ol class="lessons" id="lessons"></ol>
 
-  <h2>Still being written</h2>
-  <p>The course works towards one real problem, and these lessons are the ground you need to reach it:</p>
-  <table>
-    <tr><th>Lesson</th><th>What it adds</th></tr>
-    <tr><td>2. Reading code as a tree</td><td>Abstract syntax trees, resolving calls, building a call graph to find IO that is hidden several calls deep</td></tr>
-    <tr><td>3. What static analysis cannot see</td><td>Dynamic dispatch, reflection, <code>eval</code>, foreign code — and catching IO at runtime instead</td></tr>
-    <tr><td>4. Measuring a detector</td><td>Class imbalance, the majority-class baseline, precision and recall, and why accuracy hides failure</td></tr>
-    <tr><td>5. The problem</td><td>Build an IO detector, measure it honestly, beat the baseline, and decide whether a language model earns a place in it</td></tr>
-  </table>
+  <h2>The problem at the end</h2>
+  <p>The course builds towards one real situation. A platform team cannot cache their CI because nobody knows which build steps touch the outside world. An engineer reports back: <em>"trained a language-model classifier to identify if a function performs IO, 80% accuracy."</em></p>
+  <p>By lesson 5 you can say what is missing from that sentence, build the simple thing it should have been measured against, and work out where a model actually earns its place. The code is in <a href="solution/README.md"><code>solution/</code></a> — standard library Python you can run against your own repository.</p>
 
   <h2>Where this takes you</h2>
   <p>These ideas sit underneath tools you already use: why Bazel insists on declaring every input, why your flakiest test is usually the one that writes to disk, how a linter knows you forgot to <code>await</code>, and how a sandbox policy gets written without guesswork.</p>

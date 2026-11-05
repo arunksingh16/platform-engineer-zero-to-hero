@@ -1,13 +1,14 @@
 # Platform Engineering: Zero to Hero
 
-A practical, self-guided learning path for platform engineering. The repository is a work in progress: Observability is the first available course, and the other topics below are roadmap items rather than published lessons.
+A practical, self-guided learning path for platform engineering. The repository is a work in progress: Observability and Code analysis are published, and the other topics below are roadmap items rather than published lessons.
+Access github pages - https://arunksingh16.github.io/platform-engineer-zero-to-hero
 
 ## Courses
 
 | Area | Status | Topics |
 | --- | --- | --- |
 | Observability | Available | Metrics, time series, logs, traces, OpenTelemetry, SLIs, SLOs, and burn-rate alerting |
-| Code analysis | In progress (1 of 5) | Pure functions and IO, abstract syntax trees, call graphs, runtime detection, and measuring a detector honestly |
+| Code analysis | Available | Pure functions and IO, abstract syntax trees, call graphs, runtime detection, and measuring a detector honestly |
 | Infrastructure foundations | Planned | Linux, networking, Git, and containers |
 | Platform systems | Planned | Kubernetes, cloud fundamentals, infrastructure as code, and CI/CD |
 | Reliability and operations | Planned | Site reliability engineering, incident response, and production operations |
@@ -31,7 +32,7 @@ Then open <http://localhost:8000>. The site has no build step or runtime depende
 3. Under **Build and deployment**, choose **Deploy from a branch**, select `main` and `/(root)`, then save.
 4. Wait for the deployment. The site URL is `https://<owner>.github.io/<repository>/`.
 
-The root `index.html` is the catalog page. The Observability course lives in `Observability/`; its internal lesson links are relative to that directory and should stay there.
+The root `index.html` is the catalog page. Each course lives in its own directory; internal lesson links are relative to that directory and should stay there.
 
 ## Repository structure
 
@@ -39,10 +40,15 @@ The root `index.html` is the catalog page. The Observability course lives in `Ob
 index.html                 Course catalog
 style.css                  Site-wide theme, shared by every course
 course.js                  Shared engine: lesson nav, progress, quiz
-Observability/             Available course
+Observability/             Course
   index.html               Course introduction and lesson list
   lessons.js               This course's lesson list and storage key
   01-...html to 09-...html Interactive lessons
+CodeAnalysis/              Course
+  index.html
+  lessons.js
+  01-...html to 05-...html Interactive lessons
+  solution/                Runnable Python for the final lesson
 ```
 
 `style.css` and `course.js` live at the repository root so a change applies to
@@ -69,7 +75,7 @@ overwrite each other. Lesson pages load the two scripts in order:
 - Avoid putting secrets or raw personal data into telemetry. Use identifiers only when justified, approved, and protected by suitable access and retention controls.
 - Keep examples reproducible, check calculations, and revise links when upstream documentation changes.
 
-Useful primary references for the current course:
+Primary references for Observability:
 
 - [Prometheus data model](https://prometheus.io/docs/concepts/data_model/)
 - [Prometheus metric types](https://prometheus.io/docs/concepts/metric_types/)
@@ -79,6 +85,15 @@ Useful primary references for the current course:
 - [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/)
 - [W3C Trace Context](https://www.w3.org/TR/trace-context/)
 - [Google SRE Workbook: Alerting on SLOs](https://sre.google/workbook/alerting-on-slos/)
+
+Primary references for Code analysis:
+
+- [Python `ast` module](https://docs.python.org/3/library/ast.html)
+- [Python audit events table](https://docs.python.org/3/library/audit_events.html)
+- [PEP 578: Python runtime audit hooks](https://peps.python.org/pep-0578/)
+- [Python asyncio: running blocking code](https://docs.python.org/3/library/asyncio-dev.html#running-blocking-code)
+- [Bazel: hermeticity](https://bazel.build/basics/hermeticity)
+- [scikit-learn: model evaluation](https://scikit-learn.org/stable/modules/model_evaluation.html)
 
 ## License
 

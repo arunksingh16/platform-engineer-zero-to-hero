@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>5. The problem · Code analysis from zero</title>
+<meta name="description" content="Interrogate a reported 80% accuracy, build a structural IO detector, measure it honestly, and find the job a language model is actually good at.">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-lesson="5">
+<main>
+  <span class="tag">Lesson 5</span>
+  <h1>The problem</h1>
+  <p class="lead">Everything so far was preparation for one real task. Here it is, the way it actually arrives: as a sentence in a status update that sounds fine until you ask it three questions.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Interrogate a reported accuracy figure, build and measure a structural IO detector, decide whether a language model belongs in the design, and write up a result somebody can check.
+  </div>
+
+  <h2>The situation</h2>
+  <div class="callout">
+    <h3>The task</h3>
+    <p>A platform team runs a large Python monorepo. CI is slow, and they cannot cache build steps because nobody knows which ones are hermetic — the same question as lesson 1, at scale. An engineer is asked to find out which functions perform IO.</p>
+    <p>They come back with: <strong>"Trained a language-model classifier to identify if a function performs IO. 80% accuracy."</strong></p>
+  </div>
+  <p>Is this good work? Should the team build on it? Hold the instinct to answer — you now have the tools to find out, and the finding is more interesting than either yes or no.</p>
+
+  <h2>First: is the intent right?</h2>
+  <p>Yes, and clearly so. Lesson 1 listed four jobs blocked on this exact question, and the team is squarely in the first: without knowing which steps touch the outside world, nothing can be cached safely. Bazel's definition of hermeticity is the formal version of their problem. Whatever happens next, the engineer was pointed at something real and valuable.</p>
+  <p>So this is not a story about a bad idea. It is about a reported result that cannot be checked, and a method chosen before the problem was measured.</p>
+
+  <h2>Second: the three questions</h2>
+  <p>From lesson 4, in order:</p>
+
+  <h3>What fraction of functions actually do IO?</h3>
+  <p>Not stated. And this single missing number decides everything, because accuracy on an imbalanced sample is dominated by the majority class. On a typical codebase, most functions are formatting, validation, small pure transforms. Say 15% do IO.</p>
+
+  <h3>What does the baseline score?</h3>
+  <pre><code>def does_io(function):
+    return False</code></pre>
+  <p>On a codebase that is 15% IO, that scores <strong>85% accuracy</strong>. The reported classifier scores 80%.</p>
+  <p>Read that again. If the base rate is anywhere near 15%, the trained model performs <em>worse than a function that returns <code>False</code></em> — and would have taken five seconds instead of a training run.</p>
+
+  <h3>What are precision and recall?</h3>
+  <p>Not stated, and they are the only numbers that would settle it. A model could score 80% accuracy while catching 90% of real IO, or while catching almost none. Those are completely different outcomes and accuracy cannot distinguish them.</p>
+
+  <div class="callout">
+    <h3>The honest conclusion</h3>
+    <p>The claim is not <em>wrong</em>. It is <strong>unfalsifiable as reported</strong> — there is no way for a reader to tell whether it represents good work or no work. That is a reporting failure before it is a modelling failure, and it is the more common one.</p>
+    <p>The fix costs nothing: state the sample size, the base rate, precision and recall, and the baseline. Lesson 4 had the template.</p>
+  </div>
+
+  <h2>Third: build the boring thing first</h2>
+  <p>Before reaching for a model, find out what structure alone gets you — because that is the bar anything fancier has to clear. You already have the design from lessons 2 and 3:</p>
+  <ol>
+    <li><strong>Parse</strong> every file with <code>ast</code>.</li>
+    <li><strong>Find the calls</strong> in each function, and classify each one: known IO primitive, known-pure, unresolvable, or another function here.</li>
+    <li><strong>Propagate</strong> IO and UNKNOWN up the call graph to a fixed point.</li>
+    <li><strong>Resolve UNKNOWN</strong> according to what the answer is for — IO if a miss is unsafe.</li>
+  </ol>
+  <p>That is <a href="solution/detect_io.py"><code>solution/detect_io.py</code></a>: about 150 lines, standard library only, no training, no inference cost, and every verdict traceable to a line of code. Run on the sample project:</p>
+  <pre><code>$ python3 detect_io.py sample_project/
+IO       banner        sample_project/report.py:34
+UNKNOWN  dispatch      sample_project/report.py:43
+UNKNOWN  emit          sample_project/report.py:38
+IO       from_file     sample_project/util.py:43
+NO_IO    header        sample_project/report.py:9
+NO_IO    join_path     sample_project/util.py:20
+IO       load_config   sample_project/util.py:35
+...
+20 functions: 7 IO, 10 no IO, 3 unknown</code></pre>
+  <p>Two of those lines are worth pausing on. <code>load_config</code> is marked IO although it contains no IO primitive — it reaches <code>open</code> through <code>read_text</code>, which is lesson 2 working. And <code>join_path</code> is correctly left clean even though it calls <code>os.path.join</code>, because that is string manipulation that happens to live in an IO-flavoured module.</p>
+
+  <h2>Fourth: measure it the way you would want yours measured</h2>
+  <pre><code>$ python3 evaluate.py
+20 labelled functions, 9 of them IO (45% positive)
+
+policy              TP  FP  FN  TN  accuracy  precision  recall     F1
+----------------------------------------------------------------------
+UNKNOWN -&gt; IO        9   1   0  10      95%       0.90    1.00   0.95
+UNKNOWN -&gt; no IO     7   0   2  11      90%       1.00    0.78   0.88
+
+baseline (always answer no IO): 55% accuracy, 0.00 recall</code></pre>
+  <p>Now state the limits before anyone asks, because this is where a result earns trust:</p>
+  <ul>
+    <li><strong>20 functions is a tiny sample</strong>, and it was written to contain hard cases. The 45% base rate is nothing like a real codebase.</li>
+    <li><strong>So 95% is not transferable.</strong> It is a demonstration that the pipeline works end to end, not a performance claim about your monorepo.</li>
+    <li><strong>What does transfer</strong> is the shape: over-approximating gives recall 1.00 — it misses no IO at all — and pays one false alarm for it. For build caching, which is what the team needed, that is the correct trade.</li>
+  </ul>
+  <p>Notice what the structural detector gives you that a classifier does not: every verdict comes with a reason and a line number, so a human can overrule it, and the IO primitive list is a thing you can edit when you disagree.</p>
+
+  <h2>So where does the model belong?</h2>
+  <p>Not nowhere. Look at what the structural detector could not do: three of twenty functions came back UNKNOWN, and lesson 3 showed that bucket never empties. Those are the cases needing judgement — is this <code>.write</code> a file or a buffer, does this plugin do IO — and judgement from context is what a language model is genuinely good at.</p>
+  <p>That is the reframe. Not "classify every function", which is a job structure does better, cheaper, and explainably. Instead: <strong>let static analysis resolve what it can, and have the model adjudicate only the residue.</strong></p>
+  <p>The arithmetic is the surprising part — the same model, at the same accuracy, becomes far more useful by being pointed at a smaller population.</p>
+
+  <div class="widget">
+    <h3>Same model, two places to put it</h3>
+    <div class="row">
+      <label>Functions <input id="n" type="number" min="20" max="100000" step="10" value="400" style="width:86px"></label>
+      <label>Really do IO <input id="p" type="number" min="1" max="99" step="1" value="15" style="width:58px"> %</label>
+    </div>
+    <div class="row">
+      <label>Static resolves <input id="r" type="number" min="1" max="100" step="1" value="92" style="width:58px"> %</label>
+      <label>Model accuracy <input id="a" type="number" min="1" max="100" step="1" value="80" style="width:58px"> %</label>
+    </div>
+    <table id="cmp"></table>
+    <p id="note" class="muted"></p>
+    <p id="say"></p>
+  </div>
+
+  <p>At the defaults, the model scores 80% accuracy both times. Applied to everything, its precision is around 0.41 — four out of every seven functions it flags are innocent, and engineers stop trusting the list by Thursday. Applied only to what structure could not resolve, the same model lands near 0.95, because it is no longer being asked the 92% of questions that had a cheaper, better answer.</p>
+
+  <div class="callout">
+    <h3>One number that does not improve</h3>
+    <p>Watch the recall column. Static-only with unknowns resolved as IO gets <strong>recall 1.00</strong> — it cannot miss, by construction. Any pipeline that lets a model say "no IO" about an unresolved function gives that up.</p>
+    <p>So the hybrid is not strictly better. It buys precision with recall. If you are generating sandbox policies or deciding what to cache, where a miss is a production incident, the right answer may well be the unglamorous one: over-approximate and live with the false alarms.</p>
+  </div>
+
+  <h2>What the write-up should have said</h2>
+  <p>Same work, reported so it can be argued with:</p>
+  <div class="goal">
+    <h3>A checkable claim</h3>
+    <p>"412 functions were sampled and hand-labelled; 15% perform IO. A structural AST and call-graph detector resolved 92% of them, reaching precision 0.79 and <strong>recall 1.00</strong> when unresolved functions are treated as IO. The majority-class baseline scores 85% accuracy and recall 0. The remaining 32 functions were adjudicated by a language model with 80% accuracy on that subset, raising precision to 0.95 at the cost of recall falling to 0.95. For the build-cache use case we ship the structural detector alone, because recall 1.00 is worth more than the precision."</p>
+  </div>
+  <p>Longer, and every sentence can be checked by someone who disagrees with you. That is the difference between a number and a result.</p>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>A colleague reports a new IO classifier: <strong>"91% accuracy on 2,000 functions."</strong></p>
+    <ol>
+      <li>What are the first two things you ask?</li>
+      <li>They answer: 8% of the 2,000 functions do IO. What does the baseline score, and what do you now think of 91%?</li>
+      <li>They add: it flagged 240 functions, of which 100 really do IO. Compute precision and recall.</li>
+      <li>It is for deciding which CI steps can be cached. Ship it?</li>
+      <li>What would you do with the 60 functions it missed?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) <strong>What is the base rate, and what does the baseline score?</strong> Then precision and recall.</p>
+      <p>2) 92% of 2,000 do no IO, so always answering "no IO" scores <strong>92%</strong>. The classifier's 91% is <em>one point worse than doing nothing</em>.</p>
+      <p>3) 160 of the 2,000 do IO. TP = 100, FP = 240 − 100 = 140, FN = 160 − 100 = 60. Precision = 100 ÷ 240 = <strong>0.42</strong>. Recall = 100 ÷ 160 = <strong>0.63</strong>.</p>
+      <p>4) <strong>No.</strong> Recall 0.63 means 60 functions that do IO would be treated as cacheable — 60 chances to serve a stale or wrong build output silently. That is the expensive error for this job.</p>
+      <p>5) Do not try to fix the classifier first. Run a structural detector over them: most will resolve immediately and explainably, and whatever is left is a much smaller, much more interesting set — which is where a model is worth its cost.</p>
+    </details>
+  </div>
+
+  <h2>🎓 You made it</h2>
+  <p>You took a one-line claim, found the question it failed to answer, built the simple thing it should have been measured against, and worked out where the complicated thing actually earns its place. That sequence — <em>baseline first, measure honestly, add machinery only where it beats the baseline</em> — is most of platform engineering judgement.</p>
+  <p>The code is in <a href="solution/README.md"><code>solution/</code></a>: run it against your own repository and see what it says. Then go and read the three UNKNOWN functions it gives you, because that is where the interesting part of your codebase lives.</p>
+
+  <table>
+    <tr><th>Where to go next</th><th>Builds on</th></tr>
+    <tr><td>Type inference and receiver resolution — shrinking the unknown set properly</td><td>Lessons 2–3</td></tr>
+    <tr><td>Effect systems: languages that make IO part of the type (Haskell's IO, Koka, OCaml effects)</td><td>Lesson 1</td></tr>
+    <tr><td>Bazel and hermetic build rules; remote caching and why inputs must be declared</td><td>Lessons 1, 5</td></tr>
+    <tr><td>Seccomp and sandbox profile generation from observed syscalls</td><td>Lesson 3</td></tr>
+    <tr><td>Test impact analysis: which tests to re-run after a change</td><td>Lesson 2</td></tr>
+    <tr><td>Evaluating classifiers properly: calibration, PR curves, choosing a threshold</td><td>Lesson 4</td></tr>
+  </table>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"A classifier reports 80% accuracy for detecting IO. What is the first thing to ask?","options":["Which model architecture was used","What fraction of the sample actually does IO, and what the baseline scores","How long training took","How large the training set was"],"answer":1,"why":"Without the base rate the figure cannot be interpreted at all. On a 15%-IO codebase the always-say-no baseline scores 85%, which would make 80% worse than nothing."},
+ {"q":"Why build the structural AST detector before trying a model?","options":["It is always more accurate","It establishes the bar a model must clear, and gives explainable verdicts for free","Models are not allowed in build systems","It is the only approach that handles dynamic dispatch"],"answer":1,"why":"It is cheap, needs no training, and every verdict traces to a line of code. If a model cannot beat it, the model is not worth its cost — and you only know that if you built it."},
+ {"q":"Why does the same 80%-accurate model go from precision ~0.41 to ~0.95 in the hybrid design?","options":["It is retrained on better data","It is only asked about the residue static analysis could not resolve, instead of a large easy majority where it adds errors","Precision always rises with smaller samples","The structural detector corrects its mistakes"],"answer":1,"why":"Applied to all 400 functions it produces false positives across the 340 that do no IO. Applied to the ~32 unknowns it only ever errs within that small set."},
+ {"q":"For generating sandbox policies, which is the strongest argument for shipping the structural detector <em>alone</em>?","options":["It is faster to run","Treating unknowns as IO gives recall 1.00 — it cannot miss real IO, and a miss would break the job in production","It produces fewer false positives","It needs no labelled data"],"answer":1,"why":"Over-approximating is sound: no IO function is ever cleared. The hybrid buys precision by giving that guarantee up, which is the wrong trade when a miss is an incident."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  const f2=x=>isFinite(x)&&x>=0?x.toFixed(2):"—";
+  const pc=x=>(x*100).toFixed(0)+"%";
+
+  function row(label,tp,fp,fn,tn,extra){
+    const prec=(tp+fp)?tp/(tp+fp):0, rec=(tp+fn)?tp/(tp+fn):0;
+    const acc=(tp+tn)/(tp+fp+fn+tn);
+    const f1=(prec+rec)?2*prec*rec/(prec+rec):0;
+    return {label,prec,rec,acc,f1,extra};
+  }
+
+  function calc(){
+    const N=Math.max(20,Math.round(+$("n").value||0));
+    const p=Math.min(99,Math.max(1,+$("p").value||0))/100;
+    const r=Math.min(100,Math.max(1,+$("r").value||0))/100;
+    const a=Math.min(100,Math.max(1,+$("a").value||0))/100;
+
+    const io=N*p, noio=N-io;
+    const residue=N*(1-r);
+    // unresolved code is enriched in IO: assume the residue is half IO, capped
+    // by how much IO there is to go round
+    const resIO=Math.min(residue/2,io), resNo=residue-resIO;
+    const okIO=io-resIO, okNo=noio-resNo;
+
+    const rows=[
+      // model on everything, symmetric accuracy a
+      row("Model on all "+N,
+          io*a, noio*(1-a), io*(1-a), noio*a),
+      // static alone, unknown -> IO: perfect on resolved, flags all residue
+      row("Static only, unknown → IO",
+          okIO+resIO, resNo, 0, okNo),
+      // hybrid: static on resolved, model adjudicates residue
+      row("Hybrid: model on the residue",
+          okIO+resIO*a, resNo*(1-a), resIO*(1-a), okNo+resNo*a),
+    ];
+
+    let h='<tr><th>Design</th><th>Accuracy</th><th>Precision</th><th>Recall</th><th>F1</th></tr>';
+    const best=Math.max(...rows.map(x=>x.prec));
+    rows.forEach(x=>{
+      const hi=x.prec===best?' class="ok"':'';
+      h+=`<tr><td>${x.label}</td><td>${pc(x.acc)}</td>`+
+         `<td${hi}><strong>${f2(x.prec)}</strong></td>`+
+         `<td>${f2(x.rec)}</td><td>${f2(x.f1)}</td></tr>`;
+    });
+    $("cmp").innerHTML=h;
+
+    $("note").innerHTML=`${N} functions, ${Math.round(io)} of them IO. Static resolves `+
+      `${Math.round(N*r)} and leaves <strong>${Math.round(residue)}</strong> unknown, `+
+      `of which about ${Math.round(resIO)} really do IO. `+
+      `Assumes the structural detector is correct on what it resolves, and that the model is `+
+      `equally accurate on both classes — both generous, and they do not change the shape.`;
+
+    const all=rows[0], stat=rows[1], hyb=rows[2];
+    let msg=`The same ${pc(a)}-accurate model scores <strong>${f2(all.prec)}</strong> precision on everything `+
+            `and <strong>${f2(hyb.prec)}</strong> on the residue alone.`;
+    if(stat.rec>hyb.rec+0.005){
+      msg+=` But static-only still has the better recall (${f2(stat.rec)} vs ${f2(hyb.rec)}): `+
+           `if a miss is a production incident, ship that one.`;
+    }else{
+      msg+=` At this model accuracy the hybrid gives up no meaningful recall, so it is the better choice here.`;
+    }
+    $("say").innerHTML=msg;
+  }
+  ["n","p","r","a"].forEach(i=>{
+    $(i).addEventListener("input",calc); $(i).addEventListener("change",calc);
+  });
+  calc();
+})();
+</script>
+</body>
+</html>

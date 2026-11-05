@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>3. What static analysis cannot see · Code analysis from zero</title>
+<meta name="description" content="Dynamic dispatch, duck typing, runtime code, and the language boundary — why a third answer is needed, and how watching a program run helps and does not.">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-lesson="3">
+<main>
+  <span class="tag">Lesson 3</span>
+  <h1>What static analysis cannot see</h1>
+  <p class="lead">The detector from lesson 2 rests on one assumption: that when you see a call, you can tell which function it refers to. Python decides that while it runs. This lesson is about where that assumption breaks, why no amount of cleverness repairs it, and what to do instead.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Name the four things that defeat a static call graph, explain why a detector needs a third answer rather than yes or no, choose between over- and under-approximating, and describe what runtime detection adds and what it still misses.
+  </div>
+
+  <h2>Four ways the call graph breaks</h2>
+
+  <h3>1. The callee is a value</h3>
+  <pre><code>HANDLERS = {"csv": to_csv, "json": to_json}
+
+def export(fmt, rows):
+    return HANDLERS[fmt](rows)</code></pre>
+  <p>There is a <code>Call</code> node here, and its <code>func</code> is a subscript expression. Which function does it name? Whichever one <code>fmt</code> picks out, which depends on an argument, which may come from a config file or an HTTP request. The tree simply does not contain the answer.</p>
+  <p>Same problem, more shapes: <code>getattr(obj, name)()</code>, a function passed in as a parameter, a callback registered in a list, a method looked up on an instance whose class you cannot pin down.</p>
+
+  <h3>2. The same method name means different things</h3>
+  <pre><code>def dump(f, rows):
+    f.write(json.dumps(rows))</code></pre>
+  <p>Is <code>f.write</code> IO? If <code>f</code> is a file, yes. If it is an <code>io.StringIO</code>, no — that writes to memory. If it is a socket, yes and over the network. The attribute name <code>write</code> is shared by all of them, and nothing in this function says which you will get.</p>
+
+  <h3>3. The code does not exist yet</h3>
+  <p><code>eval</code> and <code>exec</code> build code at runtime. <code>importlib.import_module(name)</code> loads a module chosen by a string. A decorator can replace a function with a different one. A test can monkeypatch <code>open</code> itself. In each case the thing that eventually runs was not in the file you parsed.</p>
+
+  <h3>4. The language runs out</h3>
+  <p>Call into a C extension, <code>ctypes</code>, or a Rust module and your Python parser has nothing left to read. <code>numpy</code> and database drivers are mostly not Python. The call graph stops at that edge, and plenty of IO lives on the other side of it.</p>
+
+  <h2>So the detector needs three answers</h2>
+  <p>This is the most important idea in the course, and it is easy to skip past. A detector that can only say <strong>yes</strong> or <strong>no</strong> is forced to guess on cases 1–4. A detector that can say <strong>unknown</strong> is telling the truth, and tells you exactly where the remaining work is.</p>
+  <table>
+    <tr><th>Verdict</th><th>Means</th><th>Example</th></tr>
+    <tr><td>IO</td><td>A path to a known IO primitive was found</td><td><code>read_config</code> reaches <code>open</code></td></tr>
+    <tr><td>No IO</td><td>Every call was resolved, and none reached IO</td><td><code>normalize</code> calls only string methods</td></tr>
+    <tr><td>Unknown</td><td>At least one call could not be resolved</td><td><code>export</code> calls <code>HANDLERS[fmt]</code></td></tr>
+  </table>
+  <p>Keep that third bucket. Collapsing it into either of the others is the single most common way these tools become quietly useless — and in lesson 5 it turns out to be the bucket worth spending real effort on.</p>
+
+  <h2>Being wrong on purpose</h2>
+  <p>Eventually something has to act on the verdict, and "unknown" is not an action. So you choose, per use case, which way to resolve it — and the choice is not a matter of taste.</p>
+  <table>
+    <tr><th>Choice</th><th>Unknown is treated as</th><th>You get</th><th>Use when</th></tr>
+    <tr><td>Over-approximate</td><td>IO</td><td>Never misses real IO. Flags plenty of innocent functions.</td><td>A miss is unsafe: sandbox policies, build caching, anything where being wrong corrupts or breaks production</td></tr>
+    <tr><td>Under-approximate</td><td>No IO</td><td>A short, clean list. Silently wrong.</td><td>A miss is cheap: ranking candidates, a dashboard, suggesting refactors to a human</td></tr>
+  </table>
+  <p>An analysis that never claims "no IO" about a function that actually does IO is called <strong>sound</strong> for that property. Soundness costs false alarms, and it is almost always the right trade when a cache serves a wrong answer or a sandbox blocks a syscall your job needed.</p>
+
+  <div class="callout">
+    <h3>This is not a gap in your tooling</h3>
+    <p>It is tempting to assume a better analyser would resolve everything. It would not. Rice's theorem (1953) says that for any non-trivial property of what a program <em>computes</em>, there is no general procedure that decides it correctly for all programs. "Performs IO" is exactly such a property.</p>
+    <p>So "unknown" is permanent. Real analysers get better by shrinking the unknown set on code people actually write — not by eliminating it. That reframing matters: your job is not to reach 100%, it is to make the leftovers few and visible.</p>
+  </div>
+
+  <h2>The other direction: run it and watch</h2>
+  <p>If you cannot tell what the code will do, let it tell you what it did. Python has a hook built for this. <a href="https://peps.python.org/pep-0578/">PEP 578</a> added runtime audit hooks, and the standard library <a href="https://docs.python.org/3/library/audit_events.html">raises an event</a> for the operations that matter — the docs describe the table as <q>all events raised by <code>sys.audit()</code> or <code>PySys_Audit()</code> calls throughout the CPython runtime and the standard library</q>.</p>
+  <pre><code>import sys, io
+
+seen = []
+sys.addaudithook(lambda e, a: seen.append((e, a))
+                 if e in ("open", "socket.connect", "exec", "compile") else None)
+
+open("/etc/hosts").read()                     # a real file
+io.StringIO("looks like a file").write("x")   # same method name, no IO
+eval(compile("1+1", "&lt;s&gt;", "eval"))           # code made at runtime</code></pre>
+  <p>Actual output:</p>
+  <pre><code>open             ('/etc/hosts', 'r', 16777216)
+compile          (b'1+1', '&lt;s&gt;')
+exec             (&lt;code object &lt;module&gt; at 0x109477210, file "&lt;s&gt;", line 1&gt;)</code></pre>
+  <p>Look at what that settled. Case 2 from earlier — is <code>.write</code> IO? — answered: the file produced an event, the <code>StringIO</code> produced nothing, because it never touched the outside world. And case 3, code built at runtime, showed up as <code>compile</code> and <code>exec</code>. No parser could have told you either.</p>
+  <p>Outside Python the same idea runs lower down: <code>strace</code> records syscalls, eBPF probes the kernel, and container runtimes build seccomp profiles by watching a workload.</p>
+
+  <div class="callout">
+    <h3>You have already used a runtime IO detector</h3>
+    <p>If you did <a href="../Observability/08-opentelemetry.html">Observability lesson 8</a>, auto-instrumentation works on exactly this principle: it wraps known libraries at import time so every outbound call reports itself. The <a href="../Observability/07-traces.html">trace waterfall</a> you got is a record of IO that happened — produced without anyone reading the source.</p>
+    <p>Which also means it inherits this lesson's limitation. A span only exists for a call that ran.</p>
+  </div>
+
+  <h2>And its one big catch</h2>
+  <p>Runtime detection is precise about what it saw and blind to everything else. A branch not taken is a branch not observed. Run your test suite with an audit hook and you learn about the paths your tests cover — which is rarely all of them, and you will not be told which ones you missed.</p>
+  <p>Compare the two honestly:</p>
+  <table>
+    <tr><th></th><th>Static</th><th>Runtime</th></tr>
+    <tr><td>Sees</td><td>Every branch in the source</td><td>Only the path that ran</td></tr>
+    <tr><td>Precision on what it sees</td><td>Fuzzy — unresolved calls</td><td>Exact — it happened or it did not</td></tr>
+    <tr><td>Needs</td><td>Source code</td><td>To execute the code, with inputs</td></tr>
+    <tr><td>Typical failure</td><td>False alarms from unknowns</td><td>Confident silence about untested code</td></tr>
+  </table>
+  <p>They fail in opposite directions, which is the useful part: use static analysis to enumerate the functions, runtime observation to resolve the unknown ones, and keep whatever is still unresolved visible.</p>
+
+  <h2>Try it: the same program, both ways</h2>
+  <p>Static analysis is shown on the left and never changes. Run inputs on the right and watch what gets resolved — and what stays dark.</p>
+
+  <div class="widget">
+    <h3>Static verdict vs what running reveals</h3>
+    <pre><code>HANDLERS = {"csv": to_csv, "json": to_json, "preview": to_preview}
+
+def export(fmt, rows):
+    return HANDLERS[fmt](rows)
+
+def to_csv(rows):     open("out.csv", "w").write(render(rows))
+def to_json(rows):    return json.dumps(rows)
+def to_preview(rows): print(rows[:5])</code></pre>
+    <table id="verdicts"></table>
+    <div class="row">
+      <span class="muted">Run:</span>
+      <button class="ghost" data-run="json">export("json", rows)</button>
+      <button class="ghost" data-run="csv">export("csv", rows)</button>
+      <button class="ghost" data-run="preview">export("preview", rows)</button>
+      <button class="ghost" id="rstat">Reset runs</button>
+    </div>
+    <p id="runlog" class="muted">Nothing has been run yet. The right-hand column knows nothing.</p>
+  </div>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>Your static detector reports these verdicts on a 400-function codebase: 60 IO, 310 no IO, 30 unknown.</p>
+    <ol>
+      <li>You are generating a sandbox policy. Which way do you resolve the 30, and how many functions do you then treat as doing IO?</li>
+      <li>You are producing a list of "pure functions we could safely cache". How many functions go on the list if you want the list to be trustworthy?</li>
+      <li>You run the test suite with an audit hook. 12 of the 30 unknowns turn out to do IO; the other 18 are never executed at all. What can you now say about those 18?</li>
+      <li>A colleague says the hook proves the 18 are pure. What is wrong with that?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) Over-approximate — a missed syscall means the job dies in production. Treat <strong>90</strong> as doing IO and accept that some are innocent.</p>
+      <p>2) <strong>310.</strong> Only the functions you positively resolved as doing no IO. An unknown on this list is a wrong cache hit, which is the expensive kind of mistake.</p>
+      <p>3) 12 are now confirmed IO, so the unknown set shrinks to <strong>18</strong>. About those 18 you have learned nothing at all — "not observed" is not a finding.</p>
+      <p>4) It confuses <em>absence of evidence</em> with evidence of absence. The hook reports what ran; those 18 never ran. The honest next step is to raise coverage on them or leave them unknown — not to reclassify them.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>You now have two detectors that disagree, three possible verdicts, and a choice about how to resolve the third. Which raises the question the whole course has been walking towards: <em>how do you tell whether any of this actually works?</em></p>
+  <p>Lesson 4 is about measuring a detector honestly — and about why "80% accurate" may be a worse result than it sounds.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"<code>def dump(f, rows): f.write(json.dumps(rows))</code>. Why can a static analyser not decide whether this does IO?","options":["json.dumps might do IO","write is a reserved word","The type of f is not fixed — a file, a socket and an io.StringIO all have .write","It has no return statement"],"answer":2,"why":"The method name is shared across types that differ on exactly the question being asked. Nothing in this function pins down which one arrives."},
+ {"q":"You are generating a sandbox policy and your detector reports 30 functions as 'unknown'. What should you do with them?","options":["Treat them as doing no IO, to keep the policy tight","Treat them as doing IO — over-approximate, because a missed syscall breaks the job in production","Exclude them from the policy entirely","Re-run the analyser until the number reaches zero"],"answer":1,"why":"Over-approximating is sound here: you never miss real IO. The cost is a looser policy than strictly necessary, which is far cheaper than a job that dies at 3am."},
+ {"q":"What does Rice's theorem tell you about the 'unknown' bucket?","options":["It can be eliminated with a good enough analyser","It only appears in dynamically typed languages","No general procedure decides a non-trivial semantic property for all programs, so some unknowns are permanent","It means the code has a bug"],"answer":2,"why":"The goal is to shrink the unknown set on realistic code and keep it visible — not to reach zero, which is not available."},
+ {"q":"You run the test suite with an audit hook. 18 functions are never executed. What have you learned about them?","options":["They are pure, since no IO events fired","Nothing — they were not observed, which is not the same as observed to be clean","They are dead code and can be deleted","They do IO, or the tests would have covered them"],"answer":1,"why":"Runtime detection is precise about what it saw and silent about everything else. Reading that silence as a clean result is the classic way to get burned by dynamic analysis."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  const FNS=[
+    {n:"export",      stat:"unknown", statWhy:"calls HANDLERS[fmt] — unresolvable"},
+    {n:"to_csv",      stat:"io",      statWhy:"reaches open"},
+    {n:"to_json",     stat:"noio",    statWhy:"json.dumps only"},
+    {n:"to_preview",  stat:"io",      statWhy:"reaches print"},
+  ];
+  // what each run actually exercises, and the audit events it would raise
+  const RUNS={
+    json:   {path:["export","to_json"],    io:[],                   label:'export("json", rows)'},
+    csv:    {path:["export","to_csv"],     io:["export","to_csv"],  label:'export("csv", rows)'},
+    preview:{path:["export","to_preview"], io:["export","to_preview"], label:'export("preview", rows)'},
+  };
+  const BADGE={io:'<strong class="err">IO</strong>',noio:'<strong class="ok">no IO</strong>',
+               unknown:'<strong class="muted">unknown</strong>',
+               unseen:'<span class="muted">never ran</span>'};
+  let ran=[];
+
+  function dynVerdict(fn){
+    const touched=ran.some(r=>RUNS[r].path.includes(fn));
+    if(!touched)return "unseen";
+    return ran.some(r=>RUNS[r].io.includes(fn))?"io":"noio";
+  }
+
+  function draw(){
+    let h='<tr><th>Function</th><th>Static</th><th>Observed at runtime</th></tr>';
+    FNS.forEach(f=>{
+      const d=dynVerdict(f.n);
+      h+=`<tr><td><code>${f.n}</code></td>`+
+         `<td>${BADGE[f.stat]}<br><span class="muted">${f.statWhy}</span></td>`+
+         `<td>${BADGE[d]}</td></tr>`;
+    });
+    $("verdicts").innerHTML=h;
+
+    const seen=new Set(ran.map(r=>RUNS[r].path[1]));
+    if(!ran.length){
+      $("runlog").textContent="Nothing has been run yet. The right-hand column knows nothing.";
+      return;
+    }
+    let msg=`Ran ${ran.length} of 3 inputs, reaching ${seen.size} of 3 handlers. `;
+    const ev=dynVerdict("export");
+    if(ran.length===1&&ran[0]==="json"){
+      msg+="Runtime says <code>export</code> did no IO — and that is true of this run and false in general. One input is not a conclusion.";
+    }else if(ev==="io"){
+      msg+="Runtime resolved <code>export</code> to <strong>IO</strong>, which static analysis could not do. ";
+      msg+=seen.size<3?"One handler still has never executed.":"All three handlers have now run.";
+    }else{
+      msg+="Still no IO observed through <code>export</code>.";
+    }
+    if(seen.size===3)msg+=" Note this took deliberate effort — on a real codebase you do not get told which paths you missed.";
+    $("runlog").innerHTML=msg;
+  }
+
+  document.querySelectorAll("[data-run]").forEach(b=>b.onclick=()=>{
+    if(!ran.includes(b.dataset.run))ran.push(b.dataset.run);
+    b.className="";
+    draw();
+  });
+  $("rstat").onclick=()=>{
+    ran=[];
+    document.querySelectorAll("[data-run]").forEach(b=>b.className="ghost");
+    draw();
+  };
+  draw();
+})();
+</script>
+</body>
+</html>

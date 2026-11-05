@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>2. Reading code as a tree · Code analysis from zero</title>
+<meta name="description" content="Abstract syntax trees, finding call nodes, building a call graph, and propagating IO until nothing changes.">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-lesson="2">
+<main>
+  <span class="tag">Lesson 2</span>
+  <h1>Reading code as a tree</h1>
+  <p class="lead">Lesson 1 ended on a function whose IO was invisible: <code>greeting()</code> touches the filesystem, but nothing on its two lines says so. To find that, you stop reading code as text and start reading it as a structure — then follow the calls.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Explain what an abstract syntax tree is, find every call in a function with <code>ast.walk</code>, build a call graph, and propagate IO through it until nothing changes.
+  </div>
+
+  <h2>Why not just search for "open("?</h2>
+  <p>It's the obvious first idea, so let's kill it properly. <code>grep -r "open("</code> finds this:</p>
+  <pre><code>def read_config(path):
+    with open(path) as f:       # ← found, and correct
+        return f.read()</code></pre>
+  <p>And also finds these, all of them wrong:</p>
+  <pre><code>url = "https://example.com/open(now)"   # a string
+# remember to open(path) in binary mode  # a comment
+def reopen(conn): ...                    # substring of another name</code></pre>
+  <p>And misses these, all of them real:</p>
+  <pre><code>opener = open          # renamed
+opener(path)
+
+io = __import__("io")  # reached through a module object
+io.open(path)</code></pre>
+  <p>Text search does not know what a string is, what a comment is, or where a name begins and ends. The parser does — because the parser is the same one Python itself uses to run your code.</p>
+
+  <h2>The tree</h2>
+  <p>Python hands you its parser in the standard library. <code>ast.parse</code> turns source text into an <strong>abstract syntax tree</strong>: a nested structure where every construct is a node with typed children.</p>
+  <pre><code>import ast
+
+src = '''
+def area(width, height):
+    return width * height
+'''
+tree = ast.parse(src)
+print(ast.dump(tree, indent=2))</code></pre>
+  <p>Which gives you, trimmed to the interesting part:</p>
+  <pre><code>FunctionDef(
+  name='area',
+  args=arguments(args=[arg(arg='width'), arg(arg='height')]),
+  body=[
+    Return(
+      value=BinOp(
+        left=Name(id='width'),
+        op=Mult(),
+        right=Name(id='height')))])</code></pre>
+  <p>"Abstract" means it keeps the structure and throws away the typography — spaces, line breaks, comments, whether you wrote <code>'x'</code> or <code>"x"</code>. What survives is what the code <em>means</em>. A string containing the text <code>open(</code> is a <code>Constant</code> node and could never be mistaken for a <code>Call</code>.</p>
+
+  <h2>Finding every call</h2>
+  <p><code>ast.walk</code> yields every node in the tree, in no particular order. Filter for one type and you have a complete list of the calls in a function:</p>
+  <pre><code>for node in ast.walk(tree):
+    if isinstance(node, ast.Call):
+        print(ast.unparse(node.func))</code></pre>
+  <p>Run that over <code>read_config</code> and you get <code>open</code> and <code>f.read</code>. Two shapes show up in <code>node.func</code>, and you will handle both constantly:</p>
+  <ul>
+    <li><code>Name</code> — a bare call like <code>open(path)</code>. The name is <code>node.func.id</code>.</li>
+    <li><code>Attribute</code> — a dotted call like <code>f.read()</code> or <code>requests.get(url)</code>. The last part is <code>node.func.attr</code>, and what it hangs off is <code>node.func.value</code>.</li>
+  </ul>
+
+  <div class="widget">
+    <h3>The tree for three functions</h3>
+    <div class="row" id="snips"></div>
+    <pre id="src"><code></code></pre>
+    <div id="tree" class="asttree"></div>
+    <p id="calls" class="muted"></p>
+    <p class="muted">These are real <code>ast.parse</code> outputs from Python 3.14. Expression-context nodes (<code>Load</code>, <code>Store</code>) are left out — they say whether a name is being read or assigned, which is not what we are after here.</p>
+  </div>
+
+  <h2>One function is not enough</h2>
+  <p>Do that to <code>greeting</code> and the result is honest but useless:</p>
+  <pre><code>def greeting():
+    return "Hello, " + read_config("name.txt")
+
+# calls found: read_config</code></pre>
+  <p>No IO primitive here. <code>read_config</code> is not <code>open</code>. To get the right answer you need the thing you already know from lesson 1 — that <code>read_config</code> reads the filesystem — and a way to pass that knowledge up to its callers.</p>
+
+  <p>So build a <strong>call graph</strong>: one node per function, an arrow from each caller to each function it calls. Then the question becomes a question about the graph.</p>
+
+  <h2>Propagate until nothing changes</h2>
+  <p>The rule has three steps and no cleverness at all:</p>
+  <ol>
+    <li><strong>Seed.</strong> Mark the functions you already know do IO — the primitives: <code>open</code>, <code>socket.socket</code>, <code>time.time</code>, and so on. This list is yours to write.</li>
+    <li><strong>Sweep.</strong> Go through every function. If it calls anything currently marked IO, mark it IO too.</li>
+    <li><strong>Repeat</strong> step 2 until a whole sweep changes nothing.</li>
+  </ol>
+  <p>That last condition is called reaching a <strong>fixed point</strong>: more work would not change the answer, so you stop. It terminates because each sweep can only ever add marks, and there are finitely many functions to mark.</p>
+
+  <div class="widget">
+    <h3>Watch IO spread</h3>
+    <p class="muted">Only <code>open</code> is marked to begin with. Everything else is worked out.</p>
+    <svg viewBox="0 0 520 280" width="100%" aria-label="A call graph of six functions. IO spreads upwards from open to its callers, one round at a time.">
+      <defs>
+        <marker id="cg" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" style="fill:var(--muted)"/></marker>
+      </defs>
+      <g id="edges" stroke-width="1.5" fill="none"></g>
+      <g id="nodes"></g>
+    </svg>
+    <div class="row">
+      <button id="sweep">Run one sweep</button>
+      <button class="ghost" id="reset">Reset</button>
+      <span class="muted" id="round"></span>
+    </div>
+    <p id="log" class="muted"></p>
+  </div>
+
+  <div class="callout">
+    <h3>You have met this shape before</h3>
+    <p>"Mark the seeds, follow the arrows, stop when nothing changes" is <em>reachability</em>, and it is everywhere in platform work: which services are affected if this one goes down, which packages pull in a vulnerable library, which tests to re-run after a change, which IAM roles can reach a bucket. The seeds and the arrows change. The loop does not.</p>
+  </div>
+
+  <h2>Direction matters</h2>
+  <p>Notice which way the marks travelled: <em>from</em> the thing that does IO <em>to</em> the things that call it. That is the opposite direction from the arrows, and it is the direction that is useful — you want to know that <code>render_page</code> is tainted, not that <code>open</code> is.</p>
+  <p>It also explains a feeling you may have had about real codebases: IO at the bottom of a deep call stack contaminates everything above it. One logging call in a utility function can make half your "pure" helpers impure, and the graph is the only way to see it.</p>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>A small program. <code>open</code> and <code>time.time</code> are the only known IO primitives.</p>
+    <pre><code>def stamp():        return time.time()
+def slug(t):        return t.strip().lower()
+def load(p):        return open(p).read()
+def title(p):       return slug(load(p))
+def banner(p):      return title(p) + str(stamp())
+def shout(s):       return s.upper()</code></pre>
+    <ol>
+      <li>Which functions are marked after the <em>first</em> sweep?</li>
+      <li>After the second?</li>
+      <li>Which sweep changes nothing, so you can stop?</li>
+      <li>Which functions are still pure at the end?</li>
+      <li><code>shout</code> is pure. Does that mean it is safe to cache a call to <code>shout(banner(p))</code>?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) <strong><code>stamp</code> and <code>load</code></strong> — they call the primitives directly.</p>
+      <p>2) <strong><code>title</code></strong> (it calls <code>load</code>) and <strong><code>banner</code></strong> (it calls <code>stamp</code>). Both get marked in the same sweep because a sweep looks at every function.</p>
+      <p>3) The <strong>third</strong>. Nothing left to mark, so you have reached the fixed point. Note it takes one extra sweep to <em>discover</em> that — you only know you are done once a sweep is wasted.</p>
+      <p>4) <strong><code>slug</code> and <code>shout</code></strong>.</p>
+      <p>5) <strong>No.</strong> <code>shout</code> is pure, but the expression is not: the argument <code>banner(p)</code> does IO before <code>shout</code> ever runs. Purity is a property of a function, and caching is a property of a call — including everything that was evaluated to make its arguments.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>You now have a detector: parse, find calls, build the graph, propagate to a fixed point. Written out it is well under a hundred lines of standard library Python, and it is genuinely useful.</p>
+  <p>It is also wrong in ways that matter. Every step assumed you can tell which function a call refers to — and Python will happily decide that while it runs. Lesson 3 is about the cases that break this, and what to do instead.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"Why can an AST tell <code>open(path)</code> apart from the text <code>\"open(path)\"</code> inside a string, when grep cannot?","options":["The AST stores line numbers","The parser has already decided what each piece of text is — one becomes a Call node, the other a Constant","ASTs are case-sensitive","Strings are removed from the AST entirely"],"answer":1,"why":"Parsing assigns meaning. A Constant node can never be mistaken for a Call, however its contents are spelled."},
+ {"q":"<code>def greeting(): return \"Hello, \" + read_config(\"name.txt\")</code>. Scanning only this function's own AST for IO primitives, what do you conclude?","options":["It does IO, because read_config is in the name","It does no IO — which is the wrong answer, and why a call graph is needed","It does IO, because of the string literal","You cannot parse it without the rest of the file"],"answer":1,"why":"No IO primitive appears here. The scan is correct about this function's own body and still reaches the wrong conclusion, because the IO is inherited from what it calls."},
+ {"q":"What is the stopping condition when propagating IO through a call graph?","options":["Every function has been visited once","A full sweep adds no new marks — the fixed point","The deepest call chain has been followed","All leaf functions are marked"],"answer":1,"why":"One pass is not enough: marking a function can make its callers markable. You repeat until a whole sweep changes nothing, which must happen because marks are only ever added."},
+ {"q":"In the call graph, which way does the IO mark travel?","options":["Along the arrows, from caller to callee","Against the arrows, from callee to caller","Both ways at once","Only between functions in the same file"],"answer":1,"why":"IO spreads to the functions that call it. That is the direction you care about — you want to know a high-level function is tainted, not that open does IO."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+<script>
+/* Widget 1: real ast.parse output (Python 3.14), context nodes stripped. */
+(function(){
+  const SNIPPETS=[
+    {name:"area",
+     src:'def area(width, height):\n    return width * height',
+     calls:"No calls at all. Nothing to follow, nothing to inherit — this one really is pure.",
+     tree:{"t":"FunctionDef","l":"FunctionDef  name='area'","c":[{"t":"arguments","l":"arguments","c":[{"t":"arg","l":"arg  width","c":[]},{"t":"arg","l":"arg  height","c":[]}]},{"t":"Return","l":"Return","c":[{"t":"BinOp","l":"BinOp","c":[{"t":"Name","l":"Name  id='width'","c":[]},{"t":"Mult","l":"Mult","c":[]},{"t":"Name","l":"Name  id='height'","c":[]}]}]}]}},
+    {name:"read_config",
+     src:'def read_config(path):\n    with open(path) as f:\n        return f.read()',
+     calls:"Calls found: <code>open</code> (a Name) and <code>f.read</code> (an Attribute). <code>open</code> is on the IO primitive list, so this function is marked directly.",
+     tree:{"t":"FunctionDef","l":"FunctionDef  name='read_config'","c":[{"t":"arguments","l":"arguments","c":[{"t":"arg","l":"arg  path","c":[]}]},{"t":"With","l":"With","c":[{"t":"withitem","l":"withitem","c":[{"t":"Call","l":"Call","c":[{"t":"Name","l":"Name  id='open'","c":[]},{"t":"Name","l":"Name  id='path'","c":[]}]},{"t":"Name","l":"Name  id='f'","c":[]}]},{"t":"Return","l":"Return","c":[{"t":"Call","l":"Call","c":[{"t":"Attribute","l":"Attribute  attr='read'","c":[{"t":"Name","l":"Name  id='f'","c":[]}]}]}]}]}]}},
+    {name:"greeting",
+     src:'def greeting():\n    return "Hello, " + read_config("name.txt")',
+     calls:"Calls found: <code>read_config</code>. Not an IO primitive — so this function looks clean, and is not. The call graph fixes that.",
+     tree:{"t":"FunctionDef","l":"FunctionDef  name='greeting'","c":[{"t":"arguments","l":"arguments","c":[]},{"t":"Return","l":"Return","c":[{"t":"BinOp","l":"BinOp","c":[{"t":"Constant","l":"Constant  value='Hello, '","c":[]},{"t":"Add","l":"Add","c":[]},{"t":"Call","l":"Call","c":[{"t":"Name","l":"Name  id='read_config'","c":[]},{"t":"Constant","l":"Constant  value='name.txt'","c":[]}]}]}]}]}},
+  ];
+  const $=id=>document.getElementById(id);
+
+  function render(node,depth){
+    const row=document.createElement("div");
+    row.className="astnode"+(node.t==="Call"?" iscall":"");
+    row.style.marginLeft=(depth*18)+"px";
+    row.textContent=node.l;
+    const out=[row];
+    node.c.forEach(k=>out.push(...render(k,depth+1)));
+    return out;
+  }
+
+  function show(i){
+    const s=SNIPPETS[i];
+    $("src").innerHTML="<code></code>";
+    $("src").firstChild.textContent=s.src;
+    $("tree").replaceChildren(...render(s.tree,0));
+    $("calls").innerHTML=s.calls;
+    $("snips").querySelectorAll("button").forEach((b,bi)=>b.className=bi===i?"":"ghost");
+  }
+
+  SNIPPETS.forEach((s,i)=>{
+    const b=document.createElement("button");
+    b.className="ghost"; b.textContent=s.name+"()";
+    b.onclick=()=>show(i);
+    $("snips").appendChild(b);
+  });
+  show(0);
+})();
+
+/* Widget 2: fixed-point propagation over a call graph. */
+(function(){
+  const $=id=>document.getElementById(id);
+  const NODES=[
+    {id:"render_page",x:200,y:16,calls:["greeting","format_title"]},
+    {id:"greeting",   x:110,y:86,calls:["read_config"]},
+    {id:"format_title",x:300,y:86,calls:["normalize"]},
+    {id:"read_config",x:110,y:156,calls:["open"]},
+    {id:"normalize",  x:300,y:156,calls:[]},
+    {id:"open",       x:110,y:226,calls:[],seed:true},
+  ];
+  const W=120,H=38;
+  const by=id=>NODES.find(n=>n.id===id);
+  let marked,round;
+
+  // edges are drawn once; only fills change per sweep
+  const eg=$("edges"),ng=$("nodes");
+  NODES.forEach(n=>n.calls.forEach(c=>{
+    const t=by(c),p=document.createElementNS("http://www.w3.org/2000/svg","path");
+    const x1=n.x+W/2,y1=n.y+H,x2=t.x+W/2,y2=t.y;
+    p.setAttribute("d",`M${x1},${y1} C${x1},${y1+18} ${x2},${y2-18} ${x2},${y2-3}`);
+    p.setAttribute("stroke","var(--muted)");
+    p.setAttribute("marker-end","url(#cg)");
+    eg.appendChild(p);
+  }));
+  NODES.forEach(n=>{
+    const g=document.createElementNS("http://www.w3.org/2000/svg","g");
+    const r=document.createElementNS("http://www.w3.org/2000/svg","rect");
+    r.setAttribute("x",n.x); r.setAttribute("y",n.y);
+    r.setAttribute("width",W); r.setAttribute("height",H);
+    r.setAttribute("rx","3"); r.setAttribute("class","box");
+    r.id="r-"+n.id;
+    const t=document.createElementNS("http://www.w3.org/2000/svg","text");
+    t.setAttribute("x",n.x+W/2); t.setAttribute("y",n.y+23);
+    t.setAttribute("text-anchor","middle"); t.setAttribute("font-size","11.5");
+    t.textContent=n.id+"()";
+    g.append(r,t); ng.appendChild(g);
+  });
+
+  function paint(changed){
+    NODES.forEach(n=>{
+      const r=$("r-"+n.id),on=marked.has(n.id);
+      r.style.fill=on?"var(--signal-soft)":"var(--card)";
+      r.style.stroke=on?"var(--signal-fill)":"var(--line-strong)";
+      r.style.strokeWidth=changed&&changed.includes(n.id)?"3":"1.5";
+    });
+  }
+
+  function reset(){
+    marked=new Set(NODES.filter(n=>n.seed).map(n=>n.id));
+    round=0;
+    $("round").textContent="seeded";
+    $("log").innerHTML="<code>open</code> is on the IO primitive list. Nothing else is known yet.";
+    $("sweep").disabled=false;
+    paint([...marked]);
+  }
+
+  $("sweep").onclick=()=>{
+    round++;
+    const added=NODES.filter(n=>!marked.has(n.id)&&n.calls.some(c=>marked.has(c))).map(n=>n.id);
+    added.forEach(id=>marked.add(id));
+    $("round").textContent="sweep "+round;
+    if(added.length){
+      $("log").innerHTML="Marked "+added.map(i=>`<code>${i}</code>`).join(", ")+
+        " — each one calls something already marked.";
+    }else{
+      $("log").innerHTML="Nothing changed. That is the <strong>fixed point</strong>: "+
+        marked.size+" of "+NODES.length+" functions do IO, and <code>normalize</code> and <code>format_title</code> are genuinely pure.";
+      $("sweep").disabled=true;
+    }
+    paint(added);
+  };
+  $("reset").onclick=reset;
+  reset();
+})();
+</script>
+</body>
+</html>
