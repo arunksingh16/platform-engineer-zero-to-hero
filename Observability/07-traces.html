@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>7. Traces and spans · Observability from zero</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="../style.css">
 </head>
 <body data-lesson="7">
 <main>
@@ -77,7 +77,8 @@
  {"q":"What does tail-based sampling let you do?","options":["Sample before the request starts","Decide to keep a trace after seeing it (e.g. keep errors and slow ones)","Delete all traces","Avoid propagating trace IDs"],"answer":1,"why":"Tail sampling waits for the whole trace, so it can keep interesting ones. Head sampling decides up-front, blindly."}
 ]
 </script>
-<script src="course.js"></script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
 <script>
 (function(){
   const S=[

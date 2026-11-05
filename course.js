@@ -1,19 +1,12 @@
-/* Shared course logic: lesson list, header/progress, footer nav, quiz engine. No dependencies. */
-const LESSONS = [
-  { n: 1, file: "01-why-observability.html", title: "Why observability?", blurb: "Monitoring vs observability, and the three signals." },
-  { n: 2, file: "02-metrics.html", title: "Metrics: counters, gauges, histograms", blurb: "The three building blocks, worked by hand." },
-  { n: 3, file: "03-time-series-labels.html", title: "Time series, labels & cardinality", blurb: "What a series really is, and how systems blow up." },
-  { n: 4, file: "04-tsdb.html", title: "How a time series database stores data", blurb: "Scraping, chunks, delta-of-delta compression." },
-  { n: 5, file: "05-querying.html", title: "Querying: rate, sum and percentiles", blurb: "PromQL maths you can do on paper." },
-  { n: 6, file: "06-logs.html", title: "Logs you can actually search", blurb: "Structured logs and correlation IDs." },
-  { n: 7, file: "07-traces.html", title: "Traces and spans", blurb: "Waterfalls, parent/child, self time." },
-  { n: 8, file: "08-opentelemetry.html", title: "OpenTelemetry", blurb: "API, SDK, OTLP, Collector, context propagation." },
-  { n: 9, file: "09-slos.html", title: "SLIs, SLOs & burn-rate alerting", blurb: "Error budgets and what to learn next." },
-];
+/* Shared course engine: lesson list, header/progress, footer nav, quiz.
+   Each course supplies its own COURSE object in lessons.js, loaded before this file.
+   No dependencies. */
+const LESSONS = COURSE.lessons;
+const KEY = COURSE.key + "-progress";
 
 const store = {
-  get() { try { return JSON.parse(localStorage.getItem("obs-progress") || "{}"); } catch (e) { return {}; } },
-  mark(n) { try { const p = store.get(); p[n] = true; localStorage.setItem("obs-progress", JSON.stringify(p)); } catch (e) {} },
+  get() { try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) { return {}; } },
+  mark(n) { try { const p = store.get(); p[n] = true; localStorage.setItem(KEY, JSON.stringify(p)); } catch (e) {} },
 };
 
 (function init() {
@@ -38,7 +31,8 @@ const store = {
   // Header with progress
   const header = document.createElement("header");
   header.className = "top";
-  header.innerHTML = `<a href="index.html">Observability from zero</a><div class="bar"><i style="width:${(n / LESSONS.length) * 100}%"></i></div><span>Lesson ${n} / ${LESSONS.length}</span>`;
+  const ticks = LESSONS.map((l) => `<i class="${l.n <= n ? "on" : ""}"></i>`).join("");
+  header.innerHTML = `<a href="index.html">${COURSE.title}</a><div class="bar">${ticks}</div><span>Lesson ${n} / ${LESSONS.length}</span>`;
   document.body.prepend(header);
 
   // Footer nav

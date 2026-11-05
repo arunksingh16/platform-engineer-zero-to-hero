@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>3. Time series, labels & cardinality · Observability from zero</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="../style.css">
 </head>
 <body data-lesson="3">
 <main>
@@ -67,7 +67,8 @@ http_requests_total{method="POST", status="200"}   → (10:00:00,  300) (10:00:1
  {"q":"Your route is <code>/orders/48213</code>. What should the metric label contain?","options":["The raw path","The route template <code>/orders/{id}</code>","The order ID as a separate label","The full URL with query string"],"answer":1,"why":"Templates keep the value set small and bounded."}
 ]
 </script>
-<script src="course.js"></script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
 <script>
 (function(){
   const dims=[["method",4,"GET"],["status",5,"200"],["endpoint",20,"/api/orders"],["region",3,"eu-west"],["user_id",10000,"u_48213"]];

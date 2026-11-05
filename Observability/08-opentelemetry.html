@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>8. OpenTelemetry · Observability from zero</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="../style.css">
 </head>
 <body data-lesson="8">
 <main>
@@ -123,7 +123,8 @@ with tracer.start_as_current_span("charge-card") as span:
  {"q":"Why can library authors safely depend on the OTel <em>API</em> only?","options":["It is faster","Without an SDK configured, API calls are no-ops, so the app owner decides what happens","It is encrypted","It forces a vendor"],"answer":1,"why":"The API/SDK split lets libraries add instrumentation without choosing exporters; the application configures the SDK."}
 ]
 </script>
-<script src="course.js"></script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
 <script>
 (function(){
   const $=id=>document.getElementById(id);

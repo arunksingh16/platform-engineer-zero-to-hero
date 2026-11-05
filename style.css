@@ -1,0 +1,153 @@
+/* Shared theme for every course on the site.
+   Direction: an instrument panel you can read. Blueprint paper, navy ink, brass
+   signal accent. Serif for prose, monospace for anything measured.
+   Radius encodes kind: data surfaces are near-sharp, things you touch are rounded. */
+
+:root{
+  --paper:#eef1f6; --card:#fafcfe; --ink:#16202e; --muted:#5a6a7d;
+  --line:#c9d4e2; --line-strong:#9fb0c4; --grid:rgba(29,90,122,.13);
+  --signal:#8a5805; --signal-fill:#b4740c; --signal-soft:#f7efdd; --on-signal:#fff;
+  --note:#1d5a7a; --note-soft:#e5eef4;
+  --good:#136b3c; --good-soft:#e2f1e7;
+  --bad:#a81f1f; --bad-soft:#fbe9e9;
+  --warn:#7a4a00; --warn-soft:#f6edda;
+  --code:#e4eaf2;
+  --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  --r-panel:3px; --r-control:7px;
+}
+@media(prefers-color-scheme:dark){:root{
+  --paper:#101620; --card:#18202c; --ink:#e3e9f0; --muted:#93a2b5;
+  --line:#2c3747; --line-strong:#49596d; --grid:rgba(104,184,216,.11);
+  --signal:#e0a63c; --signal-fill:#e0a63c; --signal-soft:#241d10; --on-signal:#101620;
+  --note:#68b8d8; --note-soft:#10222b;
+  --good:#5bc98a; --good-soft:#102419;
+  --bad:#f08a8a; --bad-soft:#2a1618;
+  --warn:#e8b65c; --warn-soft:#241d10;
+  --code:#1d2733;
+}}
+
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--paper);color:var(--ink);font:18px/1.72 var(--serif)}
+main{max-width:760px;margin:0 auto;padding:30px 22px 90px}
+p,li{max-width:72ch}
+
+h1{font-size:2.35rem;line-height:1.12;letter-spacing:-.015em;margin:.35em 0 .35em;font-weight:700}
+h2{font-size:1.5rem;line-height:1.25;letter-spacing:-.01em;margin:2.4em 0 .5em;font-weight:700}
+h3{font-size:1.1rem;margin:1.5em 0 .3em;font-weight:700}
+.lead{font-size:1.2rem;line-height:1.6;color:var(--muted)}
+a{color:var(--signal);text-underline-offset:3px}
+:focus-visible{outline:2px solid var(--signal-fill);outline-offset:2px}
+
+/* measured things are monospace: labels, code, numbers, chart text */
+.tag{display:inline-block;font:600 .8rem/1.4 var(--mono);color:var(--signal);margin-bottom:.2em}
+code,pre,kbd{font-family:var(--mono);font-size:.88em}
+code{background:var(--code);padding:.1em .35em;border-radius:3px}
+pre{background:var(--code);padding:15px 17px;border-radius:var(--r-panel);overflow-x:auto;line-height:1.55;border-left:3px solid var(--line-strong)}
+pre code{background:none;padding:0}
+.big{font:700 2.1rem/1.1 var(--mono);font-variant-numeric:tabular-nums}
+.muted{color:var(--muted)}
+.ok{color:var(--good)}.err{color:var(--bad)}
+
+/* tables are readouts, not prose */
+table{border-collapse:collapse;width:100%;margin:16px 0;font:.87rem/1.5 var(--mono);font-variant-numeric:tabular-nums}
+/* works for both column-header and row-header tables, so no ragged part-width rules */
+th,td{text-align:left;padding:7px 11px 7px 0;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--signal);font-weight:700}
+tr:last-child th,tr:last-child td{border-bottom:none}
+
+/* panels. the left rule says which kind of box this is */
+.goal,.callout,.hand,.widget,.card,.q{background:var(--card);border:1px solid var(--line);border-radius:var(--r-panel);padding:15px 19px;margin:22px 0}
+.goal{background:var(--signal-soft);border-color:transparent;border-left:3px solid var(--signal-fill)}
+.callout{background:var(--note-soft);border-color:transparent;border-left:3px solid var(--note)}
+.hand{background:var(--good-soft);border-color:transparent;border-left:3px solid var(--good)}
+.goal h3,.callout h3,.hand h3,.widget h3{margin:0 0 .4em;font-size:1rem}
+.goal h3{color:var(--signal)}
+.callout h3{color:var(--note)}
+.hand h3{color:var(--good)}
+
+/* the one bold device: interactive widgets sit on graph paper */
+.widget{padding:19px;
+  background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+  background-size:22px 22px;background-position:-1px -1px}
+
+details{margin:12px 0}
+summary{cursor:pointer;font-weight:700;color:var(--signal)}
+details[open]>summary{margin-bottom:7px}
+
+/* things you touch are rounded */
+button,select,input,textarea{font:inherit;color:var(--ink)}
+button{background:var(--signal);color:var(--on-signal);border:0;border-radius:var(--r-control);padding:8px 15px;cursor:pointer;font-size:.95rem;font-weight:700}
+button.ghost{background:transparent;color:var(--signal);border:1px solid var(--line-strong);font-weight:400}
+button.ghost:hover:not(:disabled){border-color:var(--signal)}
+/* a revealed answer stays legible even though the button is now disabled */
+button.right,button.wrong{opacity:1;border-color:transparent;color:var(--on-signal);font-weight:700}
+button.right{background:var(--good)}
+button.wrong{background:var(--bad)}
+button:disabled{opacity:.4;cursor:not-allowed}
+input,select,textarea{background:var(--paper);border:1px solid var(--line-strong);border-radius:var(--r-control);padding:6px 10px;font-family:var(--mono);font-size:.9rem}
+textarea{width:100%;min-height:72px}
+.row{display:flex;flex-wrap:wrap;gap:11px;align-items:center;margin:10px 0}
+.row label{font:.85rem/1.4 var(--mono);color:var(--muted)}
+.pill{display:inline-block;padding:3px 11px;border-radius:99px;background:var(--code);font:.84rem var(--mono);margin:2px}
+.grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;align-items:start}
+.card{padding:14px 16px}
+.card h3{margin-top:.2em}
+
+/* sticky header. progress is a scale of discrete lessons, not a smooth fill */
+.top{position:sticky;top:0;z-index:10;background:var(--paper);border-bottom:1px solid var(--line);
+  display:flex;align-items:center;gap:16px;padding:11px 22px}
+.top a{text-decoration:none;font-weight:700;color:var(--ink);font-size:.95rem}
+.top .bar{flex:1;display:flex;gap:3px;min-width:70px}
+.top .bar i{flex:1;height:7px;background:var(--line);border-radius:1px;transition:background .35s}
+.top .bar i.on{background:var(--signal-fill)}
+.top span{color:var(--muted);white-space:nowrap;font:.8rem var(--mono)}
+
+/* quiz */
+.quiz{margin-top:48px;border-top:1.5px solid var(--line-strong);padding-top:12px}
+.q p{margin:.2em 0 .7em;font-weight:700}
+.opt{display:block;width:100%;text-align:left;background:var(--paper);color:var(--ink);
+  border:1px solid var(--line);margin:7px 0;padding:10px 13px;font-weight:400;font-size:1rem}
+.opt:hover:not(:disabled){border-color:var(--signal);background:var(--card)}
+.opt.right{background:var(--good-soft);border-color:var(--good)}
+.opt.wrong{background:var(--bad-soft);border-color:var(--bad)}
+.opt:disabled{opacity:1;cursor:default}
+.why{margin-top:9px;font-size:.95rem;color:var(--muted)}
+.score{font-size:1.15rem;font-weight:700;margin:14px 0}
+
+.nav{display:flex;justify-content:space-between;gap:14px;margin-top:44px}
+.nav a{display:inline-block;padding:11px 17px;border-radius:var(--r-control);border:1px solid var(--line-strong);
+  text-decoration:none;background:var(--card);color:var(--ink);font-size:.95rem}
+.nav a:hover{border-color:var(--signal)}
+.nav a.next.ready{background:var(--signal);color:var(--on-signal);border-color:var(--signal);font-weight:700}
+
+/* lesson index */
+.lessons{list-style:none;padding:0;display:grid;gap:11px}
+.lessons a{display:flex;gap:15px;align-items:center;padding:15px 17px;border:1px solid var(--line);
+  border-radius:var(--r-panel);background:var(--card);text-decoration:none;color:var(--ink)}
+.lessons a:hover{border-color:var(--signal)}
+.lessons .n{width:34px;height:34px;border-radius:50%;background:var(--signal-soft);color:var(--signal);
+  display:grid;place-items:center;font:700 .95rem var(--mono);flex:none}
+.lessons .done .n{background:var(--good);color:var(--on-signal)}
+
+/* svg widgets */
+svg text{fill:var(--ink);font-family:var(--mono);font-variant-numeric:tabular-nums}
+svg .box{fill:var(--card);stroke:var(--line-strong);stroke-width:1.5}
+svg .acc{fill:var(--signal-fill)}
+svg .line{stroke:var(--muted);stroke-width:1.5;fill:none}
+
+@keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
+.pulse{animation:pulse 1.6s infinite}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}html{scroll-behavior:auto}}
+
+@media(max-width:560px){
+  body{font-size:17px}
+  h1{font-size:1.95rem}
+  main{padding:22px 17px 70px}
+  .nav{flex-direction:column}
+  table{font-size:.8rem}
+  .top{gap:10px;padding:9px 16px}
+  .top a{font-size:.85rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:42%}
+  .top .bar{min-width:50px}
+}

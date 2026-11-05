@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>4. How a time series database stores data · Observability from zero</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="../style.css">
 </head>
 <body data-lesson="4">
 <main>
@@ -88,7 +88,8 @@
  {"q":"Why is cardinality (lesson 3) especially painful for a TSDB?","options":["Each series adds index entries and in-memory head data","Timestamps get longer","Labels disable compression of values only","It slows the scrape interval"],"answer":0,"why":"Every active series occupies head memory and index space, so millions of series cost a lot even if each has few samples."}
 ]
 </script>
-<script src="course.js"></script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
 <script>
 (function(){
   const $=id=>document.getElementById(id);

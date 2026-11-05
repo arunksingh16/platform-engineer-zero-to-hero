@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>2. Metrics · Observability from zero</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="../style.css">
 </head>
 <body data-lesson="2">
 <main>
@@ -89,7 +89,8 @@
  {"q":"Why use a histogram instead of an average latency?","options":["Averages are expensive to compute","Averages hide the slow tail that real users feel","Histograms are exact","Averages can't be stored"],"answer":1,"why":"A few very slow requests barely move the average, but a histogram exposes them so you can compute p95/p99."}
 ]
 </script>
-<script src="course.js"></script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
 <script>
 (function(){
   let c=0,g=0;

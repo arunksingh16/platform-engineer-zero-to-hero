@@ -7,6 +7,7 @@ A practical, self-guided learning path for platform engineering. The repository 
 | Area | Status | Topics |
 | --- | --- | --- |
 | Observability | Available | Metrics, time series, logs, traces, OpenTelemetry, SLIs, SLOs, and burn-rate alerting |
+| Code analysis | In progress (1 of 5) | Pure functions and IO, abstract syntax trees, call graphs, runtime detection, and measuring a detector honestly |
 | Infrastructure foundations | Planned | Linux, networking, Git, and containers |
 | Platform systems | Planned | Kubernetes, cloud fundamentals, infrastructure as code, and CI/CD |
 | Reliability and operations | Planned | Site reliability engineering, incident response, and production operations |
@@ -36,11 +37,29 @@ The root `index.html` is the catalog page. The Observability course lives in `Ob
 
 ```text
 index.html                 Course catalog
+style.css                  Site-wide theme, shared by every course
+course.js                  Shared engine: lesson nav, progress, quiz
 Observability/             Available course
   index.html               Course introduction and lesson list
-  course.js                Lesson navigation, progress, and quiz logic
-  style.css                Shared course styles
+  lessons.js               This course's lesson list and storage key
   01-...html to 09-...html Interactive lessons
+```
+
+`style.css` and `course.js` live at the repository root so a change applies to
+every course at once. Each course folder supplies only its own data, in
+`lessons.js`:
+
+```js
+const COURSE = { key: "observability", title: "…", lessons: [ … ] };
+```
+
+`key` namespaces that course's progress in `localStorage`, so courses do not
+overwrite each other. Lesson pages load the two scripts in order:
+
+```html
+<link rel="stylesheet" href="../style.css">
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
 ```
 
 ## Accuracy and learning standards

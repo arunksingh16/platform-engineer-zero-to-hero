@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>5. Querying: rate, sum and percentiles · Observability from zero</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="../style.css">
 </head>
 <body data-lesson="5">
 <main>
@@ -98,7 +98,8 @@
  {"q":"Cumulative buckets: le0.2 → 20, le1 → 80, le2 → 100. Estimate p50.","options":["0.2","0.2 + 0.8×(50−20)/60 = 0.6","1","0.5"],"answer":1,"why":"rank 50 lies in (0.2,1] where 20 are below and 60 inside: 0.2 + 0.8 × 30/60 = 0.6 s."}
 ]
 </script>
-<script src="course.js"></script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
 <script>
 (function(){
   const $=id=>document.getElementById(id);

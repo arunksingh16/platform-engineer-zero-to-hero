@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>1. What counts as IO? · Code analysis from zero</title>
+<meta name="description" content="Pure functions, reads and writes, and the four platform jobs that depend on telling them apart.">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-lesson="1">
+<main>
+  <span class="tag">Lesson 1</span>
+  <h1>What counts as IO?</h1>
+  <p class="lead">Some functions only do arithmetic on what you hand them. Others reach outside for a file, a clock, a database. Almost everything a platform does to your code depends on telling those two apart — and the line is blurrier than it looks.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Say what makes a function pure, split IO into reads and writes, explain why each one breaks a different platform guarantee, and classify a function by hand.
+  </div>
+
+  <h2>A function that can be trusted twice</h2>
+  <p>Start with the easy case:</p>
+  <pre><code>def area(width, height):
+    return width * height</code></pre>
+  <p>Call <code>area(3, 4)</code> today, next Tuesday, on a different machine, twice at the same moment on two CPU cores. You get <code>12</code> every time. Nothing else in the world is different afterwards.</p>
+  <p>That is a <strong>pure</strong> function, and the definition has two halves:</p>
+  <ul>
+    <li>The result depends <em>only</em> on the arguments. Same arguments in, same result out — always.</li>
+    <li>Calling it changes nothing that anyone else can see.</li>
+  </ul>
+
+  <p>Now break the first half:</p>
+  <pre><code>def is_weekend():
+    return datetime.date.today().weekday() >= 5</code></pre>
+  <p>No arguments at all, and yet the answer changes. It asked the operating system what day it is. The clock is <em>outside</em>, so this function reads from the outside world — and it will cheerfully return a different answer on Saturday than it did on Friday, with no code change in between.</p>
+
+  <p>And the second half:</p>
+  <pre><code>def append_line(path, line):
+    with open(path, "a") as f:
+        f.write(line + "\n")</code></pre>
+  <p>This one returns nothing interesting. Its entire point is the dent it leaves in the world: a file is now longer than it was.</p>
+
+  <h2>Reads and writes break different things</h2>
+  <p>"Does this function do IO?" is really two questions, and they matter for different reasons. Keep them separate — the rest of this course depends on it.</p>
+
+  <table>
+    <tr><th>Direction</th><th>What it means</th><th>What it costs you</th></tr>
+    <tr><td>Read</td><td>The result depends on state outside the arguments</td><td>You cannot cache or reuse the result, because the outside may have changed</td></tr>
+    <tr><td>Write</td><td>The call changes state others can observe</td><td>You cannot safely retry, re-run, or run it in parallel with itself</td></tr>
+  </table>
+
+  <p>A function can do neither (pure), one, or both. The classic "both" is a cache-filling helper: it goes and gets something, then leaves a copy behind.</p>
+
+  <div class="callout">
+    <h3>What the outside world includes</h3>
+    <p>Files and the network are the obvious ones. These are just as much outside, and juniors miss them constantly:</p>
+    <p><span class="pill">the clock</span> <span class="pill">randomness</span> <span class="pill">environment variables</span> <span class="pill">stdin / stdout</span> <span class="pill">the current working directory</span> <span class="pill">other processes</span> <span class="pill">the machine's hostname</span></p>
+    <p>If removing it from the machine would change the answer, it is outside.</p>
+  </div>
+
+  <h2>Try it: read, write, both, or neither</h2>
+  <p>Classify each function. The diagram shows which arrows light up once you answer.</p>
+
+  <div class="widget">
+    <h3>Classify the function</h3>
+    <svg viewBox="0 0 520 200" width="100%" aria-label="A function box with an arguments arrow coming in, a result arrow going out, a read arrow down from the outside world, and a write arrow up to it.">
+      <defs>
+        <marker id="hd" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" style="fill:var(--muted)"/></marker>
+        <marker id="hdA" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" style="fill:var(--signal-fill)"/></marker>
+      </defs>
+      <rect x="95" y="8" width="330" height="34" rx="3" class="box"/>
+      <text x="260" y="29" font-size="11" text-anchor="middle">the outside world: files, network, clock, env</text>
+
+      <line x1="48" y1="140" x2="172" y2="140" class="line" marker-end="url(#hd)"/>
+      <text x="44" y="131" font-size="11" text-anchor="end">args</text>
+      <line x1="348" y1="140" x2="462" y2="140" class="line" marker-end="url(#hd)"/>
+      <text x="466" y="131" font-size="11">result</text>
+
+      <line id="ar-read" x1="205" y1="46" x2="205" y2="112" class="line" marker-end="url(#hd)"/>
+      <text id="tx-read" x="196" y="86" font-size="11" text-anchor="end" fill="var(--muted)">reads</text>
+      <line id="ar-write" x1="315" y1="112" x2="315" y2="46" class="line" marker-end="url(#hd)"/>
+      <text id="tx-write" x="324" y="86" font-size="11" fill="var(--muted)">writes</text>
+
+      <rect x="172" y="114" width="176" height="52" rx="3" class="box"/>
+      <text id="fname" x="260" y="145" font-size="12.5" text-anchor="middle">area()</text>
+    </svg>
+
+    <pre id="snippet"><code>def area(width, height):
+    return width * height</code></pre>
+
+    <div class="row" id="choices">
+      <button class="ghost" data-k="pure">Neither — pure</button>
+      <button class="ghost" data-k="reads">Reads</button>
+      <button class="ghost" data-k="writes">Writes</button>
+      <button class="ghost" data-k="both">Both</button>
+    </div>
+    <p id="verdict" class="muted">Pick one.</p>
+    <div class="row">
+      <button class="ghost" id="nextq">Next function</button>
+      <span class="muted" id="counter"></span>
+    </div>
+  </div>
+
+  <h2>The effects that are not IO</h2>
+  <p>One more case, because it trips people up:</p>
+  <pre><code>def add_tag(tags, tag):
+    tags.append(tag)
+    return tags</code></pre>
+  <p>This changes something the caller can see — the list they passed in. That is a genuine side effect, and it can absolutely cause bugs. But it never leaves the process: no file, no socket, no clock. So it is <em>effectful but not IO</em>.</p>
+  <p>Why keep them apart? Because the platform jobs below care about the process boundary. A sandbox cannot block a list mutation, and a build cache is not invalidated by one. Throughout this course, <strong>IO means crossing the process boundary</strong>.</p>
+
+  <h2>Four reasons a platform wants to know</h2>
+  <p>This is not a theory exercise. Four everyday pieces of platform work are blocked on exactly this question.</p>
+
+  <h3>1. Build caching</h3>
+  <p>Bazel defines a hermetic build system as one that, <q>given the same input source code and product configuration, always returns the same output by isolating the build from changes to the host system</q>. The payoff it names is direct: <q>The output of an action can be cached, and the action need not be run again unless inputs change.</q></p>
+  <p>Read that as a statement about reads. A build step that secretly reads the system clock, an environment variable, or a package from the internet is not a function of its declared inputs — so its cached output is a lie waiting to be served.</p>
+
+  <h3>2. Tests that can run in parallel</h3>
+  <p>Two tests that both write to <code>/tmp/fixture.db</code> cannot run at the same time, and will fail in a way that looks random. Two pure tests can run on as many cores as you have. Knowing which tests touch shared outside state tells you which ones are safe to parallelise — and often explains your flakiest test.</p>
+
+  <h3>3. Sandboxing and least privilege</h3>
+  <p>To grant a job the narrowest set of permissions that still works, you need to know what it will reach for. Bazel's own advice is to <q>enable strict sandboxing at the per-action level, since actions in a build can be stateful and affect the build or the output</q>. A policy you write by guessing is either too tight — and breaks at 3am — or too loose, and protects nothing.</p>
+
+  <h3>4. Blocking calls in async code</h3>
+  <p>Python's asyncio documentation warns that <q>blocking (CPU-bound) code should not be called directly. For example, if a function performs a CPU-intensive calculation for 1 second, all concurrent asyncio Tasks and IO operations would be delayed by 1 second.</q> Synchronous IO blocks in the same way and for much longer: a plain <code>requests.get()</code> inside an async handler stalls every other task on that loop until the network answers. Finding those calls means finding the IO.</p>
+
+  <div class="callout">
+    <h3>You have already seen a machine-generated list of IO</h3>
+    <p>If you did <a href="../Observability/07-traces.html">Observability lesson 7</a>, a trace waterfall is exactly that: each span is a chunk of work, and the child spans are overwhelmingly the moments the service left the process — a database call, an HTTP request. <a href="../Observability/08-opentelemetry.html">Lesson 8</a> explains how auto-instrumentation produces them without you writing the spans by hand: it wraps known IO libraries at runtime.</p>
+    <p>That is one real answer to this lesson's question, and we come back to it in lesson 3. It has one catch worth noticing now — it only finds IO that actually happened, on the path that actually ran.</p>
+  </div>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>For each one: pure, reads, writes, or both? And if it is not pure, name what outside thing it touches.</p>
+    <ol>
+      <li><code>def slugify(title): return title.strip().lower().replace(" ", "-")</code></li>
+      <li><code>def session_id(): return f"{time.time()}-{os.getpid()}"</code></li>
+      <li><code>def backup(src, dst): shutil.copyfile(src, dst)</code></li>
+      <li><code>def port(): return int(os.environ.get("PORT", 8080))</code></li>
+      <li><code>def greet(): return "Hello, " + open("name.txt").read()</code></li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) <strong>Pure.</strong> String methods only, and they return new strings rather than modifying the original.</p>
+      <p>2) <strong>Reads</strong> — the clock and the process ID. No arguments, different answer every call. This is a good example of a function most people would call "pure-ish" at a glance.</p>
+      <p>3) <strong>Both.</strong> It reads <code>src</code> from the filesystem and writes <code>dst</code> to it. Re-running it is only safe because it overwrites rather than appends — which is a property of this function, not of writes in general.</p>
+      <p>4) <strong>Reads</strong> — an environment variable. Nothing is written, but the result depends on how the process was started, so you cannot cache it across environments.</p>
+      <p>5) <strong>Reads</strong> — the filesystem, via a function it calls rather than anything on this line. That is the whole difficulty of lesson 2.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>You can now classify a function you can see in full. The problem is that real code looks like number 5: a function whose IO is hidden three calls deep in something it imported. Lesson 2 builds the tool for that — reading code as a tree, and following the calls.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"Which pair of conditions makes a function <em>pure</em>?","options":["It is short, and it has a return statement","Its result depends only on its arguments, and calling it changes nothing others can see","It takes no arguments, and never raises","It is in a file with no imports"],"answer":1,"why":"Both halves are required. A function that only reads the clock takes no arguments and still is not pure."},
+ {"q":"A build step secretly reads an environment variable that nobody declared as an input. Which guarantee does that break first?","options":["Parallelism — it can no longer run alongside other steps","Caching — its output is no longer a function of its declared inputs","Sandboxing — it needs root","Nothing, environment variables are local to the process"],"answer":1,"why":"That is an undeclared read. Bazel's hermeticity rule is that the same declared inputs must always produce the same output; a hidden read means a cached result can be served when it should not be."},
+ {"q":"<code>def add_tag(tags, tag): tags.append(tag)</code> — how should this course classify it?","options":["A write, because it changes state the caller can see","Pure, because it only touches its own arguments","Effectful but not IO — the change never leaves the process","A read, because it inspects the list first"],"answer":2,"why":"It is a real side effect and a real source of bugs, but no file, socket or clock is involved. This course defines IO as crossing the process boundary, because that is the boundary sandboxes and build caches care about."},
+ {"q":"Why are <em>reads</em> and <em>writes</em> worth tracking separately?","options":["Reads are fast and writes are slow","They break different things: a read defeats caching, a write defeats safe retrying and parallelism","Writes are the only real IO","Reads happen at startup and writes at shutdown"],"answer":1,"why":"Two tests that only read the same file are fine in parallel. Two that write it are not. Collapsing both into 'does IO' throws that distinction away."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+<script>
+(function(){
+  const ITEMS=[
+    {name:"area()",kind:"pure",
+     code:'def area(width, height):\n    return width * height',
+     why:"Arithmetic on its arguments and nothing else. Same inputs, same answer, forever."},
+    {name:"read_config()",kind:"reads",
+     code:'def read_config(path):\n    with open(path) as f:\n        return f.read()',
+     why:"Reads the filesystem. The file may have changed since last call, so the result cannot be cached on the arguments alone."},
+    {name:"log_error()",kind:"writes",
+     code:'def log_error(msg):\n    print(msg)',
+     why:"Writes to stdout. It reads nothing, so the result is predictable — but the world is different afterwards, and calling it twice logs twice."},
+    {name:"is_weekend()",kind:"reads",
+     code:'def is_weekend():\n    return datetime.date.today().weekday() >= 5',
+     why:"Reads the clock. No arguments at all, and the answer still changes — which is exactly what makes clock reads easy to miss."},
+    {name:"normalize()",kind:"pure",
+     code:'def normalize(name):\n    return name.strip().lower()',
+     why:"String methods return new strings rather than modifying the original, so nothing outside changes."},
+    {name:"append_line()",kind:"writes",
+     code:'def append_line(path, line):\n    with open(path, "a") as f:\n        f.write(line + "\\n")',
+     why:"Appends to a file. Running it twice is not the same as running it once — that is what makes writes unsafe to retry blindly."},
+    {name:"fetch_and_cache()",kind:"both",
+     code:'def fetch_and_cache(url, path):\n    data = requests.get(url).text\n    open(path, "w").write(data)\n    return data',
+     why:"Reads the network and writes the filesystem. Neither guarantee survives: you cannot cache the result, and you cannot re-run it freely."},
+    {name:"greeting()",kind:"reads",
+     code:'def greeting():\n    return "Hello, " + read_config("name.txt")',
+     why:"Reads the filesystem — but nothing on these two lines says so. It inherited the IO from the function it calls. Following that chain is lesson 2."},
+  ];
+  const LABEL={pure:"Neither — pure",reads:"Reads",writes:"Writes",both:"Both"};
+  const $=id=>document.getElementById(id);
+  let i=0,locked=false;
+
+  function paint(kind){
+    const on=k=>kind==="both"||kind===k;
+    [["read",on("reads")],["write",on("writes")]].forEach(([d,active])=>{
+      $("ar-"+d).style.stroke=active?"var(--signal-fill)":"var(--line)";
+      $("ar-"+d).style.strokeWidth=active?"2.5":"1.5";
+      $("ar-"+d).setAttribute("marker-end",active?"url(#hdA)":"url(#hd)");
+      $("tx-"+d).style.fill=active?"var(--signal)":"var(--muted)";
+      $("tx-"+d).style.fontWeight=active?"700":"400";
+    });
+  }
+
+  function show(){
+    const it=ITEMS[i];
+    locked=false;
+    $("fname").textContent=it.name;
+    $("snippet").innerHTML="<code></code>";
+    $("snippet").firstChild.textContent=it.code;
+    $("verdict").textContent="Pick one.";
+    $("verdict").className="muted";
+    $("counter").textContent=`${i+1} of ${ITEMS.length}`;
+    $("choices").querySelectorAll("button").forEach(b=>{b.disabled=false;b.className="ghost"});
+    paint(null); // nothing lit until they commit to an answer
+  }
+
+  $("choices").addEventListener("click",e=>{
+    const b=e.target.closest("button");
+    if(!b||locked)return;
+    locked=true;
+    const it=ITEMS[i],ok=b.dataset.k===it.kind;
+    $("choices").querySelectorAll("button").forEach(x=>{
+      x.disabled=true;
+      if(x.dataset.k===it.kind)x.className="right";
+    });
+    if(!ok)b.className="wrong";
+    paint(it.kind);
+    $("verdict").innerHTML=(ok?"✅ ":`❌ It is <strong>${LABEL[it.kind]}</strong>. `)+it.why;
+    $("verdict").className="";
+  });
+
+  $("nextq").addEventListener("click",()=>{i=(i+1)%ITEMS.length;show()});
+  show();
+})();
+</script>
+</body>
+</html>
