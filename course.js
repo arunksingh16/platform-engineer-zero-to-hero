@@ -3,6 +3,8 @@
    No dependencies. */
 const LESSONS = COURSE.lessons;
 const KEY = COURSE.key + "-progress";
+// where "up" goes: the site index for a top-level course, the parent course for a child folder
+const UP = COURSE.up || { href: "../index.html", label: "↖ Courses" };
 
 const store = {
   get() { try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) { return {}; } },
@@ -15,6 +17,11 @@ const store = {
   // Index page: render lesson list
   const list = document.getElementById("lessons");
   if (list) {
+    const bar = document.createElement("header");
+    bar.className = "top";
+    bar.innerHTML = `<a href="${UP.href}">${UP.label}</a><span>${COURSE.title}</span>`;
+    document.body.prepend(bar);
+
     LESSONS.forEach((l) => {
       const li = document.createElement("li");
       li.className = done[l.n] ? "done" : "";
@@ -32,7 +39,7 @@ const store = {
   const header = document.createElement("header");
   header.className = "top";
   const ticks = LESSONS.map((l) => `<i class="${l.n <= n ? "on" : ""}"></i>`).join("");
-  header.innerHTML = `<a href="index.html">${COURSE.title}</a><div class="bar">${ticks}</div><span>Lesson ${n} / ${LESSONS.length}</span>`;
+  header.innerHTML = `<a href="${UP.href}">${UP.label}</a><a href="index.html">${COURSE.title}</a><div class="bar">${ticks}</div><span>Lesson ${n} / ${LESSONS.length}</span>`;
   document.body.prepend(header);
 
   // Footer nav

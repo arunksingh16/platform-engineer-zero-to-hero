@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>2. How a packet gets from Pod to Pod · Pod networking and the CNI</title>
+<meta name="description" content="Network namespaces, veth pairs, IPAM, the bridge, and the two ways a packet crosses nodes: encapsulated overlay or native routing — with the MTU arithmetic.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="2">
+<main>
+  <span class="tag">Lesson 2</span>
+  <h1>How a packet gets from Pod to Pod</h1>
+  <p class="lead">There is no Kubernetes magic in this path. It is a network namespace, a virtual cable, a routing decision, and — in about half of all clusters — an extra set of headers wrapped around your packet that quietly costs you 50 bytes of every frame.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Name every hop between two Pods on different nodes, explain what a veth pair and a network namespace are, tell encapsulated from native routing and say what each demands of the underlay, and do the MTU arithmetic that explains why large responses hang while small ones work.
+  </div>
+
+  <h2>The Pod's end: a namespace and half a cable</h2>
+  <p>A Linux <strong>network namespace</strong> is an isolated copy of the whole network stack — its own interfaces, routing table, iptables rules, and port space. Every Pod gets one, and every container in the Pod shares it. That shared namespace <em>is</em> what a Pod is, networking-wise, and it is why containers in a Pod talk over <code>localhost</code> and why two of them cannot both bind port 8080.</p>
+  <p>A namespace with no interfaces is a sealed room, so the CNI plugin builds a <strong>veth pair</strong>: two virtual interfaces wired back-to-back, so whatever enters one leaves the other. One end is moved into the Pod's namespace and renamed <code>eth0</code>; the other stays in the host namespace with a name like <code>veth3f2a1b</code>.</p>
+  <pre><code># on the node, find the sandbox and look inside its namespace
+nsenter -t $(crictl inspect --output go-template \
+  --template '{{.info.pid}}' $SANDBOX) -n ip addr show eth0
+
+# and the host end of the same cable
+ip -d link show type veth</code></pre>
+  <p>Then the plugin fills in the rest of the room: an address from <strong>IPAM</strong>, a default route pointing at the host end of the veth, and — on the host side — a route sending that one address back down the cable. For the common <code>host-local</code> IPAM plugin, the pool is the node's PodCIDR from <a href="01-why-a-cni.html">lesson 1</a> and the allocation state is a directory of files on disk:</p>
+  <pre><code>/var/lib/cni/networks/&lt;network-name&gt;/10.244.1.37   # contains the container ID holding it</code></pre>
+  <div class="callout">
+    <h3>Why a node sometimes "runs out" of IPs with Pods deleted</h3>
+    <p>Because that allocation state is files, and files survive crashes. A kubelet or runtime killed at the wrong moment can skip the <code>DEL</code> that releases an address, and the file stays. Do that a few hundred times on a long-lived node and IPAM reports exhaustion while <code>kubectl get pods</code> shows a nearly empty node.</p>
+    <p>It is the same class of bug as a stale lock file, and plugins have grown garbage collection to deal with it — the CNI spec added a <code>GC</code> operation for precisely this.</p>
+  </div>
+
+  <h2>Same node: two shapes, and the shape matters</h2>
+  <p>With both Pods on one node, the packet never touches a physical NIC. But plugins disagree about what sits between the two host-side veth ends:</p>
+  <table>
+    <tr><th>Shape</th><th>Host side</th><th>Used by</th></tr>
+    <tr><td><strong>Bridge</strong></td><td>All veth ends are enslaved to a Linux bridge (<code>cni0</code>, <code>cbr0</code>). Pods on a node are an L2 segment and ARP for each other.</td><td>Flannel, the reference <code>bridge</code> plugin, kindnet</td></tr>
+    <tr><td><strong>Point-to-point routed</strong></td><td>No bridge. Each veth is its own link with a <code>/32</code> host route; the node routes between them and answers ARP by proxy.</td><td>Calico, Cilium</td></tr>
+  </table>
+  <p>The routed shape looks stranger and is usually better: no broadcast domain to grow, no bridge forwarding table to overflow, and every Pod's traffic passes through the node's routing and policy layer where it can be inspected and dropped. The bridge shape is simpler to reason about and is why Flannel is the plugin people learn on.</p>
+
+  <h2>Across nodes: encapsulate, or make the network learn</h2>
+  <p>Now the hard part. Node A has a packet for <code>10.244.2.19</code>, which lives on node B. The physical network between them has never heard of <code>10.244.0.0/16</code> — it knows about node addresses, not Pod addresses. There are exactly two answers, and every CNI is some version of one of them.</p>
+  <table>
+    <tr><th></th><th>Encapsulated (overlay)</th><th>Native (unencapsulated) routing</th></tr>
+    <tr><td>Idea</td><td>Wrap the Pod packet inside a node-to-node packet</td><td>Teach the real network where Pod ranges live</td></tr>
+    <tr><td>Mechanism</td><td>VXLAN, Geneve, IP-in-IP</td><td>BGP to the fabric, cloud route tables, or real VPC IPs</td></tr>
+    <tr><td>Underlay must</td><td>Carry UDP or IP protocol 4 between nodes. That is all.</td><td>Accept and propagate routes for your Pod CIDRs</td></tr>
+    <tr><td>Overhead</td><td>50 bytes (VXLAN/Geneve), 20 (IP-in-IP)</td><td>None</td></tr>
+    <tr><td>Pod IPs are</td><td>Invisible outside the cluster</td><td>Routable, and visible to your firewalls and flow logs</td></tr>
+    <tr><td>Debugging</td><td>tcpdump shows tunnels; you must decapsulate to read it</td><td>tcpdump shows the actual conversation</td></tr>
+  </table>
+  <p>Overlay wins on portability — it works on any network that passes UDP, including one you do not control and cannot change. Native wins on performance and legibility, but it is a request to the network team, and in a cloud it is usually mediated by route tables with their own hard limits.</p>
+  <p>Most plugins do both and choose per-destination. Calico's <code>CrossSubnet</code> mode routes natively between nodes in the same subnet and only encapsulates when it has to cross a boundary the underlay will not route — which is the correct answer often enough to be a sensible default.</p>
+
+  <h2>Walk a packet</h2>
+  <p>Step through both modes and watch the headers stack up.</p>
+
+  <div class="widget">
+    <h3>Packet walk</h3>
+    <div class="row">
+      <label><input type="radio" name="mode" value="vxlan" checked> VXLAN overlay</label>
+      <label><input type="radio" name="mode" value="ipip"> IP-in-IP</label>
+      <label><input type="radio" name="mode" value="native"> Native routing</label>
+      <label>underlay MTU <input id="mtu" type="number" min="1000" max="9001" value="1500" style="width:74px"></label>
+    </div>
+    <svg viewBox="0 0 520 190" width="100%" aria-label="Two nodes, each with a Pod, and the path a packet takes between them.">
+      <g id="topo"></g>
+    </svg>
+    <div class="row">
+      <button id="step">Next hop</button>
+      <button class="ghost" id="reset">Restart</button>
+      <span id="hop" class="muted"></span>
+    </div>
+    <p id="stack"></p>
+    <p id="say"></p>
+  </div>
+
+  <h2>The MTU bug, which you will meet eventually</h2>
+  <p>Encapsulation adds bytes to every frame, and the underlay's MTU does not grow to accommodate it. So the Pod-facing MTU must come down by exactly the overhead:</p>
+  <table>
+    <tr><th>Mode</th><th>Overhead</th><th>Pod MTU on a 1500 underlay</th></tr>
+    <tr><td>Native routing</td><td>0</td><td>1500</td></tr>
+    <tr><td>IP-in-IP</td><td>20</td><td>1480</td></tr>
+    <tr><td>VXLAN (IPv4)</td><td>50</td><td>1450</td></tr>
+    <tr><td>VXLAN + WireGuard encryption</td><td>~110</td><td>~1390</td></tr>
+  </table>
+  <p>Get it wrong — by hard-coding 1500, or by moving onto an underlay that is itself a tunnel — and you do not get a clean failure. You get this, and it is one of the most misdiagnosed symptoms in Kubernetes:</p>
+  <div class="callout">
+    <h3>"Small requests work, large responses hang"</h3>
+    <p><code>curl</code> to the health endpoint is instant. The TLS handshake completes. Then the first big response body stalls forever and eventually times out. Small files fine, large files never.</p>
+    <p>That is an oversized frame being dropped silently, with the ICMP <q>fragmentation needed</q> that would have told the sender to back off being eaten by a firewall. Path MTU discovery fails, so the sender keeps retransmitting a packet that can never arrive.</p>
+    <p>Confirm it in one command, from inside a Pod — this sends a 1472-byte payload that must not be fragmented, which is exactly 1500 on the wire:</p>
+    <pre><code>ping -M do -s 1472 &lt;pod-ip-on-another-node&gt;   # fails if the real path MTU is lower
+ping -M do -s 1422 &lt;pod-ip-on-another-node&gt;   # succeeds on a VXLAN path (1450)</code></pre>
+    <p>The fix is to set the plugin's MTU correctly, not to disable PMTU discovery.</p>
+  </div>
+
+  <h2>Leaving the cluster</h2>
+  <p>One more rewrite happens that the network model does not cover. When a Pod talks to something <em>outside</em> the cluster CIDR, its source address is usually masqueraded to the node's IP, because the outside world has no route back to a Pod address.</p>
+  <p>Most plugins do this by default for any destination outside the Pod CIDR, and it is the reason an external service's logs show node IPs instead of Pod IPs. On a native-routing or cloud CNI where Pod IPs are genuinely routable, you can turn it off — and then your database audit log suddenly shows which Pod connected, which is worth real money during an incident.</p>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>A cluster runs VXLAN on a 1500-byte underlay. A new service calls an internal API; small calls succeed, responses over about 1.5 KB hang. Pod-to-Pod <code>ping</code> works and so does DNS.</p>
+    <ol>
+      <li>What is the Pod MTU supposed to be here?</li>
+      <li>Why did <code>ping</code> and DNS not reveal the problem?</li>
+      <li>Which single command would confirm the diagnosis from inside a Pod?</li>
+      <li>The team moves the cluster to native routing to "remove the overhead". What must the network provide now?</li>
+      <li>After that move, the security team can suddenly see Pod IPs in firewall logs. Why?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) <strong>1450.</strong> 1500 minus 50 bytes of VXLAN overhead (outer Ethernet-less IP + UDP + VXLAN header).</p>
+      <p>2) Both send tiny packets. <code>ping</code>'s default payload is 56 bytes and a DNS query is a few dozen — they fit under any plausible MTU. Only a full-size frame triggers the drop, which is why the failure correlates with response <em>size</em> rather than destination.</p>
+      <p>3) <code>ping -M do -s 1472 &lt;remote-pod-ip&gt;</code>. <code>-M do</code> forbids fragmentation, so a 1500-byte frame that cannot pass fails immediately, while <code>-s 1422</code> succeeds — and the gap between the two brackets the real path MTU.</p>
+      <p>4) A <strong>route for every node's Pod CIDR</strong>, learned by the fabric — BGP peering with the nodes, or programmed cloud route tables. Without it, the packet reaches a router that has no idea what <code>10.244.2.19</code> is and drops it.</p>
+      <p>5) Because the Pod addresses are now real addresses on the wire rather than payload inside a tunnel. That is the legibility benefit of native routing — and also the reason it needs the network team's agreement, since those ranges are now part of their address plan.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>Every Pod can now reach every other Pod — which, read as a security property, is alarming. <a href="03-network-policy.html">Lesson 3</a> is about taking that back, and about the plugins that will accept your NetworkPolicy and silently do nothing with it.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"What is a veth pair used for here?","options":["Encrypting traffic between nodes","A two-ended virtual cable joining the Pod's network namespace to the host's","Assigning IP addresses","Load balancing across replicas"],"answer":1,"why":"One end becomes eth0 inside the Pod's namespace, the other stays on the host. Everything entering one end leaves the other, which is how a sealed namespace gets connectivity."},
+ {"q":"Why do containers in the same Pod reach each other over localhost?","options":["The CNI creates a loopback route between them","They share one network namespace, so they share one loopback and one port space","kube-proxy forwards it","A sidecar proxy relays the traffic"],"answer":1,"why":"The Pod is the network namespace. That also means two containers in one Pod cannot both bind the same port — a real constraint when adding a sidecar."},
+ {"q":"VXLAN on a 1500-byte underlay. What should the Pod-facing MTU be?","options":["1500","1480","1450","1400"],"answer":2,"why":"VXLAN adds 50 bytes. Leave the Pod MTU at 1500 and full-size frames are silently dropped, producing the classic 'small requests work, large responses hang' failure."},
+ {"q":"What does native (unencapsulated) routing demand that an overlay does not?","options":["That the underlay carries UDP","That the real network has routes for your Pod CIDRs","That all nodes are in one subnet","That Pods have no NetworkPolicy"],"answer":1,"why":"An overlay only needs node-to-node connectivity because Pod packets travel as payload. Native routing puts Pod addresses on the wire, so the fabric must know them — via BGP, cloud route tables, or Pods holding real VPC addresses."},
+ {"q":"An external API's logs show your node IPs, never Pod IPs. Why?","options":["The CNI rewrites them for security","Egress to destinations outside the cluster CIDR is masqueraded to the node address by default","Pods have no IP addresses","The API server proxies all outbound traffic"],"answer":1,"why":"Nothing outside has a route back to a Pod address, so plugins SNAT outbound traffic by default. On a routable-Pod-IP setup you can disable it and get per-Pod attribution in external logs."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  const SVGNS="http://www.w3.org/2000/svg";
+  const OVERHEAD={vxlan:50,ipip:20,native:0};
+  const ENCAPNAME={vxlan:"VXLAN",ipip:"IP-in-IP",native:null};
+
+  function el(tag,attrs,style,text){
+    const n=document.createElementNS(SVGNS,tag);
+    for(const k in attrs) n.setAttribute(k,attrs[k]);
+    if(style) Object.assign(n.style,style);
+    if(text!=null) n.textContent=text;
+    return n;
+  }
+  const mode=()=>document.querySelector('input[name=mode]:checked').value;
+  const podMtu=()=>Math.max(576,(parseInt($("mtu").value,10)||1500)-OVERHEAD[mode()]);
+
+  // waypoints the packet passes through, in order
+  const WAY=[[66,120],[66,92],[150,92],[260,62],[370,92],[454,92],[454,120]];
+
+  function steps(){
+    const m=mode(), enc=ENCAPNAME[m], mtu=podMtu();
+    const s=[
+      {at:0,head:"pod-a eth0",
+       stack:["IP 10.244.1.37 → 10.244.2.19","TCP","payload"],
+       say:`The application writes to <code>eth0</code> inside pod-a's namespace. Its MTU is <strong>${mtu}</strong>, so the kernel never hands down a frame the path cannot carry — provided the plugin set it correctly.`},
+      {at:1,head:"veth → host namespace",
+       stack:["IP 10.244.1.37 → 10.244.2.19","TCP","payload"],
+       say:"Out of the namespace through the veth pair. The packet is unchanged; it has simply arrived in the host's network stack, where the host's routing table applies."},
+      {at:2,head:"route lookup on node-a",
+       stack:["IP 10.244.1.37 → 10.244.2.19","TCP","payload"],
+       say:"The destination is not a local Pod, so the host route table decides. This is the fork in the road — and the entry it matches is what your CNI installed."},
+    ];
+    if(enc){
+      s.push({at:3,head:`encapsulate (${enc})`,
+        stack:[`outer IP 10.0.1.5 → 10.0.2.8`,...(m==="vxlan"?["UDP 8472","VXLAN header"]:["proto 4 (IP-in-IP)"]),
+               "IP 10.244.1.37 → 10.244.2.19","TCP","payload"],
+        say:`The route points at a tunnel device, so the whole Pod packet becomes the payload of a <strong>node-to-node</strong> packet. That costs <strong>${OVERHEAD[m]} bytes</strong>, which is why the Pod MTU is ${mtu} and not ${$("mtu").value}. The physical network now sees only node addresses.`});
+      s.push({at:4,head:"node-b receives, decapsulates",
+        stack:["IP 10.244.1.37 → 10.244.2.19","TCP","payload"],
+        say:"node-b's tunnel device strips the outer headers and the original packet reappears, byte for byte. Nothing in between could read it without knowing the encapsulation."});
+    } else {
+      s.push({at:3,head:"forward, no encapsulation",
+        stack:["IP 10.244.1.37 → 10.244.2.19","TCP","payload"],
+        say:"The route points straight out of the physical NIC. The Pod's own addresses travel on the wire — which only works because the fabric was taught, by BGP or a cloud route table, that <code>10.244.2.0/24</code> lives behind node-b. Full MTU, and tcpdump anywhere on the path shows the real conversation."});
+      s.push({at:4,head:"node-b receives",
+        stack:["IP 10.244.1.37 → 10.244.2.19","TCP","payload"],
+        say:"Nothing to undo. node-b matches the destination against its local Pod routes."});
+    }
+    s.push({at:5,head:"route into pod-b's veth",
+      stack:["IP 10.244.1.37 → 10.244.2.19","TCP","payload"],
+      say:"A host route for that single Pod address — a <code>/32</code> on Calico or Cilium, a bridge lookup on Flannel — sends it down the right cable."});
+    s.push({at:6,head:"pod-b eth0 — delivered",
+      stack:["IP 10.244.1.37 → 10.244.2.19","TCP","payload"],
+      say:"pod-b sees the source as <strong>10.244.1.37</strong>: pod-a's real address, unmodified. That no-NAT guarantee from lesson 1 held all the way across."});
+    return s;
+  }
+
+  let i=0, plan=steps();
+
+  function topo(){
+    const g=$("topo"); g.replaceChildren();
+    [[12,"node-a","10.0.1.5","pod-a","10.244.1.37"],[388,"node-b","10.0.2.8","pod-b","10.244.2.19"]].forEach(([x,nn,nip,pn,pip])=>{
+      g.appendChild(el("rect",{x,y:72,width:120,height:94,rx:3,class:"box"}));
+      g.appendChild(el("text",{x:x+9,y:88,"font-size":"11","font-weight":"700"},null,nn));
+      g.appendChild(el("text",{x:x+9,y:102,"font-size":"9.5"},{fill:"var(--muted)"},nip));
+      g.appendChild(el("rect",{x:x+9,y:110,width:102,height:44,rx:3},{fill:"var(--signal-soft)",stroke:"var(--signal-fill)"}));
+      g.appendChild(el("text",{x:x+17,y:127,"font-size":"10.5"},null,pn));
+      g.appendChild(el("text",{x:x+17,y:142,"font-size":"9.5"},{fill:"var(--muted)"},pip));
+    });
+    const enc=ENCAPNAME[mode()];
+    g.appendChild(el("path",{d:"M132 92 L260 62 L388 92",class:"line","stroke-dasharray":enc?"6 4":"0"}));
+    g.appendChild(el("text",{x:200,y:34,"font-size":"10.5"},{fill:"var(--muted)"},
+      enc?`${enc} tunnel over the underlay`:"underlay routes the Pod CIDRs directly"));
+    g.appendChild(el("text",{x:200,y:50,"font-size":"10.5"},{fill:"var(--muted)"},
+      `Pod MTU ${podMtu()} · underlay ${$("mtu").value||1500}`));
+    const p=WAY[plan[i].at];
+    g.appendChild(el("circle",{cx:p[0],cy:p[1],r:7,class:"acc"}));
+  }
+
+  function render(){
+    const s=plan[i];
+    topo();
+    $("hop").textContent=`hop ${i+1} of ${plan.length}`;
+    $("stack").innerHTML=s.stack.map((h,k)=>
+      `<span class="pill"${k<s.stack.length-3&&s.stack.length>3?' style="background:var(--signal-soft)"':''}>${h}</span>`).join(" ");
+    $("say").innerHTML=`<strong>${s.head}.</strong> ${s.say}`;
+    $("step").disabled=i>=plan.length-1;
+  }
+  function restart(){ plan=steps(); i=0; render(); }
+
+  $("step").onclick=()=>{ if(i<plan.length-1){ i++; render(); } };
+  $("reset").onclick=restart;
+  document.querySelectorAll('input[name=mode]').forEach(r=>r.addEventListener("change",restart));
+  $("mtu").addEventListener("input",restart);
+  restart();
+})();
+</script>
+</body>
+</html>

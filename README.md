@@ -10,6 +10,7 @@ Access github pages - https://arunksingh16.github.io/platform-engineer-zero-to-h
 | Observability | Available | Metrics, time series, logs, traces, OpenTelemetry, SLIs, SLOs, and burn-rate alerting |
 | Code analysis | Available | Pure functions and IO, abstract syntax trees, call graphs, runtime detection, and measuring a detector honestly |
 | Kubernetes | Available | Control loops, Pods and controllers, scheduling, requests and limits, HPA, KEDA, Karpenter, and operators |
+| Kubernetes: Pod networking and the CNI | Available | The network model, the packet path and MTU, NetworkPolicy enforcement, Flannel/Calico/Cilium/cloud CNIs, and eBPF |
 | Kubernetes on EKS / AKS / OpenShift | Planned | Provider specifics layered on the vendor-neutral course, in child directories |
 | Infrastructure foundations | Planned | Linux, networking, Git, and containers |
 | Platform systems | Planned | Cloud fundamentals, infrastructure as code, and CI/CD |
@@ -55,12 +56,18 @@ Kubernetes/                Course
   index.html
   lessons.js
   01-...html to 09-...html Interactive lessons, ending in a references page
+  cni/                     Child course: Pod networking and the CNI (5 lessons)
   eks/ aks/ openshift/     Planned child courses, each with its own lessons.js
 ```
 
 Courses nest. A child course is just a course one level deeper: it gets its own
 `lessons.js` with its own `key`, and reaches the shared assets with `../../`.
-Nothing in `course.js` assumes a depth.
+Nothing in `course.js` assumes a depth. A child also sets `up` so the header's
+back-link points at its parent course rather than the site index:
+
+```js
+const COURSE = { key: "kubernetes-cni", up: { href: "../index.html", label: "↖ Kubernetes" }, … };
+```
 
 `style.css` and `course.js` live at the repository root so a change applies to
 every course at once. Each course folder supplies only its own data, in

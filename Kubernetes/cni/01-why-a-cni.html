@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>1. Why a CNI exists at all · Pod networking and the CNI</title>
+<meta name="description" content="The Kubernetes network model, the IP-per-Pod rule, why Kubernetes ships no implementation of it, and how to size a Pod CIDR.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="1">
+<main>
+  <span class="tag">Lesson 1</span>
+  <h1>Why a CNI exists at all</h1>
+  <p class="lead">A fresh cluster with no network plugin installed does not half-work. Nodes report <code>NotReady</code>, every Pod sits in <code>ContainerCreating</code>, and the error says the CNI config is uninitialized. Kubernetes specifies the network it needs in detail and then deliberately refuses to build it.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    State the three rules of the Kubernetes network model, explain what a CNI plugin is and who calls it, draw the line between what the CNI does and what kube-proxy and DNS do, and size a Pod CIDR without stranding your cluster.
+  </div>
+
+  <h2>The model: one IP per Pod, no NAT</h2>
+  <p>Kubernetes imposes <q>a network model</q> that any implementation must satisfy. The docs state the requirements plainly: <q>pods can communicate with all other pods on any other node without NAT</q>, and <q>agents on a node (e.g. system daemons, kubelet) can communicate with all pods on that node</q>.</p>
+  <p>A fourth consequence falls out and matters more than it looks: a Pod must see <strong>its own</strong> IP as the same address everyone else uses to reach it. No source rewriting, no port translation in the middle.</p>
+  <p>Why insist on this? Because the alternative is port bookkeeping. The docs call the IP-per-Pod model <q>IP-per-pod</q> precisely to avoid <q>dynamic port allocation</q>, which <q>brings a lot of complications</q> — every application must be configurable to take ports as flags, every service discovery layer must carry a port as well as an address, and every conflict becomes a cluster-wide scheduling constraint.</p>
+  <div class="callout">
+    <h3>What the model buys you</h3>
+    <p>Because every Pod has its own IP and its own port space, a container can bind port 80 and <em>mean</em> port 80. Two replicas on the same node both bind 80 and never collide, because they are in different network namespaces. Your application config does not change between your laptop and the cluster.</p>
+    <p>This is the same move as <code>spec</code> versus <code>status</code> in <a href="../01-desired-state.html">main course lesson 1</a>: Kubernetes states a property it will maintain, and hides the mechanism that maintains it.</p>
+  </div>
+
+  <h2>And the part Kubernetes does not implement</h2>
+  <p>Having specified all that, Kubernetes ships no code that does it. The implementation is delegated to a <strong>network plugin</strong>, and on a modern cluster that means a <strong>CNI</strong> plugin.</p>
+  <p>CNI is the <strong>Container Network Interface</strong>: a CNCF specification, plus a set of plugin binaries, plus a contract about how they are invoked. It predates Kubernetes' adoption of it and is used by other runtimes too, which is exactly why Kubernetes picked it — the networking problem is not Kubernetes-specific.</p>
+  <p>The contract is almost comically small. A plugin is an executable. The container runtime runs it with the operation in an environment variable and the network config on stdin, and reads a JSON result from stdout:</p>
+  <table>
+    <tr><th>Operation</th><th>Meaning</th></tr>
+    <tr><td><code>ADD</code></td><td>Put this container's network namespace on the network. Return the interfaces, IPs and routes you assigned.</td></tr>
+    <tr><td><code>DEL</code></td><td>Tear it down and release the address. Must be safe to call more than once.</td></tr>
+    <tr><td><code>CHECK</code></td><td>Confirm the container's networking is still as reported.</td></tr>
+    <tr><td><code>VERSION</code></td><td>Report which spec versions this binary speaks.</td></tr>
+  </table>
+  <p>Two directories hold the whole arrangement on every node:</p>
+  <pre><code>/etc/cni/net.d/        # network configuration files, read in lexical order
+/opt/cni/bin/          # the plugin binaries the runtime executes</code></pre>
+  <p>Note who does the calling. It is <strong>not</strong> the kubelet — it is the <strong>container runtime</strong> (containerd, CRI-O). The kubelet asks the runtime for a sandbox; the runtime creates the network namespace and invokes CNI to populate it. This is why a CNI problem so often surfaces as a runtime-level event on the Pod rather than anything in the scheduler or the API server.</p>
+  <div class="callout">
+    <h3>The error you will actually see</h3>
+    <pre><code>Warning  FailedCreatePodSandBox  kubelet
+  failed to set up sandbox container: plugin type="..." failed (add):
+  ... network plugin is not ready: cni config uninitialized</code></pre>
+    <p>Pods stuck in <code>ContainerCreating</code> and nodes <code>NotReady</code> with no CNI installed is the normal, expected state of a half-built cluster — not a bug. Install a plugin and the node flips to <code>Ready</code> within seconds, because the kubelet was only ever waiting for <code>/etc/cni/net.d</code> to contain a valid config.</p>
+  </div>
+
+  <h2>Who does what: the division of labour</h2>
+  <p>"Networking" in Kubernetes is at least four separate jobs, run by four separate things. Confusing them is the most common source of a wasted debugging hour, so it is worth fixing the boundaries now.</p>
+  <table>
+    <tr><th>Job</th><th>Owner</th><th>Fails like</th></tr>
+    <tr><td>Pod gets an IP; Pod reaches Pod across nodes</td><td><strong>CNI plugin</strong></td><td><code>ContainerCreating</code>; cross-node traffic black-holes while same-node works</td></tr>
+    <tr><td>Service ClusterIP → a real Pod IP</td><td><strong>kube-proxy</strong> (or a CNI that replaces it)</td><td>Pod IPs work, the Service IP times out</td></tr>
+    <tr><td>Name → Service IP</td><td><strong>CoreDNS</strong></td><td>Name resolution fails, direct IPs work</td></tr>
+    <tr><td>Outside world → Service</td><td><strong>Ingress / Gateway controller, load balancers</strong></td><td>Works inside the cluster, not from outside</td></tr>
+  </table>
+  <p>Test them in that order and you narrow the fault in about four commands: <code>curl</code> a Pod IP directly, then the ClusterIP, then the DNS name, then the external address. The first one that fails names the owner.</p>
+  <p>The one overlap worth knowing now: some CNI plugins take over the second row as well. Cilium can run with <code>kubeProxyReplacement</code> enabled and there is no kube-proxy on the node at all. <a href="05-ebpf-and-cilium.html">Lesson 5</a> explains why anyone would want that.</p>
+
+  <h2>Addresses are finite, and you choose the limit early</h2>
+  <p>Every Pod gets an IP, which means every cluster needs a pool of them, and that pool is chosen at install time and is painful to change afterwards.</p>
+  <p>The classic scheme — Flannel, Calico in its default mode, kubeadm clusters generally — splits one big <strong>cluster CIDR</strong> into a per-node block called the node's <strong>PodCIDR</strong>. The controller manager does the splitting, with <code>--cluster-cidr</code> and <code>--node-cidr-mask-size</code> (default <code>/24</code> for IPv4). The kubelet caps Pods per node separately, at 110 by default.</p>
+  <p>So three independent numbers interact, and getting them wrong produces either stranded address space or a cluster that cannot grow. Try it:</p>
+
+  <div class="widget">
+    <h3>Pod CIDR planner</h3>
+    <p class="muted">Carve a cluster CIDR into per-node blocks and see what the arithmetic actually permits.</p>
+    <div class="row">
+      <label>cluster CIDR /<input id="cc" type="number" min="8" max="28" value="16" style="width:64px"></label>
+      <label>node block /<input id="nc" type="number" min="16" max="30" value="24" style="width:64px"></label>
+      <label>max Pods per node <input id="pp" type="number" min="1" max="500" value="110" style="width:70px"></label>
+    </div>
+    <svg viewBox="0 0 520 64" width="100%" aria-label="Proportion of each node block actually usable by Pods.">
+      <g id="viz"></g>
+    </svg>
+    <p id="out"></p>
+    <p id="warn" class="muted"></p>
+  </div>
+
+  <p>Two failure modes show up immediately in that calculator, and both are real clusters people have had to rebuild:</p>
+  <ul>
+    <li><strong>Too few nodes.</strong> A <code>/20</code> cluster CIDR with <code>/24</code> node blocks gives you <strong>16 nodes</strong>, forever. The sixteenth node joins and the seventeenth never gets a PodCIDR.</li>
+    <li><strong>Mostly waste.</strong> A <code>/24</code> block is 254 usable addresses for a node that will never run more than 110 Pods. More than half the space is reserved and idle, which only matters when the cluster CIDR has to come out of a real corporate address plan.</li>
+  </ul>
+  <p>And a trap the calculator flags: setting <code>maxPods</code> <em>above</em> what the node block holds. The kubelet will happily admit Pods the IPAM cannot address, and they fail at sandbox creation with an IPAM exhaustion error rather than anything that mentions Pods per node.</p>
+
+  <div class="callout">
+    <h3>Cloud CNIs break this arithmetic completely</h3>
+    <p>The AWS VPC CNI does not carve a cluster CIDR at all — Pods take real IPs from your VPC subnets, so the limit becomes subnet size and per-instance ENI capacity instead. That is a genuinely different model with a different set of catastrophes, and it gets its own treatment in <a href="04-the-options.html">lesson 4</a>.</p>
+  </div>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>You are designing a cluster. Corporate networking will give you exactly one <code>10.60.0.0/18</code> for Pods. You expect 40 nodes now and maybe 120 in two years, running about 60 Pods each.</p>
+    <ol>
+      <li>With the default <code>/24</code> node block, how many nodes fit?</li>
+      <li>Does that meet the two-year target?</li>
+      <li>What node mask would you choose instead, and what does it cost you?</li>
+      <li>A Pod on a brand-new node is stuck in <code>ContainerCreating</code> while Pods on older nodes are fine. Which of the four owners above is implicated?</li>
+      <li>Same cluster: Pod-to-Pod by IP works, but <code>curl</code> to a Service ClusterIP hangs. Is your CNI the problem?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) <strong>64 nodes.</strong> From <code>/18</code> to <code>/24</code> is 6 bits, so 2<sup>6</sup> = 64 blocks of 256 addresses.</p>
+      <p>2) <strong>No.</strong> 64 &lt; 120. The cluster would stop accepting nodes a little over halfway to the target, and the symptom at that point is nodes joining and never becoming usable.</p>
+      <p>3) <strong><code>/25</code></strong> — 7 bits from <code>/18</code>, so 128 node blocks of 126 usable addresses each, comfortably above 60 Pods. The cost is headroom: if a node ever needs more than ~126 Pods you cannot get there without re-IPing the cluster. <code>/26</code> would give 256 nodes but only 62 Pod addresses per node, which is under your 60 target with almost no margin — too tight.</p>
+      <p>4) The <strong>CNI plugin</strong>. Pods on existing nodes are fine, so the model works; something about this node specifically — its plugin DaemonSet not yet running, no PodCIDR assigned, or the pool exhausted — is blocking sandbox creation.</p>
+      <p>5) <strong>No.</strong> Pod IP reachability is exactly the CNI's job and it is working. Service VIPs are kube-proxy's job (or a kube-proxy replacement). Look there.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>You now know a plugin assigns the IP and makes the model true. <a href="02-pod-to-pod.html">Lesson 2</a> opens the box: the network namespace, the veth pair, the IPAM call, and the two fundamentally different ways a packet crosses from one node to another.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"What does the Kubernetes network model require of Pod-to-Pod traffic across nodes?","options":["Port mappings are allocated dynamically per Pod","Pods reach all other Pods on any node without NAT","All cross-node traffic is encrypted","Traffic must pass through a Service"],"answer":1,"why":"The model requires every Pod to have its own IP and to reach every other Pod without NAT — which also means a Pod sees its own address the same way others do. Kubernetes specifies this but does not implement it."},
+ {"q":"Who actually executes the CNI plugin binary when a Pod starts?","options":["The kube-scheduler","The container runtime (containerd or CRI-O)","The API server","kube-proxy"],"answer":1,"why":"The kubelet asks the runtime for a Pod sandbox; the runtime creates the network namespace and invokes the CNI plugin from /opt/cni/bin using the config in /etc/cni/net.d. That is why CNI faults surface as FailedCreatePodSandBox."},
+ {"q":"Pod-to-Pod traffic by IP works, but a Service ClusterIP times out. Most likely owner?","options":["The CNI plugin","kube-proxy, or whatever replaced it","CoreDNS","The Ingress controller"],"answer":1,"why":"The CNI's job is Pod IP reachability and that is demonstrably working. Translating a Service VIP to a Pod IP is kube-proxy's job — or a CNI running in kube-proxy replacement mode, in which case it is the CNI wearing kube-proxy's hat."},
+ {"q":"Cluster CIDR 10.0.0.0/20, node block size /24. How many nodes can ever join?","options":["16","256","4096","Unlimited — blocks are shared"],"answer":0,"why":"/20 to /24 is 4 bits, so 16 node blocks. Node 17 joins and never receives a PodCIDR. Node-block allocation is exclusive, which is what makes the arithmetic hard but the routing simple."},
+ {"q":"You set maxPods to 250 on nodes with a /24 Pod block. What happens?","options":["The kubelet refuses to start","Pods are admitted beyond the addressable range and fail at sandbox creation with IPAM exhaustion","The node block is automatically enlarged","Extra Pods share an IP"],"answer":1,"why":"The two limits are independent and nothing reconciles them. The kubelet admits Pods up to maxPods; IPAM runs out at ~254 and the failure message talks about addresses, not Pods per node."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  const SVGNS="http://www.w3.org/2000/svg";
+
+  function el(tag,attrs,style){
+    const n=document.createElementNS(SVGNS,tag);
+    for(const k in attrs) n.setAttribute(k,attrs[k]);
+    if(style) Object.assign(n.style,style);
+    return n;
+  }
+
+  function calc(){
+    const cc=parseInt($("cc").value,10), nc=parseInt($("nc").value,10), pp=parseInt($("pp").value,10);
+    if([cc,nc,pp].some(v=>Number.isNaN(v))||nc<cc){
+      $("out").innerHTML='<span class="err">Node block must be smaller than the cluster CIDR — a larger prefix number.</span>';
+      $("warn").textContent=""; $("viz").replaceChildren(); return;
+    }
+    const nodes=Math.pow(2,nc-cc);
+    const blockSize=Math.pow(2,32-nc);
+    // network and broadcast addresses are not handed to Pods
+    const usable=Math.max(0,blockSize-2);
+    const fit=Math.min(pp,usable);
+    const total=nodes*usable;
+
+    $("out").innerHTML=
+      `<strong>${nodes.toLocaleString()}</strong> node${nodes===1?"":"s"} maximum · `+
+      `<strong>${usable}</strong> Pod addresses per node · `+
+      `<strong class="${fit<pp?"err":"ok"}">${fit}</strong> Pods per node actually schedulable · `+
+      `<span class="muted">${total.toLocaleString()} total Pod IPs</span>`;
+
+    const msgs=[];
+    if(pp>usable) msgs.push(`<span class="err">maxPods ${pp} exceeds the ${usable} addresses in a /${nc} block.</span> The kubelet will admit Pods that IPAM cannot address; they fail at sandbox creation.`);
+    else if(usable>pp*2) msgs.push(`Each node wastes <strong>${usable-pp}</strong> of its ${usable} addresses — ${Math.round(100*(usable-pp)/usable)}% idle. Fine on a private range, expensive on a routed corporate one.`);
+    if(nodes<=32) msgs.push(`A ${nodes}-node ceiling is low. Node ${nodes+1} joins and never receives a PodCIDR.`);
+    $("warn").innerHTML=msgs.join(" ")||"Balanced: room to grow on both axes.";
+
+    // one node block, drawn to scale: used by Pods against reserved and idle
+    const g=$("viz"); g.replaceChildren();
+    const W=496,X=12,Y=16,H=22;
+    g.appendChild(el("rect",{x:X,y:Y,width:W,height:H,rx:2},{fill:"var(--code)"}));
+    const w=Math.min(W,W*fit/blockSize);
+    g.appendChild(el("rect",{x:X,y:Y,width:w,height:H,rx:2},{fill:pp>usable?"var(--bad)":"var(--signal-fill)"}));
+    const t=el("text",{x:X,y:Y+H+16,"font-size":"10.5"});
+    t.textContent=`one /${nc} block: ${fit} of ${blockSize} addresses reach a Pod`;
+    g.appendChild(t);
+  }
+
+  ["cc","nc","pp"].forEach(id=>$(id).addEventListener("input",calc));
+  calc();
+})();
+</script>
+</body>
+</html>

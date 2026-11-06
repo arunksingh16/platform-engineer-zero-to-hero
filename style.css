@@ -12,6 +12,8 @@
   --bad:#a81f1f; --bad-soft:#fbe9e9;
   --warn:#7a4a00; --warn-soft:#f6edda;
   --code:#e4eaf2;
+  --shadow:0 1px 2px rgba(22,32,46,.05),0 6px 18px rgba(22,32,46,.06);
+  --shadow-lift:0 2px 4px rgba(22,32,46,.07),0 12px 28px rgba(22,32,46,.11);
   --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
   --r-panel:3px; --r-control:7px;
@@ -25,6 +27,8 @@
   --bad:#f08a8a; --bad-soft:#2a1618;
   --warn:#e8b65c; --warn-soft:#241d10;
   --code:#1d2733;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 6px 18px rgba(0,0,0,.28);
+  --shadow-lift:0 2px 4px rgba(0,0,0,.35),0 12px 28px rgba(0,0,0,.4);
 }}
 
 *{box-sizing:border-box}
@@ -36,8 +40,13 @@ p,li{max-width:72ch}
 h1{font-size:2.35rem;line-height:1.12;letter-spacing:-.015em;margin:.35em 0 .35em;font-weight:700}
 h2{font-size:1.5rem;line-height:1.25;letter-spacing:-.01em;margin:2.4em 0 .5em;font-weight:700}
 h3{font-size:1.1rem;margin:1.5em 0 .3em;font-weight:700}
+/* sticky header would otherwise swallow the heading you jumped to */
+h1,h2,h3,section{scroll-margin-top:68px}
 .lead{font-size:1.2rem;line-height:1.6;color:var(--muted)}
-a{color:var(--signal);text-underline-offset:3px}
+a{color:var(--signal);text-underline-offset:3px;text-decoration-thickness:.06em;
+  transition:color .15s,text-decoration-color .15s}
+a:hover{text-decoration-thickness:.12em}
+::selection{background:var(--signal-soft);color:var(--ink)}
 :focus-visible{outline:2px solid var(--signal-fill);outline-offset:2px}
 
 /* measured things are monospace: labels, code, numbers, chart text */
@@ -58,7 +67,7 @@ th{color:var(--signal);font-weight:700}
 tr:last-child th,tr:last-child td{border-bottom:none}
 
 /* panels. the left rule says which kind of box this is */
-.goal,.callout,.hand,.widget,.card,.q{background:var(--card);border:1px solid var(--line);border-radius:var(--r-panel);padding:15px 19px;margin:22px 0}
+.goal,.callout,.hand,.widget,.card,.q{background:var(--card);border:1px solid var(--line);border-radius:var(--r-panel);padding:15px 19px;margin:22px 0;box-shadow:var(--shadow)}
 .goal{background:var(--signal-soft);border-color:transparent;border-left:3px solid var(--signal-fill)}
 .callout{background:var(--note-soft);border-color:transparent;border-left:3px solid var(--note)}
 .hand{background:var(--good-soft);border-color:transparent;border-left:3px solid var(--good)}
@@ -92,11 +101,16 @@ textarea{width:100%;min-height:72px}
 .row label{font:.85rem/1.4 var(--mono);color:var(--muted)}
 .pill{display:inline-block;padding:3px 11px;border-radius:99px;background:var(--code);font:.84rem var(--mono);margin:2px}
 .grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;align-items:start}
-.card{padding:14px 16px}
+.card{padding:14px 16px;transition:transform .16s,box-shadow .16s,border-color .16s}
 .card h3{margin-top:.2em}
+/* a card that leads somewhere is worth lifting; a card of plain text is not */
+.card:has(a):hover{transform:translateY(-2px);box-shadow:var(--shadow-lift);border-color:var(--line-strong)}
 
 /* sticky header. progress is a scale of discrete lessons, not a smooth fill */
-.top{position:sticky;top:0;z-index:10;background:var(--paper);border-bottom:1px solid var(--line);
+.top{position:sticky;top:0;z-index:10;border-bottom:1px solid var(--line);
+  background:var(--paper); /* fallback before the translucent version below */
+  background:color-mix(in srgb,var(--paper) 82%,transparent);
+  backdrop-filter:saturate(1.5) blur(9px);-webkit-backdrop-filter:saturate(1.5) blur(9px);
   display:flex;align-items:center;gap:16px;padding:11px 22px}
 .top a{text-decoration:none;font-weight:700;color:var(--ink);font-size:.95rem}
 .top .bar{flex:1;display:flex;gap:3px;min-width:70px}
@@ -118,15 +132,17 @@ textarea{width:100%;min-height:72px}
 
 .nav{display:flex;justify-content:space-between;gap:14px;margin-top:44px}
 .nav a{display:inline-block;padding:11px 17px;border-radius:var(--r-control);border:1px solid var(--line-strong);
-  text-decoration:none;background:var(--card);color:var(--ink);font-size:.95rem}
-.nav a:hover{border-color:var(--signal)}
+  text-decoration:none;background:var(--card);color:var(--ink);font-size:.95rem;
+  box-shadow:var(--shadow);transition:transform .16s,box-shadow .16s,border-color .16s}
+.nav a:hover{border-color:var(--signal);transform:translateY(-2px);box-shadow:var(--shadow-lift)}
 .nav a.next.ready{background:var(--signal);color:var(--on-signal);border-color:var(--signal);font-weight:700}
 
 /* lesson index */
 .lessons{list-style:none;padding:0;display:grid;gap:11px}
 .lessons a{display:flex;gap:15px;align-items:center;padding:15px 17px;border:1px solid var(--line);
-  border-radius:var(--r-panel);background:var(--card);text-decoration:none;color:var(--ink)}
-.lessons a:hover{border-color:var(--signal)}
+  border-radius:var(--r-panel);background:var(--card);text-decoration:none;color:var(--ink);
+  box-shadow:var(--shadow);transition:transform .16s,box-shadow .16s,border-color .16s}
+.lessons a:hover{border-color:var(--signal);transform:translateY(-2px);box-shadow:var(--shadow-lift)}
 .lessons .n{width:34px;height:34px;border-radius:50%;background:var(--signal-soft);color:var(--signal);
   display:grid;place-items:center;font:700 .95rem var(--mono);flex:none}
 .lessons .done .n{background:var(--good);color:var(--on-signal)}

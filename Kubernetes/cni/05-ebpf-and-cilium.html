@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>5. eBPF, Cilium, and where the dataplane is going · Pod networking and the CNI</title>
+<meta name="description" content="Why iptables ran out of road, what eBPF actually is, how Cilium uses identities and maps instead of addresses and chains, what you give up — and every source in this course.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="5">
+<main>
+  <span class="tag">Lesson 5</span>
+  <h1>eBPF, Cilium, and where the dataplane is going</h1>
+  <p class="lead">Two lessons ended with "Cilium, because eBPF", which is not an explanation. Here is the actual argument: the Linux packet path Kubernetes inherited scales with the number of rules, Kubernetes generates rules in proportion to Services times endpoints, and at some cluster size those two facts collide.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Explain why iptables-mode kube-proxy degrades with cluster size, say what eBPF is in one paragraph without hand-waving, describe identity-based policy and why it scales differently, and name honestly what an eBPF dataplane costs you.
+  </div>
+
+  <h2>The problem: rules grow, and packets walk them</h2>
+  <p>kube-proxy's job from <a href="01-why-a-cni.html">lesson 1</a> is turning a Service VIP into a Pod IP. In its long-standing iptables mode it does that by writing netfilter rules — a chain per Service, a chain per endpoint, plus the probability arithmetic that spreads connections across backends.</p>
+  <p>Two costs follow, and only the second one is really fatal:</p>
+  <ul>
+    <li><strong>Matching is a walk.</strong> Netfilter evaluates rules in a chain in order. More Services means more rules between the packet and its answer. kube-proxy's chain structure keeps this from being as bad as a single flat list, but the direction of travel is clear.</li>
+    <li><strong>Updating is a rewrite.</strong> This is the one that hurts. Rules are applied as a table, so a change means regenerating and reloading a large ruleset. At tens of thousands of rules a single endpoint change — one Pod becoming ready — takes real wall-clock time, and changes queue behind each other during a rollout.</li>
+  </ul>
+  <p>The symptom is distinctive and never mentions iptables: <strong>a new Service or a new Pod takes a long time to actually receive traffic</strong>, deployments appear to succeed while half the fleet still routes to dead endpoints, and it all gets worse as the cluster grows rather than failing outright.</p>
+  <p>IPVS mode addressed the lookup half by using kernel hash tables for load balancing, and a newer nftables mode addresses the update half with an incremental, better-indexed ruleset. Both are real improvements inside the netfilter world. eBPF leaves it.</p>
+
+  <h2>What eBPF actually is</h2>
+  <p>eBPF lets you load a small program into the running kernel, attached to a hook — the moment a packet arrives at a device, the moment a socket connects, the moment a process makes a syscall — where it runs on every event, in kernel space, with no module to compile and no reboot.</p>
+  <p>The reason this is safe enough to deploy on production nodes is the <strong>verifier</strong>. Before loading, the kernel statically checks the program: bounded loops, no out-of-range memory access, a finite instruction budget. A program that cannot be proved safe is rejected. Then it is JIT-compiled to native instructions, so it runs at roughly the speed of kernel code, because it is kernel code.</p>
+  <p>Programs keep state in <strong>maps</strong> — hash tables, arrays and LPM tries that both the program and userspace can read and write. That is the structural difference from iptables in one word:</p>
+  <table>
+    <tr><th></th><th>netfilter / iptables</th><th>eBPF dataplane</th></tr>
+    <tr><td>Decision</td><td>Walk a list of rules</td><td>Look up a key in a hash map</td></tr>
+    <tr><td>Lookup cost as the cluster grows</td><td>Grows with rule count</td><td>Roughly constant</td></tr>
+    <tr><td>Changing one backend</td><td>Regenerate and reload a ruleset</td><td>Write one map entry</td></tr>
+    <tr><td>Where it hooks</td><td>Fixed netfilter hooks</td><td>tc, XDP, sockets, cgroups — including before the network stack</td></tr>
+    <tr><td>Debugging tools</td><td><code>iptables -L</code>, conntrack, tcpdump</td><td><code>cilium monitor</code>, <code>bpftool</code>, Hubble</td></tr>
+  </table>
+
+  <h2>Watch the two curves separate</h2>
+  <div class="widget">
+    <h3>Rules versus maps</h3>
+    <p class="muted">A rough model, not a benchmark — the shapes are the point, not the exact numbers.</p>
+    <div class="row">
+      <label>Services <input id="svc" type="range" min="10" max="10000" step="10" value="500" style="width:160px"></label>
+      <label>backends each <input id="eps" type="number" min="1" max="50" value="4" style="width:64px"></label>
+    </div>
+    <svg viewBox="0 0 520 150" width="100%" aria-label="Relative cost of a rule walk against a map lookup as Service count grows.">
+      <g id="chart"></g>
+    </svg>
+    <p id="nums"></p>
+    <p id="verdict" class="muted"></p>
+  </div>
+  <p>Note where the pain starts. Below a few hundred Services none of this matters and anyone telling you otherwise is selling something. Past a few thousand, with endpoints churning on every deploy, it stops being theoretical.</p>
+
+  <h2>Cilium's two real ideas</h2>
+
+  <h3>1. Socket-level load balancing</h3>
+  <p>Because eBPF can attach at the socket layer, Cilium can resolve a Service VIP to a backend address <strong>when the application calls <code>connect()</code></strong>, before a packet exists. The Pod's connection is established directly to the backend; there is no per-packet address translation on the way out, and no conntrack entry maintained for the rewrite.</p>
+  <p>That is the kube-proxy replacement in one sentence, and it is why the cost curve above flattens: the work happens once per connection, as a map lookup, instead of per packet against a ruleset.</p>
+
+  <h3>2. Identity instead of addresses</h3>
+  <p>This is the deeper change. Policy in <a href="03-network-policy.html">lesson 3</a> is written about labels but enforced, in a traditional dataplane, by expanding those labels into the current set of Pod IPs and writing rules about addresses. Every scale-up, every rollout, every evicted Pod invalidates that expansion and forces an update.</p>
+  <p>Cilium instead allocates a numeric <strong>security identity</strong> per unique label set, shares it cluster-wide, and carries it with the traffic — so the enforcement point can decide using the identity rather than a lookup from address to meaning:</p>
+  <pre><code>app=api, env=prod     → identity 4721
+app=web, env=prod     → identity 5588
+# policy: allow 5588 → 4721 on tcp/8080</code></pre>
+  <p>Now scale <code>api</code> from 3 Pods to 300. The identity does not change, the policy does not change, and nothing is reprogrammed — the new Pods simply carry identity 4721. Policy churn is proportional to how often your <em>labels</em> change, which is rarely, instead of how often your <em>Pods</em> change, which is constantly. On a large cluster that is the difference between a dataplane that keeps up and one that does not.</p>
+  <p>It also makes the denial legible. Because the identity is in the drop event, Hubble can say <q>web was denied to api on 8080 by policy X</q> instead of leaving you to correlate two IP addresses against a Pod list that has since changed.</p>
+
+  <div class="callout">
+    <h3>L7 policy is not eBPF all the way down</h3>
+    <p>Worth being precise, because the marketing blurs it. L3/L4 decisions happen in eBPF. HTTP-aware rules — allow <code>GET /healthz</code>, deny the rest — need something that parses HTTP, and Cilium redirects that traffic to an Envoy proxy running on the node.</p>
+    <p>It is still per-node and transparent, which is better than a sidecar per Pod. But it is a userspace proxy in the path, with the latency and failure modes that implies. "eBPF is fast" does not transfer automatically to the L7 features.</p>
+  </div>
+
+  <h2>What it costs</h2>
+  <p>An honest list, because every lesson so far has had one:</p>
+  <ul>
+    <li><strong>Your debugging instincts stop working.</strong> <code>iptables -L</code> shows almost nothing on an eBPF node. The state lives in maps, and reading it means <code>cilium monitor</code>, <code>cilium bpf lb list</code>, <code>bpftool</code> — real tools, but not ones your on-call rotation already knows.</li>
+    <li><strong>Kernel version matters.</strong> Features gate on kernel support in a way that iptables never did. On a managed node image you may simply not have the kernel a feature wants.</li>
+    <li><strong>Memory.</strong> Maps are preallocated and sized by configuration. Conntrack and load balancer maps on a busy node are not free, and a map that fills up drops entries rather than growing.</li>
+    <li><strong>Surface area.</strong> ClusterMesh, egress gateway, encryption, bandwidth manager, Gateway API. Every one is a feature you can enable and then have to operate.</li>
+  </ul>
+  <p>Which loops back to <a href="04-the-options.html">lesson 4</a>'s last question. A dataplane your team cannot debug at 3am is not an upgrade, and a 40-node cluster with modest policy needs gets nothing here that Calico does not already give it.</p>
+
+  <h2>Where this is all going</h2>
+  <table>
+    <tr><th>Direction</th><th>What it means for you</th></tr>
+    <tr><td>eBPF dataplanes as a managed default</td><td>GKE's Dataplane V2 and Azure's Cilium-powered CNI mean many teams run Cilium without ever choosing it. Learn to read Hubble before you need it.</td></tr>
+    <tr><td>kube-proxy's nftables mode</td><td>The non-eBPF answer to the same scaling problem. If you want the improvement without a new dataplane, this is the path.</td></tr>
+    <tr><td><code>AdminNetworkPolicy</code></td><td>Cluster-scoped, ordered, deny-capable policy as a standard API — the gap that pushed everyone to plugin CRDs, finally being closed upstream.</td></tr>
+    <tr><td>Gateway API</td><td>Replaces Ingress, and several CNIs implement it directly, which erodes the line between "CNI" and "ingress controller".</td></tr>
+  </table>
+  <p>The through-line of all four: capabilities that used to require picking a specific plugin are becoming standard interfaces. That is good for you — it is the part of this decision that stops being irreversible.</p>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>A 300-node cluster, ~4,000 Services, iptables-mode kube-proxy. During a large rollout, some clients get connection refused for several minutes against Pods that were deleted long ago.</p>
+    <ol>
+      <li>What is the mechanism behind the delay?</li>
+      <li>Why does it get worse during a rollout specifically?</li>
+      <li>Give two fixes: one that keeps netfilter, one that leaves it.</li>
+      <li>After moving to Cilium, scaling a Deployment from 3 to 300 causes no measurable policy-programming work. Why not?</li>
+      <li>The team enables L7 policy and p99 latency rises slightly. Is that a bug?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) Every endpoint change requires regenerating and reloading a very large ruleset. Until that completes on a given node, that node still forwards to the old backends — so the staleness is per node and the error is a connection to a Pod that no longer exists.</p>
+      <p>2) A rollout changes many endpoints in quick succession. Each change triggers another full reprogramming, and they queue, so the window in which a node's view is stale stretches from a moment into minutes.</p>
+      <p>3) <strong>Keeping netfilter:</strong> switch kube-proxy to nftables mode (or IPVS), which makes updates incremental rather than wholesale. <strong>Leaving it:</strong> an eBPF kube-proxy replacement, where a backend change is a single map write.</p>
+      <p>4) Because policy is programmed against the <em>identity</em> derived from the Pod's labels, not against its address. 300 Pods with identical labels share one identity, so the existing rules already cover every new Pod the moment it has that label set.</p>
+      <p>5) <strong>No — it is the design.</strong> L7 rules are not enforced in eBPF; matching traffic is redirected to a per-node Envoy proxy that parses the protocol. You traded latency for HTTP-aware control, deliberately. Apply L7 rules only to the traffic that needs them.</p>
+    </details>
+  </div>
+
+  <h2 id="references">References</h2>
+  <p>Everything quoted or claimed in this sub-course, and where to check it. Written against documentation current in <strong>November 2026</strong>; defaults and feature stages move, so for anything you intend to rely on, check your own version — and prefer <code>kubectl explain</code> and your plugin's own status output over any tutorial, including this one.</p>
+
+  <h3>The network model and plugins</h3>
+  <table>
+    <tr><th>Claim</th><th>Source</th></tr>
+    <tr><td>The network model: Pods reach all Pods on any node without NAT; node agents reach Pods on that node; IP-per-Pod avoids dynamic port allocation</td><td><a href="https://kubernetes.io/docs/concepts/cluster-administration/networking/">Cluster networking</a></td></tr>
+    <tr><td>Kubernetes does not implement the model; a network plugin does</td><td><a href="https://kubernetes.io/docs/concepts/extend-kubernetes/compute-storage-net/network-plugins/">Network plugins</a></td></tr>
+    <tr><td>CNI operations (<code>ADD</code>, <code>DEL</code>, <code>CHECK</code>, <code>VERSION</code>, <code>GC</code>), plugin invocation, config in <code>/etc/cni/net.d</code>, binaries in <code>/opt/cni/bin</code></td><td><a href="https://github.com/containernetworking/cni/blob/main/SPEC.md">CNI specification</a>, <a href="https://www.cni.dev/">cni.dev</a></td></tr>
+    <tr><td>Nodes report <code>NotReady</code> and Pods stay <code>ContainerCreating</code> until a CNI config exists</td><td><a href="https://kubernetes.io/docs/concepts/extend-kubernetes/compute-storage-net/network-plugins/">Network plugins</a>, <a href="https://kubernetes.io/docs/tasks/debug/debug-cluster/">Cluster troubleshooting</a></td></tr>
+    <tr><td>Services and kube-proxy are a separate layer from Pod networking</td><td><a href="https://kubernetes.io/docs/concepts/services-networking/service/">Service</a>, <a href="https://kubernetes.io/docs/reference/networking/virtual-ips/">Virtual IPs and Service proxies</a></td></tr>
+  </table>
+
+  <h3>Addressing and IPAM</h3>
+  <table>
+    <tr><th>Claim</th><th>Source</th></tr>
+    <tr><td><code>--cluster-cidr</code> and <code>--node-cidr-mask-size</code> (default <code>/24</code> for IPv4) carve per-node PodCIDRs</td><td><a href="https://kubernetes.io/docs/reference/command-line-tools-reference/kube-controller-manager/">kube-controller-manager reference</a></td></tr>
+    <tr><td>Default limit of 110 Pods per node, and large-cluster guidance</td><td><a href="https://kubernetes.io/docs/setup/best-practices/cluster-large/">Considerations for large clusters</a></td></tr>
+    <tr><td><code>host-local</code> IPAM stores allocations as files under <code>/var/lib/cni/networks</code></td><td><a href="https://www.cni.dev/plugins/current/ipam/host-local/">host-local IPAM plugin</a></td></tr>
+    <tr><td>Dual-stack IPv4/IPv6 addressing</td><td><a href="https://kubernetes.io/docs/concepts/services-networking/dual-stack/">Dual-stack</a></td></tr>
+  </table>
+
+  <h3>NetworkPolicy</h3>
+  <table>
+    <tr><th>Claim</th><th>Source</th></tr>
+    <tr><td>Pods are non-isolated by default; selection by a policy flips a direction to deny-by-default; policies are additive with no deny and no ordering</td><td><a href="https://kubernetes.io/docs/concepts/services-networking/network-policies/">Network policies</a></td></tr>
+    <tr><td>A plugin that does not support NetworkPolicy makes the resource have no effect</td><td><a href="https://kubernetes.io/docs/concepts/services-networking/network-policies/">Network policies</a></td></tr>
+    <tr><td>The AND/OR distinction between selectors in one <code>from</code> element and separate elements</td><td><a href="https://kubernetes.io/docs/concepts/services-networking/network-policies/">Network policies</a></td></tr>
+    <tr><td>Default-deny recipes, and the need to allow DNS egress explicitly</td><td><a href="https://kubernetes.io/docs/concepts/services-networking/network-policies/#default-deny-all-ingress-traffic">Default policies</a>, <a href="https://kubernetes.io/docs/tasks/administer-cluster/declare-network-policy/">Declare network policy</a></td></tr>
+    <tr><td><code>kubernetes.io/metadata.name</code> is set automatically on every namespace</td><td><a href="https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/">Namespaces</a></td></tr>
+    <tr><td>Cluster-scoped, ordered, deny-capable policy as a standard API</td><td><a href="https://network-policy-api.sigs.k8s.io/">Network Policy API (AdminNetworkPolicy)</a></td></tr>
+  </table>
+
+  <h3>The plugins</h3>
+  <table>
+    <tr><th>Claim</th><th>Source</th></tr>
+    <tr><td>Flannel's VXLAN and <code>host-gw</code> backends; no policy support</td><td><a href="https://github.com/flannel-io/flannel">flannel</a></td></tr>
+    <tr><td>Calico: BGP native routing, VXLAN/IP-in-IP and <code>CrossSubnet</code>, Felix and Typha, policy-only mode, pluggable dataplanes, <code>GlobalNetworkPolicy</code></td><td><a href="https://docs.tigera.io/calico/latest/about/">Calico documentation</a></td></tr>
+    <tr><td>Cilium: eBPF dataplane, security identities, kube-proxy replacement, L7 policy via Envoy, Hubble, ClusterMesh, encryption</td><td><a href="https://docs.cilium.io/en/stable/">Cilium documentation</a></td></tr>
+    <tr><td>AWS VPC CNI: VPC addresses on ENIs, per-instance address limits, prefix delegation, network policy support</td><td><a href="https://docs.aws.amazon.com/eks/latest/userguide/managing-vpc-cni.html">Amazon VPC CNI</a>, <a href="https://docs.aws.amazon.com/eks/latest/userguide/cni-increase-ip-addresses.html">Increase available IP addresses</a></td></tr>
+    <tr><td>Azure CNI overlay and VNet modes; Azure CNI powered by Cilium</td><td><a href="https://learn.microsoft.com/azure/aks/azure-cni-overlay">Azure CNI Overlay</a></td></tr>
+    <tr><td>GKE Dataplane V2 is Cilium-based</td><td><a href="https://cloud.google.com/kubernetes-engine/docs/concepts/dataplane-v2">GKE Dataplane V2</a></td></tr>
+    <tr><td>Antrea (Open vSwitch), Multus (additional interfaces)</td><td><a href="https://antrea.io/docs/">Antrea</a>, <a href="https://github.com/k8snetworkplumbingwg/multus-cni">Multus</a></td></tr>
+  </table>
+
+  <h3>Dataplane and scaling</h3>
+  <table>
+    <tr><th>Claim</th><th>Source</th></tr>
+    <tr><td>kube-proxy modes — iptables, IPVS, nftables — and their trade-offs</td><td><a href="https://kubernetes.io/docs/reference/networking/virtual-ips/">Virtual IPs and Service proxies</a></td></tr>
+    <tr><td>eBPF: verified, JIT-compiled in-kernel programs, maps, and attachment points</td><td><a href="https://ebpf.io/what-is-ebpf/">What is eBPF</a>, <a href="https://docs.kernel.org/bpf/">Kernel BPF documentation</a></td></tr>
+    <tr><td>Socket-level load balancing and identity-based policy</td><td><a href="https://docs.cilium.io/en/stable/network/kubernetes/kubeproxy-free/">Cilium kube-proxy replacement</a>, <a href="https://docs.cilium.io/en/stable/overview/component-overview/">Cilium components</a></td></tr>
+    <tr><td>Gateway API as the successor to Ingress</td><td><a href="https://gateway-api.sigs.k8s.io/">Gateway API</a></td></tr>
+  </table>
+
+  <h2>You are done</h2>
+  <p>You can now say what the CNI is responsible for and what it is not, size an address plan, trace a packet and its headers across nodes, write policy that works and verify that it is enforced, choose a plugin from constraints, and explain the eBPF argument without repeating a slogan.</p>
+  <p>Back to the <a href="../index.html">Kubernetes course</a>, or to the <a href="../../index.html">other courses</a>. If you want to go further here, the honest next step is not more reading: build a two-node cluster, install Flannel, then rebuild it with Cilium, and break both.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"Why does iptables-mode kube-proxy struggle on large clusters?","options":["It cannot handle more than 1000 Pods","Endpoint changes require regenerating and reloading a large ruleset, so updates get slow and queue","It uses too much memory per Service","It does not support TCP"],"answer":1,"why":"The update cost is the fatal half. The symptom is new Services and newly-ready Pods taking minutes to actually receive traffic, which gets steadily worse with size rather than failing cleanly."},
+ {"q":"What does the eBPF verifier do?","options":["Encrypts the program","Statically proves the program is safe and terminates before the kernel will load it","Compiles it to WebAssembly","Checks the author's signature"],"answer":1,"why":"Bounded loops, no out-of-range memory access, a finite instruction budget. Rejection is the default. That is what makes loading code into a production kernel defensible, and it is then JIT-compiled to native instructions."},
+ {"q":"Cilium gives Pods a numeric security identity derived from labels. Why does that matter?","options":["It encrypts Pod traffic","Policy is programmed against identities, so scaling Pods with identical labels needs no reprogramming","It makes IP addresses unnecessary","It replaces CoreDNS"],"answer":1,"why":"Traditional enforcement expands labels into the current Pod IPs, so every scale event invalidates the rules. With identities, policy churn tracks label changes — rare — instead of Pod churn, which is constant."},
+ {"q":"Is Cilium's L7 HTTP policy enforced in eBPF?","options":["Yes, entirely","No — matching traffic is redirected to a per-node Envoy proxy that parses the protocol","Yes, using XDP only","No, it runs in a sidecar per Pod"],"answer":1,"why":"L3/L4 is eBPF; HTTP-aware rules need a parser, so Cilium redirects to Envoy on the node. Per-node and transparent beats a sidecar per Pod, but it is still a userspace proxy in the path with the latency that implies."},
+ {"q":"Which is a genuine cost of moving to an eBPF dataplane?","options":["Pods lose their own IP addresses","NetworkPolicy stops working","Familiar debugging tools like iptables -L no longer show the state, and kernel version becomes a constraint","Services must be recreated weekly"],"answer":2,"why":"The state lives in maps, not rules, so the on-call rotation needs cilium monitor and bpftool instead. Features also gate on kernel support in a way netfilter never did."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  const SVGNS="http://www.w3.org/2000/svg";
+  function el(tag,attrs,style,text){
+    const n=document.createElementNS(SVGNS,tag);
+    for(const k in attrs) n.setAttribute(k,attrs[k]);
+    if(style) Object.assign(n.style,style);
+    if(text!=null) n.textContent=text;
+    return n;
+  }
+
+  function draw(){
+    const svc=+$("svc").value, eps=+$("eps").value;
+    // rough model: a few rules per Service plus one per endpoint
+    const rules=svc*(eps+3);
+    // reprogramming cost grows with the whole ruleset; map write does not
+    const reload=rules/14000;                     // seconds, order-of-magnitude only
+    const mapWrite=0.000004;                      // one entry
+
+    $("nums").innerHTML=
+      `<strong>${svc.toLocaleString()}</strong> Services × <strong>${eps}</strong> backends → `+
+      `about <strong>${rules.toLocaleString()}</strong> netfilter rules, or <strong>${(svc*eps).toLocaleString()}</strong> map entries.<br>`+
+      `One endpoint change: <strong class="${reload>1?"err":"ok"}">${reload<0.01?"<10 ms":reload.toFixed(2)+" s"}</strong> to reprogram the ruleset `+
+      `versus <strong class="ok">one map write</strong> (${(mapWrite*1e6).toFixed(0)} µs), which does not change with cluster size.`;
+
+    $("verdict").textContent = svc<300
+      ? "At this size the difference is invisible. Choose on policy features and operability instead."
+      : svc<2000
+        ? "The curves are separating. Worth measuring your own rollout latency before deciding."
+        : "This is where teams notice. One change costs seconds — and in a rollout the changes queue, so a node's view of the endpoints can be stale for minutes.";
+
+    const g=$("chart"); g.replaceChildren();
+    const X=60,W=430,Y0=118,H=86;
+    g.appendChild(el("line",{x1:X,y1:Y0,x2:X+W,y2:Y0,class:"line"}));
+    g.appendChild(el("text",{x:X,y:Y0+18,"font-size":"10"},{fill:"var(--muted)"},"10 Services"));
+    g.appendChild(el("text",{x:X+W-62,y:Y0+18,"font-size":"10"},{fill:"var(--muted)"},"10,000"));
+    g.appendChild(el("text",{x:4,y:Y0-H+4,"font-size":"10"},{fill:"var(--muted)"},"update"));
+    g.appendChild(el("text",{x:4,y:Y0-H+16,"font-size":"10"},{fill:"var(--muted)"},"cost"));
+
+    // netfilter: proportional to total rules. eBPF: flat.
+    const pts=[];
+    for(let i=0;i<=40;i++){
+      const s=10+(10000-10)*i/40;
+      pts.push([X+W*i/40, Y0-H*Math.min(1,(s*(eps+3))/(10000*(eps+3)))]);
+    }
+    g.appendChild(el("path",{d:"M"+pts.map(p=>p[0].toFixed(1)+" "+p[1].toFixed(1)).join(" L"),class:"line"},{stroke:"var(--bad)","stroke-width":2}));
+    g.appendChild(el("line",{x1:X,y1:Y0-3,x2:X+W,y2:Y0-3},{stroke:"var(--good)","stroke-width":2}));
+
+    const cx=X+W*(svc-10)/(10000-10);
+    g.appendChild(el("line",{x1:cx,y1:Y0,x2:cx,y2:Y0-H},{stroke:"var(--line-strong)","stroke-dasharray":"3 3"}));
+    g.appendChild(el("text",{x:X+W-150,y:22,"font-size":"10.5"},{fill:"var(--bad)"},"— rule reload (netfilter)"));
+    g.appendChild(el("text",{x:X+W-150,y:36,"font-size":"10.5"},{fill:"var(--good)"},"— map write (eBPF)"));
+  }
+
+  $("svc").addEventListener("input",draw);
+  $("eps").addEventListener("input",draw);
+  draw();
+})();
+</script>
+</body>
+</html>

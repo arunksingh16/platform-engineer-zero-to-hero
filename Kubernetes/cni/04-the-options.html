@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>4. The options: Flannel, Calico, Cilium, cloud CNIs · Pod networking and the CNI</title>
+<meta name="description" content="What Flannel, Canal, Calico, Cilium and the cloud CNIs actually do differently — dataplanes, policy, IP models — and a way to choose between them.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="4">
+<main>
+  <span class="tag">Lesson 4</span>
+  <h1>The options: Flannel, Calico, Cilium, cloud CNIs</h1>
+  <p class="lead">There is no best CNI, which is an unsatisfying thing to be told and still true. There are about five real answers, each optimal for a different set of constraints, and the constraints that matter are mostly not technical preferences — they are who owns your underlay, whether anyone audits your Pod IPs, and how much dataplane your team can carry at 3am.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Say what each major plugin does differently in one sentence, know which choices a managed cluster takes away from you, recognise the IP-exhaustion failure mode of cloud CNIs, and defend a choice with constraints rather than taste.
+  </div>
+
+  <h2>Four questions that decide it</h2>
+  <p>Work these out before looking at any feature matrix. They eliminate most of the field on their own.</p>
+  <table>
+    <tr><th>Question</th><th>Why it decides things</th></tr>
+    <tr><td><strong>Who owns the network under the nodes?</strong></td><td>If you cannot ask for routes, you need an overlay. If you can, native routing is faster and far easier to debug.</td></tr>
+    <tr><td><strong>Must Pod IPs be real addresses outside the cluster?</strong></td><td>Firewalls, flow logs, per-Pod security groups and some compliance regimes need it. It costs you address space from a real plan.</td></tr>
+    <tr><td><strong>What policy do you actually need?</strong></td><td>None, L3/L4, or L7 and DNS-based. Each tier eliminates options — and the first tier eliminates Flannel.</td></tr>
+    <tr><td><strong>Who operates it?</strong></td><td>A dataplane nobody on the team can debug is a liability however good its benchmarks are.</td></tr>
+  </table>
+  <div class="callout">
+    <h3>Changing your mind later is expensive</h3>
+    <p>Swapping CNI on a running cluster means every Pod gets a new address, usually node by node with workloads drained, and the two plugins' routes and iptables rules coexisting badly in the middle. People do it, with a careful plan and a maintenance window — but the usual advice is to build a new cluster and migrate traffic, which tells you how much fun the in-place version is.</p>
+    <p>That is the real argument for spending an afternoon on this decision rather than ten minutes.</p>
+  </div>
+
+  <h2>The field</h2>
+
+  <h3>Flannel — the simple one</h3>
+  <p>A small daemon that gives each node a subnet and connects nodes with a VXLAN overlay (or <code>host-gw</code> direct routing when all nodes share a subnet). That is the whole product. It has no NetworkPolicy support at all, which is the single most important thing to know about it: policies apply cleanly and do nothing, exactly as described in <a href="03-network-policy.html">lesson 3</a>.</p>
+  <p><strong>Pick it when</strong> you want connectivity and nothing else — a learning cluster, a CI cluster, an internal tool with no multi-tenancy. <strong>Avoid it when</strong> anything in the cluster has a security boundary.</p>
+
+  <h3>Canal — Flannel's network, Calico's policy</h3>
+  <p>Not a separate project so much as a documented combination: Flannel does the dataplane, Calico's policy engine enforces NetworkPolicy on top. It exists because "Flannel but with policy" was such a common request. It is a reasonable, boring upgrade path for an existing Flannel cluster, and a slightly odd thing to choose from scratch now that Calico does both.</p>
+
+  <h3>Calico — the routed, policy-first one</h3>
+  <p>Calico's identity is native <strong>routing</strong> rather than encapsulation: Pod addresses are real routes, distributed by BGP, either peered with your physical fabric or spoken node-to-node in a full mesh or via route reflectors. It will encapsulate with VXLAN or IP-in-IP when it must, and <code>CrossSubnet</code> mode does exactly that — native where it can, tunnel where it cannot.</p>
+  <p>The second half is policy. Calico predates NetworkPolicy and its own CRDs go well beyond it: cluster-wide policies, explicit deny, rule ordering, <code>NetworkSet</code> objects for external CIDR groups, and policy for hosts and not only Pods. It also runs <strong>policy-only</strong> alongside someone else's CNI — the standard way to get real policy on top of a cloud plugin.</p>
+  <p>Its dataplane is pluggable: the long-standing iptables/nftables one, and an eBPF one for the same reasons as Cilium's. Operationally it is a node agent (Felix), a routing daemon, and — above a few dozen nodes — Typha, which fans out API server watches so the control plane is not serving every node individually.</p>
+  <p><strong>Pick it when</strong> you run your own infrastructure with a network team to peer with, or when you need serious policy. <strong>Think twice when</strong> nobody wants to learn BGP and the overlay modes would do.</p>
+
+  <h3>Cilium — the eBPF one</h3>
+  <p>Cilium replaces most of the Linux networking path with eBPF programs loaded into the kernel. Practically, that buys four things that are hard to get otherwise: policy based on cryptographic-ish <em>identities</em> rather than IPs, L7-aware rules (allow <code>GET /healthz</code>, deny everything else on that port), a kube-proxy replacement that does not degrade as Services multiply, and Hubble — flow visibility that answers "what was denied, and why" without tcpdump.</p>
+  <p>It is a CNCF graduated project and it is what sits underneath several managed offerings, so a lot of people run it without choosing it. It also carries the most surface area of anything here: ClusterMesh, egress gateways, transparent encryption, bandwidth management, Gateway API. <a href="05-ebpf-and-cilium.html">Lesson 5</a> is about how it works.</p>
+  <p><strong>Pick it when</strong> you need L7 or DNS-based policy, deep flow observability, or kube-proxy's scaling behaviour is hurting. <strong>Think twice when</strong> your team's kernel debugging skills are thin and your requirements are modest — the failure modes are further from familiar tools.</p>
+
+  <h3>Cloud CNIs — Pods on the real network</h3>
+  <p>The AWS VPC CNI, and Azure CNI in its VNet mode, take a completely different line: skip the overlay and skip BGP, and give each Pod a genuine address from your cloud subnet, attached to the instance as a secondary IP on an elastic network interface.</p>
+  <p>What that buys is integration. Pod traffic is ordinary VPC traffic, so flow logs, security groups, firewall rules and load balancer target registration all work on Pods directly, with no translation layer. On AWS that extends to security groups attached to individual Pods and load balancers targeting Pod IPs instead of node ports.</p>
+  <p>What it costs is addresses, and this is the characteristic outage:</p>
+  <div class="callout">
+    <h3>IP exhaustion looks like a scheduling problem and is not</h3>
+    <p>Pods go <code>Pending</code> or fail at sandbox creation. The nodes have plenty of CPU and memory, so <a href="../04-scheduling.html">the usual Pending triage</a> finds nothing, and the cluster autoscaler may even add nodes that do not help.</p>
+    <p>Two separate ceilings cause it. <strong>Per node:</strong> an instance type supports a fixed number of network interfaces and addresses per interface, which caps Pods per node far below 110 on small instances — prefix delegation raises this substantially by handing out <code>/28</code> blocks instead of single addresses. <strong>Per cluster:</strong> the subnets simply run out, because every Pod consumed a VPC address that something else in the organisation also wanted.</p>
+    <p>Both are capacity planning problems that have to happen before the cluster exists, which is why a networking-aware person belongs in that design review.</p>
+  </div>
+  <p>Historically these plugins did no policy enforcement at all and the answer was to run Calico in policy-only mode beside them; the major cloud CNIs have since grown their own policy agents. Check what your version actually enforces rather than assuming either way — and then run the 30-second test from lesson 3.</p>
+
+  <h3>The rest, briefly</h3>
+  <table>
+    <tr><th>Plugin</th><th>In one line</th></tr>
+    <tr><td><strong>Antrea</strong></td><td>Open vSwitch dataplane; strong on Windows nodes and on-prem virtualisation estates.</td></tr>
+    <tr><td><strong>kube-router</strong></td><td>One daemon doing routing with BGP, policy with ipset, and Services with IPVS. Small and focused.</td></tr>
+    <tr><td><strong>kindnet</strong></td><td>The minimal plugin <code>kind</code> uses. Fine for local clusters, not meant for anything else.</td></tr>
+    <tr><td><strong>Weave Net</strong></td><td>Was a popular easy overlay; the company behind it shut down in 2024. Do not start new clusters on it — a networking dataplane with no maintainer is a liability.</td></tr>
+    <tr><td><strong>Multus</strong></td><td>Not a CNI but a meta-plugin: attaches <em>additional</em> interfaces to Pods. Telco and NFV workloads mostly.</td></tr>
+  </table>
+
+  <h2>Choose one</h2>
+  <p>Answer honestly rather than aspirationally — "we might need L7 policy one day" is how clusters end up running things nobody understands.</p>
+
+  <div class="widget">
+    <h3>CNI chooser</h3>
+    <div class="row" style="flex-direction:column;align-items:flex-start;gap:9px">
+      <label>Where does this cluster run?<br>
+        <select id="q1">
+          <option value="onprem">On-prem or bare metal, with a network team I can ask for routes</option>
+          <option value="cloudmanaged">Managed cloud cluster — EKS, AKS, GKE</option>
+          <option value="cloudself">Self-managed nodes in a cloud VPC</option>
+          <option value="local">Laptop, kind, or CI</option>
+        </select></label>
+      <label>What policy do you need?<br>
+        <select id="q2">
+          <option value="none">None — single tenant, no security boundary</option>
+          <option value="l34">Standard NetworkPolicy: L3/L4 between workloads</option>
+          <option value="l7">L7, DNS-based, or cluster-wide rules with explicit deny</option>
+        </select></label>
+      <label>Should Pod IPs be routable outside the cluster?<br>
+        <select id="q3">
+          <option value="dontcare">No strong requirement</option>
+          <option value="yes">Yes — firewalls, flow logs or load balancers must see Pod IPs</option>
+          <option value="no">No — address space is scarce, keep Pods hidden</option>
+        </select></label>
+      <label>Scale and churn<br>
+        <select id="q4">
+          <option value="small">Under ~20 nodes</option>
+          <option value="mid">20–100 nodes</option>
+          <option value="large">100+ nodes, or thousands of Services</option>
+        </select></label>
+      <label>Team appetite<br>
+        <select id="q5">
+          <option value="boring">Keep it boring and debuggable with tools we know</option>
+          <option value="deep">We can own an advanced dataplane and want the observability</option>
+        </select></label>
+    </div>
+    <div id="rec"></div>
+  </div>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>Three design reviews. Give an answer and the single constraint that drove it.</p>
+    <ol>
+      <li>A bank, on-prem, 60 nodes. Security requires per-namespace isolation with explicit deny rules, and the network team already runs BGP everywhere.</li>
+      <li>A startup on EKS. Their auditors want VPC flow logs that attribute traffic to individual workloads, and the security team wants security groups per workload.</li>
+      <li>The same startup two years on: 300 nodes, 4,000 Services, and complaints that new Services take minutes to become reachable. They also want to allow only <code>POST /v1/charge</code> between two particular services.</li>
+      <li>A CI cluster that builds and destroys itself hourly, no multi-tenancy.</li>
+      <li>In case 2, where does NetworkPolicy enforcement come from?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) <strong>Calico.</strong> The driving constraint is explicit-deny, cluster-wide policy — which standard NetworkPolicy cannot express — and the BGP fabric makes native routing free. Cilium would also work; Calico is the lower-novelty answer given an existing BGP operation.</p>
+      <p>2) <strong>The AWS VPC CNI.</strong> The constraint is Pod IPs being real VPC addresses; nothing else gives you flow-log attribution and per-Pod security groups, because those are VPC features that only apply to VPC addresses. Budget the subnet space deliberately and consider prefix delegation from day one.</p>
+      <p>3) <strong>Cilium.</strong> Two constraints now point the same way: L7 policy is not expressible in standard NetworkPolicy, and "new Services take minutes" is the classic iptables-mode kube-proxy scaling symptom that a kube-proxy replacement removes. On EKS this means a migration, which is the price of the earlier decision.</p>
+      <p>4) <strong>Flannel</strong>, or whatever the local distribution ships. No security boundary means no policy requirement, and the cluster's lifetime is an hour. Spending operational attention here buys nothing.</p>
+      <p>5) Not from the VPC CNI by default in older versions — historically from <strong>Calico in policy-only mode</strong> alongside it, and in current versions from the plugin's own network policy agent, which must be enabled. Verify with the deny-all probe rather than the release notes.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>Twice now the answer has been "Cilium, because eBPF". <a href="05-ebpf-and-cilium.html">Lesson 5</a> explains what that actually means, why iptables ran out of road, and what you give up — plus every source behind this course.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"What is the single most important limitation of Flannel?","options":["It cannot do overlays","It has no NetworkPolicy support — policies apply and do nothing","It requires BGP","It only works on bare metal"],"answer":1,"why":"Flannel is connectivity only. The API accepts your policies and nothing enforces them, which is why Canal — Flannel plus Calico's policy engine — exists."},
+ {"q":"Pods are Pending on an EKS cluster with plenty of free CPU and memory. Likely cause?","options":["The scheduler is misconfigured","IP exhaustion — the instance type's ENI/address limit or the subnet is full","The CNI DaemonSet crashed on every node at once","Requests are set too high"],"answer":1,"why":"With the VPC CNI, Pods take real VPC addresses, so per-instance interface limits and subnet size become scheduling limits that never mention CPU or memory. Prefix delegation raises the per-node ceiling; subnet sizing is a design-time decision."},
+ {"q":"What does Calico 'policy-only' mode mean?","options":["It enforces policy without encrypting traffic","Another CNI provides connectivity while Calico enforces NetworkPolicy","Policies are logged but not enforced","It only works in one namespace"],"answer":1,"why":"It is the standard way to add real policy enforcement on top of a cloud CNI, which historically had none. Connectivity stays with the cloud plugin; Calico only programs the filtering."},
+ {"q":"Which requirement most clearly points at Cilium rather than Calico?","options":["Native routing over BGP","Allowing only a specific HTTP method and path between two services","Running on bare metal","Supporting more than 50 nodes"],"answer":1,"why":"L7 rules are outside standard NetworkPolicy and outside Calico's usual L3/L4 remit. Both plugins do BGP, scale and bare metal perfectly well."},
+ {"q":"Why is changing CNI on a live cluster treated as a last resort?","options":["Licensing","Every Pod gets a new address and the two plugins' routes and rules conflict during the transition","Kubernetes forbids it","The API server must be rebuilt"],"answer":1,"why":"It is a dataplane swap underneath running workloads. The common advice is to build a new cluster and migrate traffic, which is exactly why the initial choice deserves real thought."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  const C={
+    flannel:{name:"Flannel",note:"VXLAN overlay, no policy."},
+    canal:{name:"Canal (Flannel + Calico policy)",note:"Flannel's dataplane with policy bolted on."},
+    calico:{name:"Calico",note:"Native BGP routing, strong policy, pluggable dataplane."},
+    cilium:{name:"Cilium",note:"eBPF dataplane, identity and L7 policy, kube-proxy replacement, Hubble."},
+    cloud:{name:"Your cloud's CNI (VPC CNI / Azure CNI)",note:"Pods hold real VPC addresses."},
+    cloudebpf:{name:"Your cloud's eBPF dataplane (GKE Dataplane V2, Azure CNI powered by Cilium)",note:"Cilium, operated by the provider."},
+  };
+
+  function score(){
+    const q1=$("q1").value,q2=$("q2").value,q3=$("q3").value,q4=$("q4").value,q5=$("q5").value;
+    const s={},r={};
+    const add=(k,n,why)=>{ s[k]=(s[k]||0)+n; (r[k]=r[k]||[]).push(why); };
+
+    // where it runs
+    if(q1==="onprem"){ add("calico",3,"On-prem with a cooperative network team is Calico's home ground — BGP peering gives native routing with no tunnel overhead.");
+      add("cilium",2,"Runs well on bare metal and can speak BGP too."); add("flannel",1,"Would work, but gives up routing and policy."); }
+    if(q1==="cloudmanaged"){ add("cloud",2,"On a managed cluster this is the default, and the path of least resistance.");
+      add("cloudebpf",2,"Your provider may offer an eBPF dataplane as a supported option — Cilium without operating Cilium.");
+      add("cilium",1,"Installable, but you own the upgrades."); add("calico",1,"Commonly added in policy-only mode alongside the cloud plugin.");
+      add("flannel",-3,"Managed clusters restrict you to the provider's supported plugins — bringing your own Flannel is unusual and often unsupported."); }
+    if(q1==="cloudself"){ add("calico",2,"Full control of the nodes, and VXLAN or CrossSubnet avoids arguing with cloud route-table limits.");
+      add("cilium",2,"Same, with more capability if you want it."); add("cloud",1,"Available, with the address-planning burden."); }
+    if(q1==="local"){ add("flannel",3,"A local cluster needs connectivity and nothing else. Spend the attention elsewhere.");
+      add("cilium",-1,"Overkill for something that lives for an hour."); }
+
+    // policy
+    if(q2==="none"){ add("flannel",2,"No security boundary means Flannel's missing policy support costs you nothing."); }
+    if(q2==="l34"){ add("flannel",-5,"Rules it out: Flannel accepts NetworkPolicy and enforces none of it.");
+      add("canal",2,"Exactly the gap Canal exists to fill."); add("calico",3,"Policy is the thing Calico is best at."); add("cilium",2,"Covers L3/L4 comfortably.");
+      add("cloud",1,"Enable the plugin's own network policy agent, or run Calico alongside it in policy-only mode — older versions enforced nothing at all."); }
+    if(q2==="l7"){ add("flannel",-5,"No policy at all."); add("canal",-2,"L3/L4 only.");
+      add("cilium",7,"Decisive: L7 and DNS-based rules are not expressible in standard NetworkPolicy, and they are the reason people adopt Cilium."); add("cloudebpf",5,"Cilium policy, provider-operated.");
+      add("calico",1,"Gives you cluster-wide policy and explicit deny, but not L7 — it would cover part of the requirement only."); add("cloud",-3,"Not expressible."); }
+
+    // routable pod IPs
+    if(q3==="yes"){ add("cloud",5,"Decisive: only real VPC addresses give you flow-log attribution, per-Pod security groups and direct load balancer targets. These are network features, and they only apply to network addresses.");
+      if(q1==="onprem"||q1==="cloudself") add("calico",2,"Native BGP routing also puts Pod addresses on the wire, if your fabric will carry them.");
+      add("flannel",-2,"The overlay hides Pod addresses from everything outside."); }
+    if(q3==="no"){ add("cloud",-3,"This model consumes a real VPC address per Pod — the opposite of scarce-address-friendly.");
+      add("flannel",1,"An overlay keeps the whole Pod range private."); add("calico",1,"Overlay modes do the same."); add("cilium",1,"Same.");
+      add("cloudebpf",2,"Use the provider's overlay mode — Azure CNI Overlay and equivalents give Pods a private range instead of VPC addresses."); }
+
+    // scale
+    if(q4==="small"){ add("flannel",1,"Small clusters rarely feel the limits that justify anything bigger."); }
+    if(q4==="mid"){ add("calico",1,"Comfortable here; remember Typha once node counts climb."); }
+    if(q4==="large"){ add("cilium",3,"At thousands of Services, replacing kube-proxy's iptables mode is the difference between seconds and minutes to programme a change.");
+      add("cloudebpf",2,"Same benefit, operated for you."); add("flannel",-3,"Not where you want to be at this size.");
+      add("calico",1,"Scales, but you will want the eBPF dataplane for the same reason."); }
+
+    // appetite
+    if(q5==="boring"){ add("calico",1,"Familiar tools: routes, iptables, BGP."); add("flannel",1,"Nothing to learn.");
+      add("cilium",-2,"Powerful, but the debugging surface is unfamiliar."); add("cloudebpf",1,"The provider carries the unfamiliar part."); }
+    if(q5==="deep"){ add("cilium",3,"Hubble alone changes how networking incidents are investigated."); }
+
+    // a cloud plugin is not an option off the cloud, whatever it scored
+    if(q1==="onprem"||q1==="local") ["cloud","cloudebpf"].forEach(k=>{delete s[k];delete r[k];});
+    return {s,r};
+  }
+
+  function render(){
+    const {s,r}=score();
+    const best=Math.max(...Object.values(s));
+    // a runner-up only earns a mention if it is genuinely close to the top
+    const ranked=Object.keys(s).filter(k=>s[k]>=Math.max(2,best*0.55)).sort((a,b)=>s[b]-s[a]).slice(0,3);
+    if(!ranked.length){ $("rec").innerHTML='<p class="muted">Those constraints rule out everything on this list — which usually means the requirements need re-reading.</p>'; return; }
+    $("rec").innerHTML=ranked.map((k,i)=>
+      `<div class="card" style="margin:12px 0">
+         <span class="tag">${i===0?"Best fit":"Also reasonable"}</span>
+         <h3 style="margin:.1em 0 .3em">${C[k].name}</h3>
+         <p class="muted" style="margin:.2em 0 .5em">${C[k].note}</p>
+         <ul style="margin:.2em 0">${r[k].map(w=>`<li>${w}</li>`).join("")}</ul>
+       </div>`).join("")+
+      `<p class="muted">Scored against your four constraints, not popularity. If the top two are close, pick the one your team can debug.</p>`;
+  }
+
+  ["q1","q2","q3","q4","q5"].forEach(id=>$(id).addEventListener("change",render));
+  render();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>3. NetworkPolicy and who enforces it · Pod networking and the CNI</title>
+<meta name="description" content="Default-allow until a Pod is selected, additive rules with no deny, the selector gotcha, default-deny recipes, DNS egress, and plugins that accept policy and ignore it.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="3">
+<main>
+  <span class="tag">Lesson 3</span>
+  <h1>NetworkPolicy and who enforces it</h1>
+  <p class="lead">A flat network where every Pod can reach every other Pod is the price of the model in lesson 1. NetworkPolicy buys some of it back — but the API accepts your policy whether or not anything in the cluster intends to enforce it, and that is the detail that gets people hurt.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Explain why policy is default-allow until a Pod is selected, read an additive rule set with no deny in it, avoid the selector gotcha that quietly widens a rule, write a default-deny that does not break DNS, and check in one command whether your plugin enforces any of it.
+  </div>
+
+  <h2>The default is "everything"</h2>
+  <p>Out of the box, the documentation is explicit: <q>By default, a pod is non-isolated for egress; all outbound connections are allowed</q>, and the same for ingress. Nothing is filtered. Your payments Pod can reach your marketing database, and the compromised image-resizer in a far-off namespace can reach both.</p>
+  <p>A <strong>NetworkPolicy</strong> changes that, and it changes it in a specific, surprising way:</p>
+  <div class="callout">
+    <h3>The one rule that explains all the others</h3>
+    <p>A Pod is unfiltered until <em>some</em> policy selects it. The moment any policy selects that Pod for a direction, the Pod becomes <strong>isolated</strong> in that direction, and from then on only traffic matching some policy is allowed. Everything else is dropped.</p>
+    <p>So policies do not deny. They select — and selection is what denies, by flipping the default for that Pod from allow-all to deny-all.</p>
+  </div>
+  <p>Three consequences follow, and they are the whole mental model:</p>
+  <ul>
+    <li><strong>Policies are additive.</strong> Two policies selecting the same Pod produce the union of what they allow. There is no ordering, no priority, no first-match-wins.</li>
+    <li><strong>There is no deny rule.</strong> You cannot write "allow everything except this". You narrow by allowing less, never by subtracting.</li>
+    <li><strong>Directions are independent.</strong> Isolating ingress does nothing to egress. A Pod can be locked down inbound and still free to exfiltrate.</li>
+  </ul>
+  <p>They are also namespaced objects that select by <strong>label</strong>, not by address. Scale a Deployment and the new Pod is covered the moment it exists, with no address bookkeeping anywhere. That is the same identity-over-address idea that <a href="05-ebpf-and-cilium.html">lesson 5</a> takes to its conclusion.</p>
+
+  <h2>Default-deny, the way everyone starts</h2>
+  <p>This is the canonical first policy. It allows nothing, which is the point — it selects every Pod in the namespace and provides no rules, so every Pod becomes isolated for ingress with an empty allow-list:</p>
+  <pre><code>apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: prod
+spec:
+  podSelector: {}          # {} means every Pod in this namespace
+  policyTypes: [Ingress]   # ingress only — egress is untouched</code></pre>
+  <p>Then you add back what the application needs, one allow at a time:</p>
+  <pre><code>spec:
+  podSelector:
+    matchLabels: {app: api}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app: web}
+      ports:
+        - protocol: TCP
+          port: 8080</code></pre>
+  <p>Note what the second policy does <em>not</em> say: it does not mention the deny. The two coexist, the union is "api accepts 8080 from web, and nothing else accepts anything", and either can be deleted independently.</p>
+
+  <div class="callout">
+    <h3>The YAML gotcha that widens your rule</h3>
+    <p>These two differ by one dash and they are not close to equivalent:</p>
+    <pre><code># AND — Pods labelled app=web, in namespaces labelled team=payments
+from:
+  - namespaceSelector: {matchLabels: {team: payments}}
+    podSelector:       {matchLabels: {app: web}}
+
+# OR — every Pod in those namespaces, PLUS app=web Pods anywhere
+from:
+  - namespaceSelector: {matchLabels: {team: payments}}
+  - podSelector:       {matchLabels: {app: web}}</code></pre>
+    <p>One list element with two selectors is an intersection. Two elements is a union. The second form is almost never what someone meant to write, and it reviews clean because the words are all correct.</p>
+  </div>
+
+  <h2>Test it before you ship it</h2>
+  <p>Four Pods: <code>web</code>, <code>api</code> and <code>db</code> in namespace <code>prod</code>, plus Prometheus in <code>monitoring</code>. Turn policies on and see what each one actually does to the reachability matrix. Click any cell for the reasoning.</p>
+
+  <div class="widget">
+    <h3>NetworkPolicy simulator</h3>
+    <div class="row" style="gap:7px">
+      <label><input type="checkbox" id="enforce" checked> plugin enforces NetworkPolicy</label>
+    </div>
+    <div class="row" style="flex-direction:column;align-items:flex-start;gap:4px">
+      <label><input type="checkbox" class="pol" value="denyIn"> <code>default-deny-ingress</code> — selects all Pods in prod</label>
+      <label><input type="checkbox" class="pol" value="webApi"> <code>allow-web-to-api</code> — api accepts 8080 from app=web</label>
+      <label><input type="checkbox" class="pol" value="apiDb"> <code>allow-api-to-db</code> — db accepts 5432 from app=api</label>
+      <label><input type="checkbox" class="pol" value="scrape"> <code>allow-monitoring</code> — all prod Pods accept 9090 from namespace monitoring</label>
+      <label><input type="checkbox" class="pol" value="denyOut"> <code>default-deny-egress</code> — selects all Pods in prod</label>
+      <label><input type="checkbox" class="pol" value="dns"> <code>allow-dns-egress</code> — prod Pods may reach kube-dns on 53</label>
+    </div>
+    <div id="matrix"></div>
+    <p id="why" class="muted">Click a cell to see which policy decided it.</p>
+  </div>
+
+  <h2>The thing that breaks: DNS</h2>
+  <p>Turn on <code>default-deny-egress</code> in that simulator without <code>allow-dns-egress</code> and watch the DNS column go red. In a real cluster that is not a red square, it is an incident: every name lookup in the namespace times out, applications hang on connect rather than failing fast, and the logs are full of resolver errors that point at CoreDNS, which is perfectly healthy.</p>
+  <p>Egress policies isolate <em>everything</em> outbound, and name resolution is outbound traffic. Allow it explicitly:</p>
+  <pre><code>spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}</code></pre>
+  <p>Both protocols. UDP carries almost all of it; TCP carries the retry when a response does not fit, and omitting it produces a failure that only appears for large responses — the same shape as the MTU bug in <a href="02-pod-to-pod.html">lesson 2</a>, and just as annoying to find.</p>
+  <p>Note the <code>kubernetes.io/metadata.name</code> label. The control plane sets it on every namespace automatically, which makes it the reliable way to select one namespace without relying on a label someone may not have added.</p>
+
+  <h2>Who is actually enforcing this?</h2>
+  <p>Now the part that justifies this lesson living in a CNI course. NetworkPolicy is an API object; <strong>the API server stores it and nothing else happens</strong>. Enforcement is the network plugin's job, and the docs warn plainly that policies are implemented by the network plugin, so with a plugin that does not support NetworkPolicy, <q>creating the resource will have no effect</q>.</p>
+  <p>No error. No warning. No status field. <code>kubectl get networkpolicy</code> lists your carefully reviewed policy, the compliance checkbox is ticked, and the cluster is as flat as the day it was built. Flannel is the common case — it is a networking plugin only, and the usual fix is Canal, which is Flannel for connectivity plus Calico for policy.</p>
+  <div class="hand">
+    <h3>Check it in 30 seconds</h3>
+    <p>Do not infer this from documentation. Prove it on the cluster in front of you:</p>
+    <pre><code>kubectl create ns np-test
+kubectl -n np-test run target --image=nginx --labels app=target
+kubectl -n np-test expose pod target --port 80
+kubectl -n np-test apply -f - &lt;&lt;'EOF'
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: deny-all}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+EOF
+kubectl -n np-test run probe --rm -it --image=busybox --restart=Never -- \
+  wget -qO- --timeout=4 http://target
+# connection refused/timeout  → enforced.
+# the nginx welcome page      → your plugin is ignoring policy.
+kubectl delete ns np-test</code></pre>
+  </div>
+
+  <h2>What the standard API cannot do</h2>
+  <p>NetworkPolicy is a deliberately small, portable API, and its limits are where plugin-specific CRDs come in:</p>
+  <table>
+    <tr><th>You want</th><th>Standard NetworkPolicy</th><th>Where it lives instead</th></tr>
+    <tr><td>Cluster-wide rules</td><td>No — policies are namespaced</td><td>Calico <code>GlobalNetworkPolicy</code>, Cilium <code>CiliumClusterwideNetworkPolicy</code>, or the newer <code>AdminNetworkPolicy</code> API</td></tr>
+    <tr><td>Explicit deny, and priority</td><td>No — allow-only, unordered</td><td><code>AdminNetworkPolicy</code>, or plugin CRDs with an order field</td></tr>
+    <tr><td>L7 rules (this HTTP path, that Kafka topic)</td><td>No — L3/L4 only</td><td>Cilium policy, or a service mesh</td></tr>
+    <tr><td>Rules by DNS name</td><td>No — labels, CIDRs and ports</td><td>Cilium <code>toFQDNs</code>, Calico <code>NetworkSet</code>/domain rules</td></tr>
+    <tr><td>A log of what was denied</td><td>No</td><td>Plugin flow logs: Hubble, Calico flow logs</td></tr>
+  </table>
+  <p>Stay on the standard API for as long as it fits — it is the only part that survives changing plugins. Reach for a CRD when you have a requirement the standard genuinely cannot express, not because the CRD is nicer.</p>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>Namespace <code>prod</code> has <code>web</code>, <code>api</code>, <code>db</code>. You apply <code>default-deny-ingress</code> (selects all) and <code>allow-web-to-api</code> (api accepts 8080 from app=web).</p>
+    <ol>
+      <li>Can <code>api</code> still reach <code>db</code> on 5432?</li>
+      <li>Can <code>api</code> still call an external payment API on the internet?</li>
+      <li>A teammate adds a policy selecting <code>api</code> that allows ingress from <code>app: batch</code>. Does that narrow or widen what reaches api?</li>
+      <li>You want "everything except db may reach the internet". How do you express that?</li>
+      <li><code>kubectl get netpol</code> shows all three policies and traffic is unchanged. First thing you check?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) <strong>No.</strong> <code>db</code> is selected by the default-deny, so it is isolated for ingress, and no policy allows anything to it. The connection is dropped at db, not at api.</p>
+      <p>2) <strong>Yes.</strong> Both policies set <code>policyTypes: [Ingress]</code> only. Egress is untouched, so every Pod in prod still has unrestricted outbound access.</p>
+      <p>3) <strong>Widens.</strong> Policies are additive — the union now lets in <code>app=web</code> on 8080 and <code>app=batch</code>. Nothing a new policy can do will take away an allow granted by an existing one.</p>
+      <p>4) Not as a single exception, because there is no deny. You isolate every Pod for egress and then grant outbound to everything <em>except</em> db — either by selecting only the non-db Pods, or with an <code>ipBlock</code> allow plus an <code>except</code> for internal ranges. With standard NetworkPolicy the exception has to become a positive statement about someone else.</p>
+      <p>5) Whether your plugin enforces NetworkPolicy at all. Run the 30-second deny-all test above before debugging a single selector — Flannel without Calico accepts every policy you write and applies none of them.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>You have now hit the plugin's capabilities from two directions — how it moves packets, and whether it filters them. <a href="04-the-options.html">Lesson 4</a> puts the actual options side by side and gives you a way to choose.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"What happens to a Pod that no NetworkPolicy selects?","options":["All traffic to and from it is denied","It is unfiltered — all traffic allowed in both directions","Only same-namespace traffic is allowed","It cannot start"],"answer":1,"why":"Default-allow until selected. A Pod becomes isolated in a direction only when some policy selects it for that direction, and from then on only what policies permit gets through."},
+ {"q":"Two policies select the same Pod for ingress. What is the effect?","options":["The newer one wins","The union of what both allow","The more restrictive one wins","A conflict error is returned"],"answer":1,"why":"Policies are purely additive with no ordering or priority. You narrow access by allowing less overall, never by writing a deny — standard NetworkPolicy has no deny rule."},
+ {"q":"You apply default-deny-egress and every name lookup starts timing out. Why?","options":["CoreDNS crashed","DNS is outbound traffic and the policy isolated all egress","The CNI blocks UDP by default","The policy was applied in the wrong namespace"],"answer":1,"why":"Egress isolation covers everything outbound, including DNS to kube-dns. Add an explicit egress allow to kube-system on port 53 for both UDP and TCP — TCP carries the retry for responses too large for UDP."},
+ {"q":"Your plugin does not support NetworkPolicy. What happens when you apply one?","options":["The API server rejects it","It is stored and silently has no effect","The Pods fail to start","kubectl prints a warning"],"answer":1,"why":"Enforcement belongs to the network plugin. The object is stored either way, with no error, no warning and no status — which is why you test with a real deny-all probe rather than trusting that the object exists."},
+ {"q":"In an ingress 'from' list, what is the difference between one element holding both a namespaceSelector and a podSelector, and two separate elements?","options":["No difference","One element means AND (both must match); two elements mean OR","Two elements is invalid YAML","One element is deprecated"],"answer":1,"why":"One element intersects the selectors; separate elements union them. The two-element version usually allows far more than intended and reads perfectly fine in review — check the dashes."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  // four workloads and the port each is reached on
+  const PODS={
+    web:{ns:"prod",label:"app=web"},
+    api:{ns:"prod",label:"app=api"},
+    db:{ns:"prod",label:"app=db"},
+    prom:{ns:"monitoring",label:"app=prometheus"},
+  };
+  const SRC=["web","api","db","prom"];
+  // destinations are (Pod, port) pairs — the port is half the policy decision
+  const DST=[
+    {k:"web",   pod:"web", port:80,   label:"web"},
+    {k:"api",   pod:"api", port:8080, label:"api"},
+    {k:"db",    pod:"db",  port:5432, label:"db"},
+    {k:"metrics",pod:"api",port:9090, label:"api metrics"},
+    {k:"dns",   pod:null,  port:53,   label:"kube-dns"},
+  ];
+
+  const on=v=>!!document.querySelector(`.pol[value="${v}"]:checked`);
+
+  // returns {ok, reason}
+  function evaluate(s,dst){
+    const src=PODS[s];
+    const d=dst.pod;              // null for kube-dns, which lives outside prod
+    const port=dst.port;
+    const isDns=dst.k==="dns";
+
+    if(!$("enforce").checked)
+      return {ok:true,reason:`<strong>Allowed — but not because of policy.</strong> This plugin does not enforce NetworkPolicy, so every policy above is stored by the API server and ignored by the dataplane. The whole matrix is green no matter what you tick.`};
+
+    // egress: only prod Pods are ever selected by the egress policies here
+    const egIsolated = src.ns==="prod" && on("denyOut");
+    if(egIsolated){
+      const dnsAllowed = isDns && on("dns");
+      if(!dnsAllowed)
+        return {ok:false,reason:`<strong>Denied leaving ${s}.</strong> <code>default-deny-egress</code> selects every Pod in prod, so ${s} is isolated for egress and only explicitly allowed destinations are reachable.`+
+          (isDns?" Tick <code>allow-dns-egress</code> — this is the one that takes a namespace down.":"")};
+    }
+
+    // ingress at the destination
+    if(isDns)
+      return {ok:true,reason:`<strong>Allowed.</strong> ${egIsolated?"<code>allow-dns-egress</code> permits it outbound, and ":""}kube-dns is in another namespace that no policy here isolates. Name resolution works.`};
+
+    const inIsolated = on("denyIn") || (d==="api"&&on("webApi")) || (d==="db"&&on("apiDb")) || on("scrape");
+    if(!inIsolated)
+      return {ok:true,reason:`<strong>Allowed.</strong> No policy selects <code>${d}</code> for ingress, so it is non-isolated — the Kubernetes default is to allow everything. This is what a cluster with no policies looks like.`};
+
+    const grants=[];
+    if(d==="api"&&on("webApi")&&s==="web"&&port===8080) grants.push(`<code>allow-web-to-api</code> (from app=web on 8080)`);
+    if(d==="db"&&on("apiDb")&&s==="api"&&port===5432) grants.push(`<code>allow-api-to-db</code> (from app=api on 5432)`);
+    if(on("scrape")&&s==="prom"&&port===9090) grants.push("<code>allow-monitoring</code> (from namespace monitoring on 9090)");
+
+    if(grants.length)
+      return {ok:true,reason:`<strong>Allowed by ${grants.join(" and ")}.</strong> ${d} is isolated for ingress, and this connection matches a rule. Rules are additive, so any one match is enough.`};
+
+    const selectedBy=[on("denyIn")&&"<code>default-deny-ingress</code>",
+      d==="api"&&on("webApi")&&"<code>allow-web-to-api</code>",
+      d==="db"&&on("apiDb")&&"<code>allow-api-to-db</code>",
+      on("scrape")&&"<code>allow-monitoring</code>"].filter(Boolean);
+    let extra="";
+    if(on("scrape")&&s==="prom"&&port!==9090)
+      extra=` The monitoring rule only opens 9090, and this is port ${port} — a scrape exemption is not a general one.`;
+    return {ok:false,reason:`<strong>Denied at ${d}.</strong> It is isolated for ingress because ${selectedBy.join(" and ")} select${selectedBy.length>1?"":"s"} it, and nothing allows ${s} on port ${port}.${extra} Note the drop happens at the destination, not the source.`};
+  }
+
+  function render(){
+    const rows=SRC.map(s=>{
+      const cells=DST.map((dst,j)=>{
+        const r=evaluate(s,dst);
+        return `<td><button class="opt ${r.ok?"right":"wrong"}" data-s="${s}" data-j="${j}" `+
+          `style="margin:0;padding:6px 8px;text-align:center;font:600 .8rem var(--mono)">${r.ok?"allow":"deny"}</button></td>`;
+      }).join("");
+      return `<tr><th>${s}<br><span class="muted" style="font-weight:400">${PODS[s].ns}</span></th>${cells}</tr>`;
+    }).join("");
+    $("matrix").innerHTML=`<table><tr><th>from \\ to</th>`+
+      DST.map(d=>`<th>${d.label}<br><span class="muted" style="font-weight:400">:${d.port}</span></th>`).join("")+
+      `</tr>${rows}</table>`;
+    $("matrix").querySelectorAll("button").forEach(b=>{
+      b.onclick=()=>{
+        const dst=DST[+b.dataset.j], r=evaluate(b.dataset.s,dst);
+        $("why").innerHTML=`<code>${b.dataset.s} → ${dst.label}:${dst.port}</code> — ${r.reason}`;
+      };
+    });
+  }
+
+  document.querySelectorAll(".pol,#enforce").forEach(c=>c.addEventListener("change",render));
+  render();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pod networking and the CNI</title>
+<meta name="description" content="Why Kubernetes needs a CNI plugin, how a packet gets from Pod to Pod, how NetworkPolicy is enforced, and how Flannel, Calico, Cilium and the cloud CNIs differ.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-page="index">
+<main>
+  <span class="tag">5 lessons, about 25 minutes each</span>
+  <h1>Pod networking and the CNI</h1>
+  <p class="lead">Kubernetes writes down demanding rules about how Pods must reach each other, then ships nothing that implements them. That hole is deliberate, and the thing you drop into it — your CNI plugin — decides your IP plan, your blast radius, your security model and, eventually, one of your worst outages.</p>
+
+  <div class="goal">
+    <h3>How each lesson works</h3>
+    <ol>
+      <li><strong>Idea</strong> in plain words with a tiny example.</li>
+      <li><strong>Play</strong> with an animation or interactive widget.</li>
+      <li><strong>Do it by hand</strong> — a short exercise with a hidden answer.</li>
+      <li><strong>Quiz</strong> — pass it to complete the lesson.</li>
+    </ol>
+  </div>
+
+  <h2>Lessons</h2>
+  <ol class="lessons" id="lessons"></ol>
+
+  <div class="callout">
+    <h3>Why this is a side course, not lesson 10</h3>
+    <p>The main course follows one thread: the control loop, applied to Pods, nodes, replicas and custom resources. Networking is a different thread that runs underneath all of it — every lesson there quietly assumed Pods could already talk to each other.</p>
+    <p>This is where that assumption gets paid for. You can read it after lesson 4 of the main course; nothing here needs the autoscaling lessons.</p>
+  </div>
+
+  <h2>What you will be able to do</h2>
+  <p>Say what breaks if you install no CNI at all, and read the <code>ContainerCreating</code> error that results. Size a Pod CIDR before it strands you three months into a cluster's life. Trace a packet from one Pod's network namespace to another's and say where encapsulation was added and what it cost in MTU. Write a NetworkPolicy that does what you meant, and tell whether your plugin will enforce it at all. Choose between Flannel, Calico, Cilium and a cloud CNI with reasons you can defend in a design review.</p>
+
+  <h2>Before you start</h2>
+  <p>Do <a href="../01-desired-state.html">lessons 1</a> and <a href="../02-pods-and-controllers.html">2</a> of the <a href="../index.html">Kubernetes course</a> first — this one assumes you know what a Pod, a DaemonSet and a controller are. Lesson 4 here refers back to <a href="../04-scheduling.html">scheduling</a> when IP exhaustion starts producing Pending Pods that look like a scheduler problem and are not.</p>
+
+  <p class="muted">Every quoted claim is sourced at the end of <a href="05-ebpf-and-cilium.html">lesson 5</a>. Progress is stored only in your browser. No tracking, no dependencies.</p>
+</main>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+</body>
+</html>

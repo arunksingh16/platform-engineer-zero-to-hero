@@ -33,13 +33,19 @@ python3 -m http.server 8000
 | `../style.css` | Site-wide theme |
 | `../course.js` | Shared engine: progress bar, footer navigation, quiz |
 
-## Planned child courses
+## Child courses
+
+`cni/` — **Pod networking and the CNI**, five lessons: the network model and IP
+planning, the packet path and MTU, NetworkPolicy and who enforces it, choosing
+between Flannel, Calico, Cilium and the cloud CNIs, and the eBPF dataplane.
+Vendor-neutral, with its own references section at the end of lesson 5.
 
 Platform-specific material goes in a child directory with its own `lessons.js`
 and its own progress key, so progress never bleeds between courses:
 
 ```text
 Kubernetes/
+  cni/                    const COURSE = { key: "kubernetes-cni", up: {...}, ... }
   eks/
     index.html
     lessons.js          const COURSE = { key: "k8s-eks", ... }
