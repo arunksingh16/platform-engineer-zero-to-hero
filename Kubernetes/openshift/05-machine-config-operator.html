@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>5. The Machine Config Operator · OpenShift for senior SREs</title>
+<meta name="description" content="MachineConfig, rendered configs, MachineConfigPools, the machine-config-daemon, drain and reboot behaviour, maxUnavailable, paused pools, custom pools, KubeletConfig, and stuck-rollout diagnosis.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="5">
+<main>
+  <span class="tag">Lesson 5</span>
+  <h1>The Machine Config Operator</h1>
+  <p class="lead">Every change to a node — a kernel argument, a chrony file, a kubelet setting, an OS update — travels the same path: a MachineConfig is merged into a rendered config, a pool rolls it out one node at a time, and each node drains, writes, and (usually) reboots. If you do not know that path, a harmless-looking YAML will reboot your fleet.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Describe the MCO's components and how a rendered config is made, predict how long a rollout takes and what stops it, choose when to pause or use a custom pool, and diagnose a Degraded or stuck pool.
+  </div>
+
+  <h2>The pieces</h2>
+  <table>
+    <tr><th>Component</th><th>Job</th></tr>
+    <tr><td><strong>MachineConfig</strong> (<code>mc</code>)</td><td>A named fragment of desired node state: Ignition files and units, kernel arguments, extensions, FIPS, and a kernel type. You write these.</td></tr>
+    <tr><td><strong>Machine Config Controller</strong></td><td>Merges all MachineConfigs matching a pool, in lexical name order, into one <code>rendered-&lt;pool&gt;-&lt;hash&gt;</code> object. Also runs the pool's rollout and node selection.</td></tr>
+    <tr><td><strong>MachineConfigPool</strong> (<code>mcp</code>)</td><td>A set of nodes (by label) plus the MachineConfigs they share. Defaults: <code>master</code> and <code>worker</code>.</td></tr>
+    <tr><td><strong>Machine Config Daemon</strong> (per node)</td><td>Cordons and drains, writes files, applies OS updates via rpm-ostree, reboots, then validates on-disk state.</td></tr>
+    <tr><td><strong>Machine Config Server</strong></td><td>Serves the current rendered Ignition to <em>new</em> machines during first boot.</td></tr>
+  </table>
+  <p>The naming convention matters: MachineConfigs are merged in <strong>lexical order</strong>, and later wins on a conflict. Platform-owned ones are <code>00-</code> to <code>99-</code> prefixed; yours should sit near the end, <code>99-worker-chrony</code>, and never collide with a file the platform owns.</p>
+
+  <h2>One change, end to end</h2>
+  <pre><code>1. oc apply -f 99-worker-chrony.yaml          # a MachineConfig labelled for the worker pool
+2. Controller renders rendered-worker-7f3a...  # new hash because content changed
+3. Pool "worker" desired = new rendered; UPDATING
+4. For each node, up to maxUnavailable at a time:
+     MCD: cordon → drain (respects PDBs) → write files → rpm-ostree → reboot
+     node returns → MCD validates → annotates state=Done → uncordon
+5. Pool reports UPDATED when every node's current == desired</code></pre>
+  <p>Look at the status you will actually watch:</p>
+  <pre><code>$ oc get mcp
+NAME     CONFIG                    UPDATED  UPDATING  DEGRADED  MACHINECOUNT  READY  UPDATED  UNAVAIL
+master   rendered-master-1a2b      True     False     False     3             3      3        0
+worker   rendered-worker-7f3a      False    True      False     30            27     27       1</code></pre>
+  <p>Node annotations <code>machineconfiguration.openshift.io/currentConfig</code>, <code>desiredConfig</code> and <code>state</code> (<em>Done</em>, <em>Working</em>, <em>Degraded</em>) tell you exactly where each node is.</p>
+
+  <h2>Does this reboot me?</h2>
+  <p>By default, assume yes. The daemon is conservative because it cannot know whether a changed file matters at runtime. Several classes of change have long been special-cased to avoid a reboot — SSH key updates, pull-secret changes, and image mirror (<code>ImageDigestMirrorSet</code> / <code>ImageTagMirrorSet</code>) changes handled with a CRI-O reload, for example. Recent releases add <strong>node disruption policies</strong> in the <code>MachineConfiguration</code> API so you can declare which files or units need only a service reload or no action. Check your version before relying on it; and test on a canary pool.</p>
+  <p>The fleet-level consequence: any change to the <code>worker</code> pool is a rolling drain and reboot of every worker. Batch your changes. Ten separate MachineConfigs applied across a day is ten rollouts; ten applied together while paused is one.</p>
+
+  <h2>Model the rollout</h2>
+  <div class="widget">
+    <h3>Rollout time and PDB blocking</h3>
+    <div class="row">
+      <label>nodes <input id="n" type="number" min="1" max="500" value="30" style="width:70px"></label>
+      <label>maxUnavailable <input id="mu" type="number" min="1" max="50" value="1" style="width:60px"></label>
+      <label>minutes per node (drain + reboot + ready) <input id="mpn" type="number" min="2" max="60" value="12" style="width:60px"></label>
+      <label><input type="checkbox" id="pdb"> a PDB with <code>maxUnavailable: 0</code> on a replicated app</label>
+    </div>
+    <p id="roll"></p>
+  </div>
+  <p>At <code>maxUnavailable: 1</code> a 100-node pool takes roughly a day. Raising it speeds things up and shrinks your capacity margin in exact proportion — set it from <em>how many nodes' worth of headroom you can lose</em>, not from impatience. It accepts a percentage, which scales as the pool grows.</p>
+
+  <h2>Custom pools: separate schedules and blast radius</h2>
+  <p>Create a pool that inherits <code>worker</code> configs and adds its own, with a label selector over a node role such as <code>infra</code> or <code>canary</code>:</p>
+  <pre><code>apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfigPool
+metadata: {name: canary}
+spec:
+  machineConfigSelector:
+    matchExpressions:
+      - {key: machineconfiguration.openshift.io/role, operator: In, values: [worker, canary]}
+  nodeSelector:
+    matchLabels: {node-role.kubernetes.io/canary: ""}
+  maxUnavailable: 1</code></pre>
+  <p>Two reasons to do this. <strong>Canary:</strong> new configuration reaches a few nodes first, while the main pool is untouched. <strong>Update control:</strong> you can pause the big pool and update only the control plane during a cluster upgrade, then let the pool roll at a time you choose. Pausing (<code>spec.paused: true</code>) holds the pool's rollout; it must be unpaused before you can complete a minor update, and certificates on a long-paused pool can expire — do not leave pools paused for weeks.</p>
+  <p>A node can belong to only one pool. If a node matches several selectors, the pool selection becomes ambiguous and the MCO refuses to proceed; keep selectors disjoint.</p>
+
+  <h2>KubeletConfig and friends</h2>
+  <p>You change kubelet behaviour through a <code>KubeletConfig</code> object whose <code>machineConfigPoolSelector</code> targets a pool by <em>label on the pool itself</em>. The MCO then generates a MachineConfig with the result. The same pattern gives you <code>ContainerRuntimeConfig</code> (CRI-O: PID limits, log size, default ulimits), and the Node Tuning Operator handles sysctls and tuned profiles without reboots where possible.</p>
+  <pre><code>apiVersion: machineconfiguration.openshift.io/v1
+kind: KubeletConfig
+metadata: {name: worker-limits}
+spec:
+  machineConfigPoolSelector:
+    matchLabels: {pools.operator.machineconfiguration.openshift.io/worker: ""}
+  kubeletConfig:
+    maxPods: 250
+    podPidsLimit: 4096</code></pre>
+  <p>Common mistake: a <code>KubeletConfig</code> whose selector matches nothing. It produces no error; the pool just never changes. Check <code>oc get kubeletconfig -o yaml</code> for <code>status.conditions</code> and check the generated <code>99-worker-generated-kubelet</code> exists.</p>
+
+  <h2>When a pool is stuck or Degraded</h2>
+  <table>
+    <tr><th>Symptom</th><th>Likely cause</th><th>First look</th></tr>
+    <tr><td>Pool UPDATING for hours, one node cordoned</td><td>Drain blocked by a PDB or a Pod that will not terminate</td><td><code>oc -n openshift-machine-config-operator logs &lt;daemon&gt; -c machine-config-daemon</code>; <code>oc get pdb -A</code></td></tr>
+    <tr><td>Pool Degraded, <em>unexpected on-disk state</em></td><td>Someone edited a managed file by hand</td><td>Daemon log names the file; revert it, or <code>touch /run/machine-config-daemon-force</code> as documented</td></tr>
+    <tr><td>Node NotReady after reboot</td><td>Boot or network failure, or pending CSRs after long downtime</td><td>Console; <code>oc get csr</code></td></tr>
+    <tr><td>Pool rendering errors</td><td>Invalid Ignition or two MachineConfigs conflicting</td><td><code>oc describe mcp</code>, controller logs</td></tr>
+    <tr><td>Nothing happens at all</td><td>Pool is paused, or selector matches no nodes</td><td><code>oc get mcp -o yaml | grep paused</code></td></tr>
+  </table>
+  <p>The one habit that prevents most of this: drains block because of <em>workload</em> design, not platform fault. A PDB set to allow zero disruptions on a single-replica app is a promise the platform will not break, and it will wait forever. Fix the workload, not the pool.</p>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>You must add a kernel argument to all 60 workers. Capacity analysis says you can lose 6 nodes. Each node takes about 15 minutes. A pager-sensitive team runs a database on 3 of the workers with a PDB of <code>minAvailable: 3</code> on 3 replicas.</p>
+    <ol>
+      <li>With <code>maxUnavailable: 6</code>, what is the best-case duration?</li>
+      <li>What will the PDB do to the rollout?</li>
+      <li>How do you get the DB nodes through safely?</li>
+      <li>What would you do before touching production at all?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) 60 / 6 = 10 waves × 15 min = <strong>~2.5 hours</strong> best case.</p>
+      <p>2) <code>minAvailable: 3</code> of 3 means no replica may be evicted, so the drain of any DB node never completes and the MCO waits. Because maxUnavailable counts cordoned nodes, one stuck DB node holds a slot for the rest of the rollout; the pool appears frozen.</p>
+      <p>3) Do not remove the PDB casually. Put the DB nodes in a dedicated pool and roll them separately, one at a time with an operator-driven switchover (fail over, update the node, fail back), or temporarily relax the PDB with a plan for the replica being unavailable. The rule is: the app owner decides how many replicas can go.</p>
+      <p>4) Apply the same MachineConfig to a small canary pool first, confirm the node returns Ready and the kernel argument is present (<code>cat /proc/cmdline</code>), then widen. Batch any other pending changes into the same rollout.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>Everything in this lesson also happens during a cluster update, because the OS is part of the release. <a href="06-updates-and-lifecycle.html">Lesson 6</a> puts the CVO and the MCO together.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"What does the Machine Config Daemon do on each node during a rollout?","options":["Only writes files","Cordons and drains, applies the config and OS update, reboots (usually), then validates and uncordons","Replaces the Machine","Restarts the kubelet only"],"answer":1,"why":"The daemon performs the per-node steps in sequence. The reboot is what makes pool-wide changes disruptive, and the validation is what flags drift."},
+ {"q":"How are multiple MachineConfigs combined for a pool?","options":["Randomly","Merged in lexical name order into a rendered config, with later entries winning","The newest only","Only the one with the lowest priority number"],"answer":1,"why":"That is why names are prefixed with numbers. Name yours so they sort after platform-owned fragments and avoid conflicting paths."},
+ {"q":"A pool is UPDATING for hours with one node cordoned. Most likely cause?","options":["The CVO is down","A drain is blocked by a PDB or an unkillable Pod","etcd quota","A DNS outage"],"answer":1,"why":"The MCO honours PDBs. A zero-disruption PDB on a single-replica app is a promise the platform keeps indefinitely. Fix the workload design."},
+ {"q":"Why create a custom canary MachineConfigPool?","options":["To avoid RBAC","To roll new node config to a few nodes first and to give a group of nodes an independent update schedule","To disable the MCO","To change instance types"],"answer":1,"why":"Custom pools inherit worker config but roll separately. They provide canarying and let you pause the main pool during cluster updates."},
+ {"q":"Your KubeletConfig 'did nothing'. Most likely?","options":["maxPods is not editable","Its machineConfigPoolSelector matches no pool label, so no MachineConfig was generated","The node is Windows","kubelet ignores it until restart"],"answer":1,"why":"The selector matches labels on the pool object, not on nodes. A mismatch is silent; verify that a generated MachineConfig exists and the pool is updating."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  function draw(){
+    const n=+$("n").value, mu=+$("mu").value, m=+$("mpn").value, pdb=$("pdb").checked;
+    const waves=Math.ceil(n/mu), mins=waves*m;
+    const frac=(100*mu/n).toFixed(0);
+    let h=`<strong>${waves}</strong> waves × ${m} min = <strong>${mins>=120?(mins/60).toFixed(1)+" hours":mins+" min"}</strong>. At any moment up to <strong>${mu}</strong> nodes (${frac}% of the pool) are out of service.`;
+    if(+frac>=20) h+=` <span class="err">That is a large share of capacity; confirm you can run on the rest.</span>`;
+    if(pdb) h+=`<br><span class="err">With a zero-disruption PDB the drain on that node never finishes. It holds one of the ${mu} slots indefinitely, so the effective parallelism is ${Math.max(mu-1,0)}${mu===1?" — the rollout is stopped.":"."}</span>`;
+    $("roll").innerHTML=h;
+  }
+  ["n","mu","mpn","pdb"].forEach(i=>$(i).addEventListener("input",draw)); draw();
+})();
+</script>
+</body>
+</html>

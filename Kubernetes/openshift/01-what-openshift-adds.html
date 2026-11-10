@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>1. What OpenShift adds to Kubernetes · OpenShift for senior SREs</title>
+<meta name="description" content="OpenShift as Kubernetes plus a platform built from operators: the control-plane layout, config.openshift.io versus operator.openshift.io, and what you stop being allowed to do.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="1">
+<main>
+  <span class="tag">Lesson 1</span>
+  <h1>What OpenShift adds to Kubernetes</h1>
+  <p class="lead">The shortest accurate description is: OpenShift is a Kubernetes distribution whose administrator is software. The operating system, the API server's flags, the ingress layer, the monitoring stack and the upgrade itself are all managed by operators that will undo what you edit by hand. Internalise that and most of the platform's behaviour stops being surprising.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Say what OpenShift contributes beyond upstream, name the two API families that configure it, locate the operator that owns any given subsystem, and list the habits from vanilla Kubernetes you must drop.
+  </div>
+
+  <h2>The product map, so the names stop blurring</h2>
+  <table>
+    <tr><th>Name</th><th>What it is</th></tr>
+    <tr><td><strong>OKD</strong></td><td>The community upstream. Same architecture, community-supported, FCOS/CentOS Stream CoreOS nodes.</td></tr>
+    <tr><td><strong>OpenShift Container Platform (OCP)</strong></td><td>The supported product you install and run yourself, on bare metal, VMware, a public cloud, or at the edge.</td></tr>
+    <tr><td><strong>Managed OpenShift</strong></td><td>ROSA (AWS), ARO (Azure), OpenShift Dedicated (GCP/AWS). The provider runs the control plane lifecycle; you still own workloads, quotas, identity, and a lot of what this course covers.</td></tr>
+    <tr><td><strong>Hosted control planes</strong></td><td>An architecture, not a product: the control plane runs as Pods on a separate management cluster (lesson 2).</td></tr>
+  </table>
+  <p>Do not assume managed means "someone else's problem". Managed offerings restrict what you can change (often <code>cluster-admin</code> is replaced by a narrower <code>dedicated-admin</code>), so a fix that is a one-liner on a self-managed cluster may need a support ticket on ROSA.</p>
+
+  <h2>What is actually added</h2>
+  <ul>
+    <li><strong>An immutable, operator-managed OS.</strong> Nodes run Red Hat Enterprise Linux CoreOS (RHCOS). You do not SSH in and edit files; configuration is declared and the Machine Config Operator applies it (lessons 4–5).</li>
+    <li><strong>Operators all the way down.</strong> The Cluster Version Operator reads a release image and drives dozens of "cluster operators" — one each for the API server, etcd, ingress, DNS, networking, authentication, storage, monitoring, console and more (lesson 3).</li>
+    <li><strong>A built-in identity layer.</strong> An OAuth server, <code>User</code>, <code>Identity</code> and <code>Group</code> objects, and a default <code>kubeadmin</code> break-glass user (lesson 8).</li>
+    <li><strong>SecurityContextConstraints.</strong> A stricter, older precursor to Pod Security, enforced by admission and granted through RBAC (lesson 9).</li>
+    <li><strong>Routes and the router.</strong> The pre-Ingress way of exposing HTTP(S), implemented by HAProxy and still the primary interface (lesson 11).</li>
+    <li><strong>Projects, quotas and templates</strong> for tenancy (lesson 13), plus the integrated registry and <code>ImageStreams</code>, a layer that tracks image tags and triggers rollouts when they move.</li>
+    <li><strong>OLM and OperatorHub</strong> for installing software as operators with managed upgrades (lesson 7).</li>
+    <li><strong>One opinionated monitoring stack</strong> (Prometheus, Alertmanager, Thanos Querier) and a supported logging stack (lesson 14).</li>
+  </ul>
+
+  <h2>The control plane, as you will actually meet it</h2>
+  <pre><code>3 control-plane nodes (schedulable only in compact clusters)
+  static Pods, each reconciled by its own operator:
+    etcd                 ← cluster-etcd-operator
+    kube-apiserver       ← cluster-kube-apiserver-operator
+    kube-controller-mgr  ← cluster-kube-controller-manager-operator
+    kube-scheduler       ← cluster-kube-scheduler-operator
+  Deployments (the aggregated / OpenShift-specific APIs):
+    openshift-apiserver, oauth-apiserver (aggregated API servers)
+    oauth-openshift      (the login server, run by authentication operator)
+    machine-config-server/controller
+  Singletons everywhere else:
+    cluster-version-operator   ← drives all of the above from the release image</code></pre>
+  <p>You may remember static Pod manifests on <code>/etc/kubernetes/manifests</code> as the thing you edit to change an API server flag. On OpenShift the kube-apiserver static Pod is rendered from a <strong>revision</strong> managed by the operator. Edit the file on disk and the operator's installer Pod overwrites it on the next revision; there is no supported way to hand-tune flags. You change an API object instead, and the operator rolls a new revision across the three nodes one at a time.</p>
+
+  <div class="callout">
+    <h3>Two API families, and the difference matters</h3>
+    <p><strong><code>config.openshift.io</code></strong> — cluster-wide <em>configuration</em>, always a singleton named <code>cluster</code>: <code>APIServer</code>, <code>Authentication</code>, <code>Console</code>, <code>DNS</code>, <code>Image</code>, <code>Infrastructure</code>, <code>Ingress</code>, <code>Network</code>, <code>OAuth</code>, <code>Project</code>, <code>Proxy</code>, <code>Scheduler</code>, <code>ClusterVersion</code>, <code>FeatureGate</code>. This is what <em>you</em> edit.</p>
+    <p><strong><code>operator.openshift.io</code></strong> — the operator's own <em>configuration and status</em>: <code>IngressController</code>, <code>DNS</code>, <code>Network</code>, <code>KubeAPIServer</code>, <code>Etcd</code>, <code>Console</code>. This is where you set operator-specific behaviour (replicas, node placement, log levels) and where <code>managementState</code> lives.</p>
+    <p>The rule of thumb: policy goes in <code>config</code>; how an operator runs goes in <code>operator</code>; observed health is in <code>ClusterOperator</code>. Nothing you want is ever in a Pod spec the operator owns.</p>
+  </div>
+
+  <h2>Find the owner</h2>
+  <p>On a production incident the first question is "who reconciles this?" Pick a symptom or subsystem and see where to read and where to change it.</p>
+  <div class="widget">
+    <h3>Who owns it?</h3>
+    <div class="row"><label>Subsystem <select id="sub"></select></label></div>
+    <div id="owner"></div>
+  </div>
+
+  <h2>Habits to drop</h2>
+  <table>
+    <tr><th>Vanilla Kubernetes habit</th><th>On OpenShift</th></tr>
+    <tr><td>Containers run as root; the image decides</td><td>Default SCC assigns a random high UID from the project's range. Images that need a fixed UID fail on start (lesson 9).</td></tr>
+    <tr><td>SSH to a node and edit <code>/etc/kubernetes</code> or <code>/etc/crio</code></td><td>Use a <code>MachineConfig</code> or <code>KubeletConfig</code>. Manual edits cause config drift and mark the node <em>Degraded</em>.</td></tr>
+    <tr><td><code>kubectl edit deploy</code> on a system component</td><td>The operator reverts it within a reconcile loop — or worse, you leave the cluster unsupported.</td></tr>
+    <tr><td>Install an Ingress controller via Helm</td><td>One already exists. Create another <code>IngressController</code> CR for a shard.</td></tr>
+    <tr><td>Disable a component you do not need</td><td>Components are payload members. Choose <em>capabilities</em> at install time; do not delete them later.</td></tr>
+    <tr><td>Upgrade is a manual, ordered kubeadm dance</td><td>You select a channel and click one update; the CVO sequences it.</td></tr>
+    <tr><td><code>kubectl</code> only</td><td><code>oc</code> is a superset with project, login, debug, <code>adm</code> and release tooling. Both work.</td></tr>
+  </table>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>A teammate says "the ingress is flaky, I bumped the router Deployment to 6 replicas with <code>kubectl scale</code> and it went back to 2 after a minute." Another wants to "just add a flag" to the kube-apiserver on one control-plane node.</p>
+    <ol>
+      <li>Why did the replica count revert?</li>
+      <li>Where is the supported place to set router replicas?</li>
+      <li>What happens to the hand-edited kube-apiserver flag?</li>
+      <li>Which API family would you edit to change the cluster's default image registry allow-list?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) The router Deployment is owned by the Ingress Operator, which reconciles it to match the <code>IngressController</code> custom resource. The CR said 2 replicas; the operator is the source of truth, not the Deployment.</p>
+      <p>2) <code>oc -n openshift-ingress-operator patch ingresscontroller/default --type=merge -p '{"spec":{"replicas":6}}'</code> — an <code>operator.openshift.io</code> object.</p>
+      <p>3) It is lost the next time the kube-apiserver operator rolls a new revision, because the static Pod manifest is rendered from the operator's revision. Worse, mutating it by hand mid-revision can cause the node's installer to fail and the operator to report <em>Degraded</em>. Flags that are meant to be tunable are exposed through <code>config.openshift.io/APIServer</code> or <code>operator.openshift.io/KubeAPIServer</code> (such as audit profile, encryption, and log level).</p>
+      <p>4) <code>config.openshift.io/Image</code> (<code>spec.registrySources</code> with <code>allowedRegistries</code>). Cluster-wide policy lives in the <code>config</code> family.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>You now know the shape. <a href="02-install-and-topologies.html">Lesson 2</a> covers how a cluster comes into existence, and — more important for design reviews — which of those decisions you can never change afterwards.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"You scale the router Deployment in openshift-ingress to 6 and it returns to 2. What happened?","options":["The HPA scaled it down","The Ingress Operator reconciled it to the IngressController CR, which says 2","A PodDisruptionBudget blocked it","Router Pods are DaemonSets"],"answer":1,"why":"The Deployment is an output of the Ingress Operator. The source of truth is the IngressController custom resource, so change spec.replicas there."},
+ {"q":"Which statement correctly distinguishes config.openshift.io from operator.openshift.io?","options":["config holds cluster-wide configuration singletons named cluster; operator holds how an individual operator runs, plus managementState","They are identical, with operator being the older name","config is namespaced; operator is cluster scoped","operator holds only status; config holds only RBAC"],"answer":0,"why":"Policy and platform-wide settings go in config.openshift.io; operator-specific behaviour (replicas, placement, managementState) goes in operator.openshift.io; observed health is in ClusterOperator."},
+ {"q":"Why is hand-editing a static Pod manifest on a control-plane node a bad idea?","options":["Static Pods cannot be edited","The kube-apiserver static Pod is rendered from an operator-managed revision, so the edit is overwritten and can destabilise the revision rollout","Manifests are read-only on RHCOS and the edit is rejected silently","It requires restarting etcd"],"answer":1,"why":"Operators render each revision and roll it with installer Pods. Hand edits are reverted at the next revision and can leave the operator Degraded. Change the owning API object."},
+ {"q":"On managed OpenShift (ROSA/ARO), what is the practical difference for an SRE?","options":["Nothing — you have identical rights","The provider runs control-plane lifecycle, but some cluster-admin actions are restricted, so a change that is a one-liner self-managed may need another route","Managed clusters do not use operators","Managed clusters cannot run workloads"],"answer":1,"why":"Managed offerings take on control-plane operations but also fence what you can modify. Learn the shared-responsibility boundary before an incident, not during one."},
+ {"q":"Which of these is NOT something OpenShift adds beyond a typical upstream Kubernetes install?","options":["An immutable, operator-managed node OS","A built-in OAuth server and Group objects","SecurityContextConstraints","The kube-scheduler"],"answer":3,"why":"kube-scheduler is core Kubernetes. OpenShift runs it, managed by its own operator, but does not add it."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  const MAP={
+    "kube-apiserver flags / audit / encryption":{owner:"cluster-kube-apiserver-operator",cfg:"config.openshift.io/APIServer (audit profile, encryption, serving certs); operator.openshift.io/KubeAPIServer (log level)",read:"oc get co kube-apiserver; oc -n openshift-kube-apiserver get pods",note:"A new revision rolls across control-plane nodes one at a time; expect brief API unavailability per node behind the LB."},
+    "etcd":{owner:"cluster-etcd-operator",cfg:"operator.openshift.io/Etcd",read:"oc get co etcd; oc -n openshift-etcd get pods; etcdctl via the etcdctl container",note:"The operator adds, removes and defragments members. Never run etcdctl member remove by hand on a live cluster."},
+    "Router / ingress controller":{owner:"cluster-ingress-operator",cfg:"operator.openshift.io/IngressController (namespace openshift-ingress-operator)",read:"oc get co ingress; oc -n openshift-ingress get pods",note:"Shards, placement, TLS profile and endpointPublishingStrategy are all spec fields here."},
+    "Cluster DNS (CoreDNS) and *.apps":{owner:"cluster-dns-operator + ingress operator",cfg:"operator.openshift.io/DNS; config.openshift.io/DNS (base domain, zones)",read:"oc -n openshift-dns get ds,pods",note:"The wildcard *.apps record is created by the ingress operator in the cloud DNS zone, not by CoreDNS."},
+    "Pod network / CNI":{owner:"cluster-network-operator",cfg:"operator.openshift.io/Network (and config.openshift.io/Network for CIDRs)",read:"oc get co network; oc -n openshift-ovn-kubernetes get pods",note:"Most CIDR settings are install-time only."},
+    "Login / OAuth / identity providers":{owner:"cluster-authentication-operator",cfg:"config.openshift.io/OAuth (identityProviders, tokenConfig)",read:"oc get co authentication; oc -n openshift-authentication get pods",note:"Authentication goes Degraded when ingress or the OAuth route is broken — the cause is usually upstream of it."},
+    "Node OS config (files, kernel args, kubelet)":{owner:"machine-config-operator",cfg:"MachineConfig, KubeletConfig, ContainerRuntimeConfig, MachineConfigPool",read:"oc get mcp; oc get nodes -o wide",note:"Changes drain and usually reboot the node, one pool-maxUnavailable at a time (lesson 5)."},
+    "Adding or removing nodes":{owner:"machine-api-operator (or Cluster API)",cfg:"MachineSet, Machine, MachineAutoscaler, MachineHealthCheck",read:"oc -n openshift-machine-api get machinesets,machines",note:"Bare metal UPI clusters have no MachineSets; the nodes are yours."},
+    "Prometheus / alerts":{owner:"cluster-monitoring-operator",cfg:"ConfigMap cluster-monitoring-config in openshift-monitoring",read:"oc -n openshift-monitoring get pods",note:"User-workload monitoring is a separate Prometheus, enabled in the same ConfigMap."},
+    "Operator-installed software":{owner:"Operator Lifecycle Manager",cfg:"Subscription, OperatorGroup, CatalogSource, InstallPlan",read:"oc get csv,sub,installplan -A",note:"Approvals decide when a new operator version runs."},
+    "Release image / updates":{owner:"cluster-version-operator",cfg:"config.openshift.io/ClusterVersion (channel, desiredUpdate, overrides)",read:"oc get clusterversion; oc adm upgrade",note:"spec.overrides marks the cluster unsupported and blocks minor updates."},
+  };
+  const sel=$("sub");
+  Object.keys(MAP).forEach(k=>{const o=document.createElement("option");o.textContent=k;sel.appendChild(o);});
+  function draw(){
+    const m=MAP[sel.value];
+    $("owner").innerHTML=`<table><tr><th>Reconciled by</th><td><code>${m.owner}</code></td></tr>`+
+      `<tr><th>Change it in</th><td><code>${m.cfg}</code></td></tr>`+
+      `<tr><th>Read health with</th><td><code>${m.read}</code></td></tr></table><p class="muted">${m.note}</p>`;
+  }
+  sel.addEventListener("change",draw); draw();
+})();
+</script>
+</body>
+</html>

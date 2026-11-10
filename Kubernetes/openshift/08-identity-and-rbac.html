@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>8. Identity: OAuth, groups and RBAC · OpenShift for senior SREs</title>
+<meta name="description" content="The built-in OAuth server, identity providers, User/Identity/Group objects, token lifetimes, kubeadmin, group sync, least-privilege RBAC patterns, service account tokens, and auditing access.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="8">
+<main>
+  <span class="tag">Lesson 8</span>
+  <h1>Identity: OAuth, groups and RBAC</h1>
+  <p class="lead">Kubernetes has no users; it trusts whatever authenticates a request. OpenShift ships the thing that authenticates: an OAuth server that federates your corporate identity provider and issues tokens. Understanding where a human's identity becomes a username, a group and a token is what lets you answer an access review — and shut down a leaked credential.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Trace a login from identity provider to token, configure an IdP without locking yourself out, remove <code>kubeadmin</code> safely, sync groups, apply least-privilege RBAC patterns, and audit who can do what.
+  </div>
+
+  <h2>The login path</h2>
+  <pre><code>user ─► oc login / console
+         │
+         ▼
+  oauth-openshift (authentication operator runs it, behind a Route)
+         │   redirects to the configured identity provider
+         ▼
+  IdP (LDAP, OIDC, GitHub, HTPasswd, ...)  ──► authenticates
+         │
+         ▼
+  OAuth server creates/updates:  Identity  →  User  (+ Group membership)
+         │
+         ▼
+  OAuthAccessToken  (sha256~… token; opaque; revocable)</code></pre>
+  <p>Three things to take from that. First, the <strong>token is opaque and stored in etcd</strong> as an <code>OAuthAccessToken</code> object; revoking access means deleting that object (<code>oc delete oauthaccesstoken</code>) or the user, not waiting for a JWT to expire. Second, the default maximum token age is 24 hours (<code>spec.tokenConfig.accessTokenMaxAgeSeconds</code> in the <code>OAuth</code> config), and inactivity timeouts are configurable; shorter is better for human users. Third, because authentication goes through a Route, <strong>a broken router breaks logins</strong> — recall lesson 3's dependency chain.</p>
+
+  <h2>Identity providers</h2>
+  <table>
+    <tr><th>Type</th><th>Notes</th></tr>
+    <tr><td><strong>OpenID Connect</strong></td><td>Preferred for modern SSO. Map a claim to the username and groups. Sync of group claims is increasingly supported in newer releases.</td></tr>
+    <tr><td><strong>LDAP</strong></td><td>Bind-and-search. Groups are synced separately (below). Mind TLS and bind-account hygiene.</td></tr>
+    <tr><td><strong>HTPasswd</strong></td><td>A Secret-backed local user file. Fine for break-glass, lab and bootstrap; not for a fleet.</td></tr>
+    <tr><td><strong>GitHub / GitLab / Google / Keystone / Request header</strong></td><td>Each has its own limits; request-header is for an authenticating proxy and is dangerous if the proxy is bypassable.</td></tr>
+    <tr><td><strong>External OIDC (direct)</strong></td><td>Newer releases let the API server trust an external OIDC issuer directly and bypass the built-in OAuth server. Check your version and the trade-offs before adopting.</td></tr>
+  </table>
+  <pre><code>spec:
+  tokenConfig: {accessTokenMaxAgeSeconds: 28800, accessTokenInactivityTimeout: 30m}
+  identityProviders:
+    - name: corp-sso
+      mappingMethod: claim          # claim | lookup | add — see below
+      type: OpenID
+      openID:
+        clientID: openshift
+        clientSecret: {name: oidc-secret}
+        issuer: https://sso.example.com
+        claims:
+          preferredUsername: [preferred_username]
+          groups: [groups]</code></pre>
+  <p><code>mappingMethod</code> is a quiet security decision. <code>claim</code> (default) fails if a user with that name already exists from another provider — protects against takeover. <code>add</code> merges identities from several providers into one User — convenient, and a route to account confusion. <code>lookup</code> requires users to be pre-provisioned. Choose deliberately, and never use <code>add</code> when one provider's usernames are user-controlled.</p>
+
+  <h3>Do not lock yourself out</h3>
+  <p>The classic failure: you replace the only IdP with a mis-typed one, then cannot log in, and the cluster has no <code>kubeadmin</code> (removed) and no kubeconfig. Rules that prevent it: keep a <strong>break-glass</strong> path (the installer's <code>kubeconfig</code> with its client certificate stored in a vault), test the new IdP with a non-admin account <em>while still holding an admin session</em>, and add before you remove.</p>
+
+  <h2>kubeadmin and the installer kubeconfig</h2>
+  <p>The installer creates a temporary <code>kubeadmin</code> user (a password hash in the <code>kubeadmin</code> Secret in <code>kube-system</code>) and an admin <code>kubeconfig</code> with a client certificate. Once a real IdP and at least one real cluster-admin group exist, delete the <code>kubeadmin</code> Secret. The <strong>kubeconfig certificate remains valid</strong> and is the true emergency credential; protect it as the root credential it is. Rotating it means regenerating the signer, a documented but disruptive procedure.</p>
+
+  <h2>Groups and sync</h2>
+  <p>Identity is useless for authorization unless humans are grouped. OpenShift has a <code>Group</code> object (not just a claim) and can sync from LDAP with <code>oc adm groups sync</code>. A recurring problem is <em>drift</em>: someone removes a user from the directory, but the OpenShift group still lists them. Run the sync on a schedule (a CronJob or your GitOps tooling), prune stale groups, and reconcile cluster-admin membership against the directory often.</p>
+
+  <h2>RBAC patterns that survive a review</h2>
+  <ul>
+    <li><strong>Bind to groups, never users.</strong> A RoleBinding naming individuals is a time bomb for the next access review.</li>
+    <li><strong>Prefer RoleBindings over ClusterRoleBindings.</strong> A ClusterRole bound with a RoleBinding limits it to one namespace — the easiest least-privilege win.</li>
+    <li><strong>Know the built-in project roles:</strong> <code>admin</code> (manage a project and its RBAC), <code>edit</code> (modify most resources, no RBAC), <code>view</code> (read-only), and the dangerous cluster ones, <code>cluster-admin</code> and <code>self-provisioner</code>.</li>
+    <li><strong><code>edit</code> on a namespace is stronger than it looks.</strong> It lets a user create Pods and read Secrets, which on a namespace with a powerful ServiceAccount means they can run code as that account — the classic privilege-escalation path. Pair with SCCs (lesson 9) and admission policy.</li>
+    <li><strong>Remove <code>self-provisioner</code> from <code>system:authenticated:oauth</code></strong> if you do not want every user able to create projects (lesson 13).</li>
+    <li><strong>Watch verbs that escalate:</strong> <code>impersonate</code>, <code>bind</code>, <code>escalate</code>, <code>create</code> on pods with any ServiceAccount, and <code>use</code> on a powerful SCC.</li>
+  </ul>
+  <pre><code>oc adm policy who-can get secrets -n payments           # who can read secrets here
+oc adm policy who-can use scc privileged                 # who can run privileged Pods
+oc auth can-i --as system:serviceaccount:ci:deployer create pods -n payments
+oc get clusterrolebinding -o json | jq '.items[] | select(.roleRef.name=="cluster-admin") | .subjects'
+oc adm policy scc-subject-review -f pod.yaml             # which SCC would admit this</code></pre>
+
+  <h2>ServiceAccounts and tokens</h2>
+  <p>ServiceAccounts are how workloads authenticate. On current releases, tokens mounted into Pods are <strong>bound, time-limited and audience-scoped</strong> (projected volumes), not the old never-expiring Secrets. Long-lived token Secrets still exist and are a standing credential if you create one; avoid them, and prefer short-lived tokens or workload identity (cloud STS) for anything external. Audit for <code>kubernetes.io/service-account-token</code> Secrets as part of a periodic review.</p>
+
+  <h2>Audit and encryption</h2>
+  <p>The API server audit policy is a profile on <code>config.openshift.io/APIServer</code>: <code>Default</code> (metadata only), <code>WriteRequestBodies</code>, <code>AllRequestBodies</code>, or <code>None</code> — richer profiles produce more data and log volume, and capture Secret payloads at the higher levels. Pick by risk and ship the logs off-cluster. Etcd encryption (<code>aescbc</code> or <code>aesgcm</code>) is <strong>off by default</strong>; turn it on and watch the operators' <em>Encrypted</em> progress conditions. It protects data at rest in etcd, not against anyone with API access.</p>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>A contractor in the <code>contractors</code> group left the company. Their directory account is disabled. At the next review you find they still hold <code>edit</code> on <code>payments</code>, and a <code>RoleBinding</code> to the user <code>jlee</code>. Also a developer asks to "just get cluster-admin to debug quicker".</p>
+    <ol>
+      <li>Why does the contractor still have access?</li>
+      <li>What do you do about already-issued tokens?</li>
+      <li>How do you fix the structural problem with <code>jlee</code>?</li>
+      <li>What do you offer the developer instead of cluster-admin?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) Disabling the directory account stops <em>new logins</em>. The OpenShift <code>Group</code> membership is a separate object, and the <code>OAuthAccessToken</code> already issued stays valid until it expires. If groups were never re-synced, the user also remains in the group.</p>
+      <p>2) Delete the user's <code>OAuthAccessToken</code> objects (<code>oc get oauthaccesstokens --field-selector userName=…</code>), then the <code>User</code> and <code>Identity</code>. Shorten token lifetimes so this window shrinks.</p>
+      <p>3) Replace the user binding with a group binding and make group membership come from the directory by scheduled sync, so a joiner/leaver process drives access instead of ad hoc edits.</p>
+      <p>4) Scoped access: <code>edit</code> or <code>admin</code> on their project, <code>view</code> on neighbours, <code>oc debug</code> only on a non-prod namespace, and a time-boxed, audited elevation process (for example a PIM-style group with an expiry) for genuine break-glass. Cluster-admin on a shared platform is never a convenience.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>Authentication and RBAC say who may <em>ask</em>. <a href="09-sccs-and-hardening.html">Lesson 9</a> says what a Pod is allowed to <em>be</em> once it runs.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"How do you invalidate a leaked user token on OpenShift?","options":["Wait for the JWT to expire","Delete the OAuthAccessToken object (or the User)","Restart the router","Rotate the etcd key"],"answer":1,"why":"Tokens are opaque objects stored in etcd, so they can be revoked directly. This is also why shorter lifetimes shrink your exposure window."},
+ {"q":"Why can a broken router break logins?","options":["Logins use the console only","The OAuth server is exposed via a Route served by the router","Tokens are signed by the router","DNS is only served by the router"],"answer":1,"why":"Authentication depends on the ingress layer. This is one reason to look at the lowest broken operator in the chain."},
+ {"q":"What should you keep when you remove kubeadmin?","options":["Nothing","A protected break-glass path: the installer kubeconfig with its client certificate","The kubeadmin password in chat","An HTPasswd user with cluster-admin shared across the team"],"answer":1,"why":"The kubeconfig certificate remains valid and is the real emergency credential. Store it in a vault and test your IdP before relying on it."},
+ {"q":"Which mappingMethod is the safest default and why?","options":["add — it merges identities for convenience","claim — it fails if a user with that name already exists from another provider","lookup — it creates users automatically","none"],"answer":1,"why":"Claim prevents a second provider from taking over an existing username. Add merges identities and invites account confusion."},
+ {"q":"Why is RoleBinding of a ClusterRole to a single namespace usually better than a ClusterRoleBinding?","options":["It is faster","It limits the permissions to that namespace, an easy least-privilege improvement","ClusterRoleBindings are deprecated","It avoids groups"],"answer":1,"why":"The same rules apply in one namespace instead of the whole cluster. Combine with group subjects rather than named users."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+</body>
+</html>

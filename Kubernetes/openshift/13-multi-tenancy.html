@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>13. Multi-tenancy · OpenShift for senior SREs</title>
+<meta name="description" content="Projects, project templates, self-provisioner, ResourceQuota, LimitRange and ClusterResourceQuota, node and network isolation, API and etcd noisy neighbours, admission webhooks, and the limits of soft tenancy versus hosted control planes.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="13">
+<main>
+  <span class="tag">Lesson 13</span>
+  <h1>Multi-tenancy</h1>
+  <p class="lead">Sharing a cluster is an economic decision wearing a technical costume. Namespaces make it cheap to give teams a slice; they do not make the slices equal in trust. The skill is knowing what boundary you actually have, what a tenant can still do to their neighbours, and when the honest answer is a separate control plane.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Build a tenant onboarding template, enforce fair share with quotas, isolate nodes and networks, list the noisy-neighbour paths that quotas do not cover, and choose between shared, dedicated-node and dedicated-control-plane tenancy for a given threat model.
+  </div>
+
+  <h2>Projects: namespaces with a front door</h2>
+  <p>A <strong>Project</strong> is a Namespace with extra annotations and, crucially, a <em>request workflow</em>: <code>oc new-project</code> calls the <code>ProjectRequest</code> API, which creates the namespace <em>and</em> applies the cluster's <strong>project template</strong>, and makes the requester an admin. Users generally cannot create Namespaces directly, only Projects through that API. The template is where tenancy policy lives.</p>
+  <pre><code>oc adm create-bootstrap-project-template -o yaml &gt; template.yaml   # start from the default
+# add: ResourceQuota, LimitRange, NetworkPolicies, RoleBindings ...
+oc create -f template.yaml -n openshift-config
+oc patch project.config.openshift.io/cluster --type merge \
+  -p '{"spec":{"projectRequestTemplate":{"name":"project-request"}}}'</code></pre>
+  <p>A mature template creates, for every new project: a <code>ResourceQuota</code>, a <code>LimitRange</code> with defaults, a <strong>default-deny</strong> ingress <code>NetworkPolicy</code> plus allows for the router (<code>network.openshift.io/policy-group: ingress</code>) and monitoring, and a <code>RoleBinding</code> for the owning group, with <code>${PROJECT_ADMIN_USER}</code> and <code>${PROJECT_NAME}</code> parameters. The template is applied <em>only at creation</em>; changing it later does not fix existing projects, so reconcile them from Git.</p>
+  <p><strong>Who may create projects?</strong> By default all authenticated users can, through the <code>self-provisioner</code> ClusterRole bound to <code>system:authenticated:oauth</code>. On a shared platform, remove that binding (and set the <code>rbac.authorization.kubernetes.io/autoupdate: "false"</code> annotation so it is not re-created) and onboard through a pipeline that creates the project and binds the team's group.</p>
+
+  <h2>Fair share: quotas</h2>
+  <table>
+    <tr><th>Object</th><th>Scope</th><th>Use</th></tr>
+    <tr><td><code>ResourceQuota</code></td><td>One namespace</td><td>Caps total <code>requests.cpu</code>, <code>requests.memory</code>, <code>limits.*</code>, PVC count and storage (including per StorageClass), and object counts such as <code>count/pods</code>, <code>count/secrets</code></td></tr>
+    <tr><td><code>LimitRange</code></td><td>One namespace</td><td>Default requests/limits for Pods that omit them, and per-container min/max. Without defaults, a quota on requests rejects any Pod that does not set them</td></tr>
+    <tr><td><code>ClusterResourceQuota</code> (<code>quota.openshift.io</code>)</td><td><strong>Many namespaces</strong>, chosen by label or annotation selector</td><td>A single budget for a team that owns several projects, or for everything a user requested, with usage aggregated across them</td></tr>
+  </table>
+  <pre><code>apiVersion: quota.openshift.io/v1
+kind: ClusterResourceQuota
+metadata: {name: payments-team}
+spec:
+  selector:
+    labels: {matchLabels: {team: payments}}
+  quota:
+    hard:
+      requests.cpu: "200"
+      requests.memory: 800Gi
+      persistentvolumeclaims: "100"
+      count/secrets: "2000"</code></pre>
+  <p>Quotas on <strong>requests</strong>, not limits, are what govern scheduling fairness; remember from <a href="../03-requests-and-limits.html">requests and limits</a> that requests are the scheduler's currency. Quotas can also be scoped by <code>PriorityClass</code> so a tenant can have a small amount of high-priority capacity and plenty of default.</p>
+
+  <h2>Where a tenant can still hurt a neighbour</h2>
+  <p>Quotas handle CPU and memory. The rest of the shared surface is where real incidents come from:</p>
+  <table>
+    <tr><th>Shared resource</th><th>How it is abused</th><th>Mitigation</th></tr>
+    <tr><td><strong>API server</strong></td><td>A controller or script that lists everything in a tight loop; a watch storm after a bug</td><td>API Priority and Fairness (<code>FlowSchema</code>, <code>PriorityLevelConfiguration</code>) to isolate tenants; per-ServiceAccount client limits; alert on request rate per user</td></tr>
+    <tr><td><strong>etcd</strong></td><td>Millions of ConfigMaps/Secrets/Events, or large objects; each object counts toward the database quota</td><td>Object-count quotas, size limits, TTLs on Events and Jobs (<code>ttlSecondsAfterFinished</code>), alerts on etcd DB growth</td></tr>
+    <tr><td><strong>Admission webhooks</strong></td><td>A tenant installs a webhook with <code>failurePolicy: Fail</code> and broad scope; when its Pod dies, <em>every</em> matching write cluster-wide fails</td><td>Restrict who can create webhook configurations; require <code>namespaceSelector</code>/<code>objectSelector</code> and timeouts; treat as cluster-admin-grade</td></tr>
+    <tr><td><strong>CRDs and operators</strong></td><td>Cluster-scoped APIs: a tenant-installed operator version changes the API for everyone</td><td>Platform team owns cluster-scoped extensions; tenants get namespaced operators only where OLM install modes permit</td></tr>
+    <tr><td><strong>Node resources</strong></td><td>PIDs, ephemeral storage, inodes, conntrack, kernel memory</td><td>Pod PID limit (<code>podPidsLimit</code> via KubeletConfig), <code>limits.ephemeral-storage</code> quota, reasonable <code>maxPods</code></td></tr>
+    <tr><td><strong>Network</strong></td><td>Saturating a shared egress path, router, or NAT gateway</td><td>Bandwidth annotations, EgressQoS, router shards, per-tenant egress</td></tr>
+    <tr><td><strong>The kernel</strong></td><td>A container escape reaches the node and every tenant on it</td><td>SCC restrictions, SELinux MCS, node isolation, sandboxed containers (Kata) for untrusted workloads</td></tr>
+  </table>
+
+  <h2>Isolating nodes and networks</h2>
+  <ul>
+    <li><strong>Node isolation.</strong> A namespace annotation <code>openshift.io/node-selector</code> (set through the project template or a cluster default) forces a tenant's Pods onto labelled nodes; add a taint on those nodes and a default toleration for the tenant so no one else lands there. Dedicated MachineSets per tenant make it a capacity unit you can bill.</li>
+    <li><strong>Network isolation.</strong> Default-deny in the template, <strong>AdminNetworkPolicy</strong> for platform-wide guardrails tenants cannot lift, <code>EgressIP</code> and <code>EgressFirewall</code> for outbound identity, and optional <em>User Defined Networks</em> for a tenant-private pod network. Separate ingress shards for tenants with different exposure (lesson 11).</li>
+    <li><strong>Pod security.</strong> The default <code>restricted-v2</code> plus a policy engine (Kyverno, Gatekeeper, or ACM policies) for rules SCCs cannot express — image registries, required labels, banned host paths.</li>
+  </ul>
+
+  <h2>Soft versus hard tenancy</h2>
+  <p>Namespace-based tenancy is <strong>soft</strong>: all tenants share one API server, one etcd, one set of cluster-scoped objects, one kernel per node. It is excellent among teams in one organisation that broadly trust each other and share a platform team. It is not a security boundary against a hostile tenant, and it is a weak boundary for strict regulatory isolation.</p>
+  <table>
+    <tr><th>Model</th><th>Isolation</th><th>Cost</th></tr>
+    <tr><td>Shared cluster, namespaces and quotas</td><td>Soft; shared control plane and nodes</td><td>Lowest; densest</td></tr>
+    <tr><td>Shared control plane, dedicated nodes (+ network isolation)</td><td>Kernel and node noise isolated; control plane still shared</td><td>Moderate; per-tenant node pool</td></tr>
+    <tr><td>Dedicated control plane via <strong>hosted control planes</strong>, shared worker fleet or dedicated workers</td><td>Own API server, etcd, CRDs, admins</td><td>Low control-plane cost, higher operational surface (lesson 2)</td></tr>
+    <tr><td>Dedicated cluster</td><td>Strongest</td><td>Highest; you now run a fleet (lesson 15)</td></tr>
+  </table>
+  <div class="widget">
+    <h3>Which tenancy model?</h3>
+    <div class="row">
+      <label>Trust between tenants
+        <select id="trust"><option value="0">same org, cooperative</option><option value="1">different teams, mostly trusted</option><option value="2">external / untrusted code</option></select>
+      </label>
+      <label>Tenant count <select id="cnt"><option value="0">under 10</option><option value="1">10–100</option><option value="2">100+</option></select></label>
+    </div>
+    <div class="row" style="flex-direction:column;align-items:flex-start;gap:4px">
+      <label><input type="checkbox" id="reg"> regulation demands separate administrative domains or data residency</label>
+      <label><input type="checkbox" id="cluster"> tenants must install their own CRDs / operators / webhooks</label>
+    </div>
+    <div id="advice"></div>
+  </div>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>A platform serves 80 internal teams in one cluster. Each project has a ResourceQuota, yet one night the API server slows and several Operators go Degraded. You find a team's controller that retries failed Jobs, creating 400,000 Job objects with <code>ttlSecondsAfterFinished</code> unset, and a second team's admission webhook Pod crash-looping.</p>
+    <ol>
+      <li>Why did quotas not stop the first problem?</li>
+      <li>What would have?</li>
+      <li>Why does the crash-looping webhook affect other tenants?</li>
+      <li>What platform-level change addresses both?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) The ResourceQuota covered CPU and memory only. Jobs and finished Pods cost almost no compute but are stored objects; hundreds of thousands inflate etcd and slow every list and watch.</p>
+      <p>2) Object-count quotas (<code>count/jobs.batch</code>, <code>count/pods</code>) and a TTL on finished Jobs, plus API Priority and Fairness so one tenant's request flood cannot consume the API server's concurrency.</p>
+      <p>3) A <code>ValidatingWebhookConfiguration</code> with <code>failurePolicy: Fail</code> and a broad selector makes the API server reject matching writes whenever the webhook cannot answer. Matching writes include other tenants' and those of platform operators, so controllers fail, and operators go Degraded.</p>
+      <p>4) Treat webhooks and CRDs as platform-owned: restrict RBAC on webhook configurations, require selectors and short timeouts through admission policy, add count and TTL defaults in the project template, and alert on object counts and on webhook latency and failure.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>You now have the design half. <a href="14-operations.html">Lesson 14</a> is the day-two half: keeping the control plane healthy and finding the fault quickly.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"How does ClusterResourceQuota differ from ResourceQuota?","options":["It limits only storage","It aggregates a budget across multiple namespaces selected by label or annotation","It is namespaced","It replaces LimitRange"],"answer":1,"why":"Teams usually own several projects. CRQ lets you give the team one budget and see usage summed across them."},
+ {"q":"What is a project template applied to?","options":["All existing projects retroactively","Newly created projects, at creation time only","Only the openshift-* namespaces","Nodes"],"answer":1,"why":"Existing projects keep what they have. Reconcile older ones from Git or a controller."},
+ {"q":"Why is a tenant-created admission webhook with failurePolicy Fail a platform risk?","options":["It costs money","When it is down, every matching API write cluster-wide is rejected, including other tenants' and operators'","It disables RBAC","It changes node labels"],"answer":1,"why":"Webhooks sit on the write path of the API server. Broad scope and Fail turn one tenant's outage into a cluster outage."},
+ {"q":"Which tenancy model gives a tenant its own etcd and API server while keeping control-plane cost low?","options":["Namespaces with quotas","Dedicated worker pool","Hosted control planes","Project templates"],"answer":2,"why":"Hosted control planes run each control plane as Pods on a management cluster, which is why they are the hard-isolation answer short of a cluster per tenant."},
+ {"q":"Quota on CPU and memory is in place. Which resource can still be exhausted by one tenant?","options":["Nothing","The number of objects in etcd, and API server request capacity","Only the router","Only the registry"],"answer":1,"why":"Compute quotas do not cap stored objects or API concurrency. Use object-count quotas, TTLs and API Priority and Fairness."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  function draw(){
+    const t=+$("trust").value, c=+$("cnt").value, reg=$("reg").checked, cr=$("cluster").checked;
+    let model, why=[];
+    if(t===2||reg){ model="Dedicated control plane (hosted control planes) or a dedicated cluster per tenant";
+      why.push(t===2?"Untrusted code means you cannot rely on a shared kernel and a shared API server.":"A separate administrative domain needs a separate API and etcd.");
+      if(c===2) why.push("At this tenant count the answer is hosted control planes plus fleet automation, not hand-run clusters.");
+    } else if(cr){ model="Dedicated control plane via hosted control planes (or a dedicated cluster)";
+      why.push("CRDs, webhooks and operators are cluster-scoped; they cannot be safely shared.");
+    } else if(t===1){ model="Shared cluster with dedicated node pools, default-deny networking, quotas and policy";
+      why.push("Moderate trust: isolate the kernel and the network, and cap the API and etcd surface.");
+    } else { model="Shared cluster: projects, templates, quotas and ClusterResourceQuota";
+      why.push("Cooperative teams under one platform group are exactly what namespace tenancy suits.");
+      if(c>=1) why.push("At this count, onboarding must be automated and quota/object-count guardrails are non-negotiable.");
+    }
+    $("advice").innerHTML=`<p><strong>${model}</strong></p><p class="muted">${why.join(" ")}</p>`;
+  }
+  ["trust","cnt","reg","cluster"].forEach(i=>$(i).addEventListener("change",draw)); draw();
+})();
+</script>
+</body>
+</html>

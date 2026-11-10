@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>14. Operations: etcd, monitoring, logging, debugging · OpenShift for senior SREs</title>
+<meta name="description" content="etcd health, quota, defragmentation, backup and restore; the platform and user-workload monitoring stacks, alert routing, key alerts; logging with Vector and Loki; and the debugging toolkit: must-gather, oc debug, node logs.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="14">
+<main>
+  <span class="tag">Lesson 14</span>
+  <h1>Operations: etcd, monitoring, logging, debugging</h1>
+  <p class="lead">This is the lesson you will reread at 3am. The control plane's health reduces to etcd, so start there; then the monitoring that tells you something is wrong, the logging that tells you why, and the toolkit that gets data off a node when the API itself is unreachable.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Read etcd health and size, take and secure a backup, describe the restore procedure and when it is required, configure and route platform and user-workload alerts, forward logs sensibly, and collect evidence before changing anything.
+  </div>
+
+  <h2>etcd: the single point you must understand</h2>
+  <p>Three members, Raft consensus, one on each control-plane node, managed by the cluster-etcd-operator. A write needs a majority: <strong>two of three</strong>. Lose one member and the cluster continues with no quorum risk but no slack; lose two and the API cannot accept writes. Running Pods continue to run — kubelets do not need etcd — but nothing new can be scheduled, scaled or healed.</p>
+  <h3>Health you read every day</h3>
+  <pre><code>oc get etcd -o=jsonpath='{range .items[0].status.conditions[?(@.type=="EtcdMembersAvailable")]}{.message}{"\n"}{end}'
+oc -n openshift-etcd rsh -c etcdctl etcd-&lt;control-plane-node&gt; \
+   etcdctl endpoint status --cluster -w table        # leader, DB size, raft index, errors
+oc -n openshift-etcd rsh -c etcdctl etcd-&lt;node&gt; etcdctl endpoint health --cluster</code></pre>
+  <table>
+    <tr><th>Signal</th><th>Healthy</th><th>Trouble means</th></tr>
+    <tr><td>WAL fsync p99 (<code>etcd_disk_wal_fsync_duration_seconds</code>)</td><td>under ~10 ms</td><td>Slow disk (lesson 12); leader elections; API latency</td></tr>
+    <tr><td>Backend commit p99</td><td>under ~25 ms</td><td>Same family</td></tr>
+    <tr><td>Leader changes (<code>etcd_server_leader_changes_seen_total</code>)</td><td>rare</td><td>Network or disk instability, CPU starvation of the control-plane node</td></tr>
+    <tr><td>DB size vs quota (<code>etcd_mvcc_db_total_size_in_bytes</code>)</td><td>well under the quota (8 GiB default; verify for your release)</td><td>At the quota etcd raises a <code>NOSPACE</code> alarm and becomes read-only</td></tr>
+    <tr><td>Proposals failed / pending</td><td>near zero</td><td>Quorum or network trouble</td></tr>
+    <tr><td>Member availability</td><td>3 of 3</td><td>Replace the failed member (below)</td></tr>
+  </table>
+  <p><strong>Space and defragmentation.</strong> etcd keeps revisions and compacts them periodically; compaction frees logical space but not file size, which is returned by <em>defragmentation</em>, a blocking operation on the member. Recent releases defragment automatically when fragmentation crosses a threshold; if you defragment by hand, do it <em>one member at a time</em>, the leader last, never during an update. Growth is nearly always a symptom — a tenant creating objects without bound (lesson 13) — so fix the source, not just the file.</p>
+
+  <h3>Backup and restore</h3>
+  <p>The documented backup runs on <em>one</em> control-plane node and produces a snapshot plus the static-Pod resources needed to restore:</p>
+  <pre><code>oc debug node/&lt;control-plane-node&gt; -- chroot /host \
+  /usr/local/bin/cluster-backup.sh /home/core/assets/backup
+# copy snapshot_*.db and static_kuberesources_*.tar.gz OFF the node, to storage outside the cluster</code></pre>
+  <ul>
+    <li>Take it <strong>before every update</strong> and on a schedule (a CronJob or your fleet tooling; recent releases add a declarative backup API). Keep several generations.</li>
+    <li>A backup is valid for restore on the <strong>same OpenShift version</strong> it was taken from. A backup from before an update restores a pre-update cluster.</li>
+    <li>It contains cluster state, including Secrets: <strong>encrypt and access-control it</strong> as you would a root credential.</li>
+    <li>It does not include your application data or PVC contents (lesson 12).</li>
+  </ul>
+  <p><strong>When to restore.</strong> Rarely. One lost member is <em>not</em> a restore: remove the bad member's Machine (or follow the replacement procedure), and the operator rebuilds it. A full restore, <code>cluster-restore.sh</code> on a chosen recovery node with the other control-plane static Pods stopped first, is for loss of quorum, data corruption, or recovery from a failed update. It rewinds the cluster to the backup moment: objects created after it vanish, so expect to reconcile workloads and then restart kubelets and operators in the documented order. Rehearse it on a non-production cluster at least yearly; the first time must not be the real one.</p>
+
+  <h2>Monitoring: two Prometheus stacks</h2>
+  <pre><code>openshift-monitoring                   cluster/platform stack
+  prometheus-k8s (2 replicas), alertmanager-main (3), thanos-querier,
+  kube-state-metrics, node-exporter, prometheus-operator, telemeter-client
+openshift-user-workload-monitoring     OPTIONAL, for your applications
+  prometheus-user-workload, thanos-ruler, its own operator</code></pre>
+  <p>Enable user-workload monitoring in the <code>cluster-monitoring-config</code> ConfigMap in <code>openshift-monitoring</code> (<code>enableUserWorkload: true</code>). Platform and tenant metrics are deliberately separate so tenant cardinality cannot damage platform alerting. Configure the same ConfigMap for the parts you must tune:</p>
+  <pre><code>data:
+  config.yaml: |
+    enableUserWorkload: true
+    prometheusK8s:
+      retention: 15d
+      volumeClaimTemplate: {spec: {storageClassName: fast, resources: {requests: {storage: 200Gi}}}}
+      nodeSelector: {node-role.kubernetes.io/infra: ""}
+      remoteWrite: [{url: "https://mimir.example.com/api/v1/push"}]
+    alertmanagerMain:
+      volumeClaimTemplate: {spec: {resources: {requests: {storage: 10Gi}}}}</code></pre>
+  <ul>
+    <li><strong>Persist Prometheus.</strong> The default is ephemeral; a restart loses history. Set a PVC, sized by retention and series count.</li>
+    <li><strong>Remote write for the fleet.</strong> A cluster's Prometheus is not your fleet view; ship metrics to a central store (Thanos, Mimir, a managed service) for cross-cluster SLOs and long retention.</li>
+    <li><strong>Alert routing.</strong> Alertmanager's config lives in the <code>alertmanager-main</code> Secret (or the console). Define receivers (PagerDuty, Slack, email) and routes by severity. A fresh cluster raises <code>AlertmanagerReceiversNotConfigured</code> until you do. Wire the always-firing <code>Watchdog</code> alert to a dead-man's-switch so you learn when alerting itself is broken.</li>
+    <li><strong>Tenant rules.</strong> Tenants write <code>PrometheusRule</code> objects in their own namespace; set sample limits (<code>enforcedSampleLimit</code>) so one tenant's cardinality cannot overload the user-workload Prometheus.</li>
+    <li><strong>Query across it.</strong> <code>thanos-querier</code> (exposed by a Route) fans out to both stacks and is the endpoint for Grafana and tooling.</li>
+  </ul>
+  <h3>Alerts that deserve a page or a ticket</h3>
+  <table>
+    <tr><th>Alert</th><th>Meaning</th></tr>
+    <tr><td><code>ClusterOperatorDown</code>, <code>ClusterOperatorDegraded</code></td><td>Lesson 3's table as an alert</td></tr>
+    <tr><td><code>etcdMembersDown</code>, <code>etcdNoLeader</code>, <code>etcdHighFsyncDurations</code>, <code>etcdDatabaseQuotaLowSpace</code></td><td>Control-plane risk</td></tr>
+    <tr><td><code>KubeAPIErrorBudgetBurn</code>, <code>KubeAPIDown</code></td><td>API availability and latency SLO burn</td></tr>
+    <tr><td><code>KubeNodeNotReady</code>, <code>KubeNodeUnreachable</code>, <code>NodeClockNotSynchronising</code></td><td>Node health; clock skew breaks etcd and certificates</td></tr>
+    <tr><td><code>MCDDrainError</code>, <code>MCDPivotError</code>, <code>MachineConfigControllerPausedPoolKubeletCA</code></td><td>MCO rollouts stuck or pools left paused too long</td></tr>
+    <tr><td><code>PodDisruptionBudgetAtLimit</code>, <code>PodDisruptionBudgetLimit</code></td><td>A PDB that will block drains</td></tr>
+    <tr><td><code>KubePersistentVolumeFillingUp</code>, ODF capacity alerts</td><td>Storage exhaustion</td></tr>
+    <tr><td><code>APIRemovedInNextReleaseInUse</code>, <code>CannotRetrieveUpdates</code></td><td>Lifecycle hazards (lesson 6)</td></tr>
+  </table>
+  <p>Route by <em>what must a human do now</em>, not by what is interesting. Platform alerts with severity <code>critical</code> page; <code>warning</code> becomes a ticket; <code>info</code> is dashboards. Review alerts that fire often and are never acted on, and delete or fix them.</p>
+
+  <h2>Logging</h2>
+  <p>The current logging stack (Red Hat OpenShift Logging 6.x) is collector-plus-store and is installed through operators: the <strong>Cluster Logging / Observability operator</strong> deploys a <strong>Vector</strong> collector DaemonSet configured by a <code>ClusterLogForwarder</code> (API <code>observability.openshift.io/v1</code>); the <strong>Loki Operator</strong> runs <code>LokiStack</code> as object-store-backed storage; the console plugin queries it. The older Elasticsearch and Fluentd paths are deprecated or removed in this generation.</p>
+  <ul>
+    <li><strong>Three input classes:</strong> <em>application</em> (Pod logs from tenant namespaces), <em>infrastructure</em> (<code>openshift-*</code>, <code>kube-*</code>, node journal), and <em>audit</em> (API server, node, OVN). Audit logs are sensitive and high volume; forward them straight to a SIEM.</li>
+    <li><strong>Outputs:</strong> LokiStack, Splunk, Kafka, Elasticsearch, CloudWatch, Google Cloud Logging, syslog, OTLP. Forward to your central platform; cluster-local retention should be short.</li>
+    <li><strong>The collector is a privileged consumer.</strong> It needs ServiceAccount permissions (<code>collect-application-logs</code>, <code>collect-infrastructure-logs</code>, <code>collect-audit-logs</code> ClusterRoles) bound explicitly — review them.</li>
+    <li><strong>Mind the cost.</strong> Log volume and label cardinality dominate cost. Drop noisy debug logs at the collector, and use structured logs with a small label set.</li>
+  </ul>
+
+  <h2>The debugging toolkit</h2>
+  <table>
+    <tr><th>Need</th><th>Tool</th></tr>
+    <tr><td>One-shot evidence bundle for support</td><td><code>oc adm must-gather</code> (add <code>--image</code> for ODF, logging, virtualization; <code>--since=2h</code> to limit)</td></tr>
+    <tr><td>Resources and logs of one namespace or operator</td><td><code>oc adm inspect ns/openshift-ingress</code></td></tr>
+    <tr><td>A shell on a node</td><td><code>oc debug node/&lt;n&gt;</code>, then <code>chroot /host</code>; <code>crictl ps/logs/inspect</code>, <code>journalctl -u kubelet -u crio</code>, <code>toolbox</code> for extra tools</td></tr>
+    <tr><td>Node logs without a shell</td><td><code>oc adm node-logs &lt;node&gt; -u kubelet</code>, <code>--path=journal</code></td></tr>
+    <tr><td>Resource pressure</td><td><code>oc adm top nodes/pods</code>, <code>oc describe node</code> (allocated resources, conditions, taints)</td></tr>
+    <tr><td>API health</td><td><code>oc get --raw '/readyz?verbose'</code>, <code>oc get flowschema,prioritylevelconfiguration</code></td></tr>
+    <tr><td>What changed</td><td><code>oc get events -A --sort-by=.lastTimestamp</code>, <code>oc get clusterversion -o yaml</code> history, <code>oc get mc</code> / <code>sub</code> / <code>installplan</code> by age</td></tr>
+    <tr><td>Certificates</td><td><code>oc get csr</code> (pending requests), <code>oc -n openshift-kube-apiserver get secrets</code> for rotated certs</td></tr>
+    <tr><td>Image and release content</td><td><code>oc adm release info</code>, <code>oc adm release extract</code></td></tr>
+  </table>
+  <div class="callout">
+    <h3>Evidence before action</h3>
+    <p>In an incident the pull to "restart something" is strong and often destroys the evidence. Before you change anything: <code>oc adm must-gather --dest-dir=...</code> (it works while the API is up), capture <code>oc get co,mcp,nodes,csr -o yaml</code>, and note the exact time. If the API is down, collect <code>crictl logs</code> from the etcd and kube-apiserver containers and <code>journalctl</code> from the nodes. Then mitigate. A fix that cannot be explained afterwards is a fix that will recur.</p>
+  </div>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>At 03:00 <code>etcdHighFsyncDurations</code> fires, then <code>KubeAPIErrorBudgetBurn</code>. <code>oc get co</code> shows several operators Progressing. A teammate proposes restoring the last etcd backup "to get back to a good state". Metrics show etcd leader changes every few minutes and DB size is 2.1 GiB of an 8 GiB quota. A node-level graph shows one control-plane node's disk latency spiking when a nightly backup job runs on that node.</p>
+    <ol>
+      <li>Should you restore?</li>
+      <li>What does the evidence point to?</li>
+      <li>What do you do now and what changes permanently?</li>
+      <li>Where was the backup job a mistake?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) No. Quorum is intact and the data is healthy: 2.1 GiB of 8 GiB, members available. A restore rewinds the cluster and is for quorum loss or corruption, not instability.</p>
+      <p>2) Disk latency on one control-plane node is starving etcd's fsync, which produces leader elections, which slow the API, which makes operators look unhealthy. The operators are the symptom.</p>
+      <p>3) Stop the competing I/O now. If the leader is on that node, a controlled leader move can help. Verify fsync p99 recovers. Permanently: move backup copy work off the control-plane disk or throttle it, give etcd a dedicated fast device, and alert on fsync p99 and leader changes.</p>
+      <p>4) A heavy job — writing a snapshot and copying it — ran on a control-plane node's disk without regard for etcd latency. Backups should be scheduled to off-peak, rate-limited, and transferred from a different disk or by streaming off-node; just never <em>on</em> the same device as the WAL during peak writes.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p><a href="15-incident-playbook-and-references.html">Lesson 15</a> ties it together at fleet scale and gives you an incident order that works, and every source for the course.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"One etcd member is lost, the other two are healthy. What do you do?","options":["Restore from backup immediately","Replace the failed member (remove its Machine / follow the replacement procedure) and let the operator rebuild; no restore is needed","Reboot all control-plane nodes","Delete etcd"],"answer":1,"why":"Quorum still holds with two of three. A full restore is for quorum loss, corruption or a failed update."},
+ {"q":"Which etcd metric most directly indicates a disk problem?","options":["Number of Pods","WAL fsync duration p99","Router reloads","Image pull time"],"answer":1,"why":"Fsync latency under about 10 ms is the guideline. Higher values cause leader elections and a slow API."},
+ {"q":"Why are platform and user-workload monitoring separate stacks?","options":["Licensing","So tenant metric cardinality cannot damage platform alerting","They use different languages","Prometheus cannot scale"],"answer":1,"why":"Tenants get their own Prometheus and limits, keeping the platform's alerting path isolated."},
+ {"q":"What is the main risk of an etcd backup?","options":["It is too small","It contains cluster state including Secrets, so it must be encrypted and access-controlled, and it only restores the same version","It disables the API","It requires downtime"],"answer":1,"why":"Treat it as a root credential. Also remember it restores only the version it was taken from and does not contain PVC data."},
+ {"q":"What should you do before restarting components in an incident?","options":["Nothing","Collect evidence: must-gather, resource YAML, timestamps, and node logs","Delete the namespace","Scale operators to zero"],"answer":1,"why":"Restarts destroy evidence. Capture first, then mitigate, so the cause is explainable."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+</body>
+</html>

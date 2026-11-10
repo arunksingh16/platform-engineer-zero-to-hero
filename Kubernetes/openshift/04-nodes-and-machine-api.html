@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>4. Nodes as cattle: RHCOS and the Machine API · OpenShift for senior SREs</title>
+<meta name="description" content="RHCOS and Ignition, Machine, MachineSet, MachineAutoscaler and MachineHealthCheck, infra nodes, node CSRs, bare metal differences, and failure modes of machine provisioning.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="4">
+<main>
+  <span class="tag">Lesson 4</span>
+  <h1>Nodes as cattle: RHCOS and the Machine API</h1>
+  <p class="lead">On OpenShift a node is not a server you maintain; it is an instance of a template that the platform can recreate. The Machine API is what makes that real on IPI clusters, and the difference between a team that treats nodes as pets and one that trusts the platform shows up first at 3am during a node failure.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Explain what RHCOS and Ignition do, trace Machine → Node, scale and autoscale a pool, write a MachineHealthCheck that cannot cause a storm, create an infra pool, and diagnose a Machine that never becomes a Node.
+  </div>
+
+  <h2>RHCOS and Ignition in one page</h2>
+  <p><strong>Red Hat Enterprise Linux CoreOS</strong> is a minimal, image-based OS: <code>/usr</code> is read-only, updates are whole-image transactions through <code>rpm-ostree</code> and applied on reboot, and the only sanctioned package set is whatever the release image ships. The OS version is part of the release payload, so updating OpenShift updates the OS.</p>
+  <p><strong>Ignition</strong> configures the machine <em>once</em>, on first boot, from user data supplied by the platform. It partitions disks, writes files, creates units, and tells the machine to fetch the rest of its config from the <strong>machine-config-server</strong> on the control plane. After first boot, ongoing configuration belongs to the Machine Config Operator (lesson 5), not to Ignition.</p>
+  <p>Practical rules for an SRE: you rarely SSH to a node; when you must, use <code>oc debug node/&lt;name&gt;</code> then <code>chroot /host</code> and treat it read-only. <code>core</code> is the only user. Anything you change by hand will be reported as drift and may make the node Degraded.</p>
+
+  <h2>The Machine API</h2>
+  <pre><code>MachineSet  ──creates──►  Machine  ──backs──►  Node
+ (replicas, template)      (one cloud VM)       (kubelet registered)
+      ▲                         ▲
+MachineAutoscaler        MachineHealthCheck
+ (min/max per set)        (delete unhealthy Machines)
+      ▲
+ClusterAutoscaler (cluster-wide scale-up/scale-down policy)</code></pre>
+  <ul>
+    <li><strong>Machine</strong> — a declarative request for one VM. Its <code>providerSpec</code> holds the cloud details (instance type, AMI, subnet, tags). Phases: <em>Provisioning → Provisioned → Running</em>, or <em>Failed</em>, or <em>Deleting</em>.</li>
+    <li><strong>MachineSet</strong> — a ReplicaSet for Machines. Change the template and only <em>new</em> Machines get it; existing ones are not replaced. Rolling a template change means scaling up and then deleting old Machines.</li>
+    <li><strong>MachineAutoscaler</strong> — sets min/max for one MachineSet; the <strong>ClusterAutoscaler</strong> decides when to scale based on pending Pods and node utilisation, with cluster-wide limits.</li>
+    <li><strong>MachineHealthCheck</strong> — deletes a Machine whose Node is unhealthy so its MachineSet replaces it.</li>
+  </ul>
+  <p>This is the pattern behind the autoscaling lesson in the main course, with Karpenter's job done by the Cluster Autoscaler plus MachineSets. Compare <a href="../07-node-autoscaling.html">node autoscaling and Karpenter</a>: the Cluster Autoscaler scales <em>pre-defined</em> pools; it does not pick instance types per Pod.</p>
+
+  <h3>How a Machine becomes a Node</h3>
+  <ol>
+    <li>MachineSet controller creates a Machine; the cloud provider actuator creates the VM with user-data pointing at the machine-config-server.</li>
+    <li>The VM boots RHCOS, Ignition runs, the machine fetches its full config, and the kubelet starts.</li>
+    <li>The kubelet submits <strong>two CSRs</strong>: a client CSR, then a serving CSR. The <code>cluster-machine-approver</code> approves them when the request matches a known Machine.</li>
+    <li>A Node appears and is linked to the Machine via <code>nodeRef</code>.</li>
+  </ol>
+  <p>The failure points follow the steps. VM never exists: cloud quota, instance type unavailable, wrong subnet — read <code>oc describe machine</code>. VM exists, no Node: bootstrap failed or the machine-config-server is unreachable — check the instance console. Node exists but <code>NotReady</code>: look for <strong>pending CSRs</strong> (<code>oc get csr | grep Pending</code>) — a surprisingly common cause after a long outage, because kubelet certificates expired while the node was down.</p>
+
+  <h2>A MachineHealthCheck that does not cause a storm</h2>
+  <pre><code>apiVersion: machine.openshift.io/v1beta1
+kind: MachineHealthCheck
+metadata: {name: workers, namespace: openshift-machine-api}
+spec:
+  selector:
+    matchLabels: {machine.openshift.io/cluster-api-machine-role: worker}
+  unhealthyConditions:
+    - {type: Ready, status: "False",   timeout: 300s}
+    - {type: Ready, status: Unknown,   timeout: 300s}
+  maxUnhealthy: 40%        # stop remediating if more than 40% look unhealthy
+  nodeStartupTimeout: 20m</code></pre>
+  <p>The dangerous situation is not one bad node; it is <em>every</em> node looking bad at once. A control-plane network blip, an expired certificate, or an API outage makes all kubelets appear NotReady. An unbounded health check will happily delete every worker Machine, and the cluster rebuilds itself from nothing while you watch. <code>maxUnhealthy</code> is the circuit breaker: above it, remediation stops and the check reports short-circuited. Set it deliberately, and do not apply a health check to control-plane nodes without the documented procedure.</p>
+
+  <h2>Infra nodes and dedicated pools</h2>
+  <p>Platform components — routers, monitoring, the registry, logging — should not share nodes with tenant workloads. Create a MachineSet labelled <code>node-role.kubernetes.io/infra</code>, usually with a taint, and then point the components at it through their own configuration: <code>nodePlacement</code> on the IngressController, <code>nodeSelector</code> and <code>tolerations</code> in <code>cluster-monitoring-config</code>, and the registry operator's config. If you also want to tune them with MachineConfigs, make a matching <strong>custom MachineConfigPool</strong> so infra can roll on its own schedule (lesson 5).</p>
+
+  <h2>When there is no Machine API</h2>
+  <p>On UPI, on <em>bare metal</em> with no BMC integration, or on any cluster where nodes were added by hand, there are Nodes and no Machines. Replacement is whatever your automation does. On <em>IPI bare metal</em> the Metal3 operator gives you <code>BareMetalHost</code> objects and Machines mapped onto them, so a "delete Machine" reprovisions a physical host through its BMC. That is powerful and slow: reimaging a server takes many minutes and a failed BMC can strand the host. Set expectations for time-to-replace accordingly.</p>
+  <p>Note on direction: the upstream Cluster API is gradually becoming the underlying implementation on several platforms. The user-facing idea — a template-backed pool of replaceable machines — stays the same, but object kinds may differ by release.</p>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>An AZ network event isolates the control-plane API from 12 of your 30 workers for six minutes. Your MachineHealthCheck has <code>timeout: 300s</code> and no <code>maxUnhealthy</code>. Afterwards, a MachineSet's instance type is also changed in the template from <code>m6i.2xlarge</code> to <code>m6i.4xlarge</code>.</p>
+    <ol>
+      <li>What does the MHC do during the event?</li>
+      <li>What field should have prevented it, and with what value?</li>
+      <li>After you change the instance type, do existing nodes become larger?</li>
+      <li>How do you move the pool to the new size without an outage?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) Nodes become <code>Unknown</code> because kubelets cannot post status. After 300 seconds the MHC treats them as unhealthy and deletes their Machines. The VMs are terminated even though the workloads on them were fine and merely unreachable — a self-inflicted outage far worse than the six-minute blip.</p>
+      <p>2) <code>maxUnhealthy</code>. Here 12 of 30 is 40% unhealthy, so a value such as 20% would have short-circuited the check and left every Machine alone. Choose the largest fraction of the pool you can lose and still serve, accounting for how long replacement takes.</p>
+      <p>3) No. A MachineSet template change affects only Machines created afterwards. Existing Machines keep their original spec.</p>
+      <p>4) Scale the MachineSet up to create the larger machines, wait for the Nodes to be Ready, cordon and drain the old nodes (or delete the old Machines with the PDBs honoured), then scale down. Mind a MachineConfigPool's maxUnavailable and any PDBs that could block draining.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>Machines give you nodes. <a href="05-machine-config-operator.html">Lesson 5</a> is how every node's configuration is changed afterwards — including the reboots that surprise people.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"You edit a MachineSet's instance type. What happens to existing Machines?","options":["They are replaced immediately","They are resized in place","Nothing; only newly created Machines use the new template","They are drained and recreated one at a time"],"answer":2,"why":"A MachineSet is like a ReplicaSet: it does not roll existing members on a template change. You scale up, drain and delete the old ones."},
+ {"q":"Why is maxUnhealthy on a MachineHealthCheck important?","options":["It limits CPU","It stops remediation when too many nodes look unhealthy simultaneously, which usually means a shared fault rather than many broken nodes","It speeds up replacements","It chooses the instance type"],"answer":1,"why":"A control-plane or network event can make every kubelet look dead at once. Without a circuit breaker the MHC deletes healthy machines wholesale."},
+ {"q":"A Machine is Running in the cloud but never becomes a Ready Node. What do you check first?","options":["etcd defragmentation","Pending kubelet CSRs and whether the machine reached the machine-config-server","The router","Image pull secrets"],"answer":1,"why":"Boot, Ignition fetch, then client and serving CSRs approved by the machine approver. Failures at any of these leave a running VM with no registered Node."},
+ {"q":"How should platform components like the router and monitoring be isolated from tenant workloads?","options":["Namespaces are enough","A labelled infra MachineSet (often tainted) and placement settings in each component's own configuration","Delete them from tenant nodes by hand","Use hostNetwork"],"answer":1,"why":"Each operator exposes its own placement field (nodePlacement, nodeSelector, tolerations). Pair this with a custom MachineConfigPool if infra must be rolled separately."},
+ {"q":"What is the effect of editing files on an RHCOS node by hand?","options":["Nothing; they persist","They can be reported as drift and cause the node to go Degraded in MCO","They are replicated to all nodes","They are always blocked"],"answer":1,"why":"The Machine Config Daemon validates on-disk state against the rendered config. Unexpected modifications make the node Degraded until reverted, so use MachineConfig objects instead."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+</body>
+</html>

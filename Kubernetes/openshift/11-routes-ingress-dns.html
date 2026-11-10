@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>11. Networking II: Routes, routers and DNS · OpenShift for senior SREs</title>
+<meta name="description" content="Routes versus Ingress and Gateway API, the IngressController and HAProxy router, endpoint publishing strategies, sharding, route types and TLS, timeouts, the API and ingress VIPs, DNS, and 503/502/504 debugging.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="11">
+<main>
+  <span class="tag">Lesson 11</span>
+  <h1>Networking II: Routes, routers and DNS</h1>
+  <p class="lead">North-south traffic on OpenShift enters through the router: HAProxy Pods managed by the Ingress Operator. Routes are the native API; Ingress and Gateway API are layered over them. Most "the app is down" tickets are not the app — they are a timeout, an admission conflict, or a router that lost its endpoints.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Describe the path of a request, size and shard routers, choose a route termination type, find which layer cut a long request, debug 503/502/504 in order, and explain how the API and ingress VIPs and cluster DNS work.
+  </div>
+
+  <h2>The path of a request</h2>
+  <pre><code>client ─► DNS  *.apps.cluster.example.com  ─► cloud LB / keepalived VIP
+       ─► router Pod (HAProxy) on an infra/worker node
+       ─► endpoint Pod IP directly (not the Service ClusterIP)
+       ─► application container</code></pre>
+  <p>Notice the router talks to <strong>Pod endpoints directly</strong>, read from EndpointSlices, so it bypasses Service load balancing and can do its own balancing, health tracking and session stickiness. It also means a Route with a Service whose endpoints are empty gives you the router's "Application is not available" 503 page, not a Kubernetes error.</p>
+
+  <h2>IngressController: how the router is run</h2>
+  <p>The router is declared by <code>IngressController</code> objects in <code>openshift-ingress-operator</code>. There is always a <code>default</code>, and you may add more for shards or different networks.</p>
+  <pre><code>apiVersion: operator.openshift.io/v1
+kind: IngressController
+metadata: {name: internal, namespace: openshift-ingress-operator}
+spec:
+  domain: internal.apps.example.com
+  replicas: 3
+  endpointPublishingStrategy:
+    type: LoadBalancerService
+    loadBalancer: {scope: Internal}
+  nodePlacement:
+    nodeSelector: {matchLabels: {node-role.kubernetes.io/infra: ""}}
+    tolerations: [{key: node-role.kubernetes.io/infra, operator: Exists}]
+  routeSelector: {matchLabels: {exposure: internal}}
+  namespaceSelector: {matchLabels: {tier: internal}}
+  tuningOptions: {threadCount: 8, maxConnections: 50000, clientTimeout: 30s, serverTimeout: 30s}
+  tlsSecurityProfile: {type: Intermediate}
+  defaultCertificate: {name: internal-wildcard}</code></pre>
+  <table>
+    <tr><th>Setting</th><th>What it decides</th></tr>
+    <tr><td><code>endpointPublishingStrategy</code></td><td><code>LoadBalancerService</code> (cloud LB, External or Internal), <code>HostNetwork</code> (router binds node ports 80/443; used on bare metal behind a VIP), <code>NodePortService</code>, <code>Private</code></td></tr>
+    <tr><td><code>routeSelector</code> / <code>namespaceSelector</code></td><td><strong>Sharding</strong>: which Routes this router serves. Disjoint shards give blast-radius isolation: a noisy tenant cannot exhaust the router that serves payments.</td></tr>
+    <tr><td><code>nodePlacement</code></td><td>Run routers on infra nodes; spread across failure domains with topology spread settings</td></tr>
+    <tr><td><code>tuningOptions</code></td><td>HAProxy threads, connection cap, client/server timeouts, reload interval</td></tr>
+    <tr><td><code>tlsSecurityProfile</code>, <code>defaultCertificate</code></td><td>Cipher/protocol floor and the wildcard cert presented for edge routes</td></tr>
+  </table>
+  <p>Scaling the router is a real capacity decision: HAProxy reloads when routes change, and a cluster with thousands of routes and frequent changes reloads constantly. Shard by tenant or by traffic class when route count, connection count, or churn crosses what one router set can handle comfortably, and watch the router's own metrics (connections, reload duration, backend up/down) rather than node CPU alone.</p>
+
+  <h2>Routes, Ingress, Gateway API</h2>
+  <ul>
+    <li><strong>Route</strong> (<code>route.openshift.io</code>) — host, optional path, target Service and port, and a TLS termination block. Rich knobs through annotations (<code>haproxy.router.openshift.io/*</code>).</li>
+    <li><strong>Ingress</strong> — standard. The Ingress Operator creates managed Routes from Ingress objects, so you can use portable manifests; advanced features still require Route annotations or Route objects.</li>
+    <li><strong>Gateway API</strong> — the successor to Ingress. Recent OpenShift releases support it through the Ingress Operator and an Istio-based implementation. Adoption depends on your release and your need for features Routes lack, such as richer traffic splitting. Check support status before building on it.</li>
+  </ul>
+
+  <h3>Termination types</h3>
+  <table>
+    <tr><th>Type</th><th>TLS ends at</th><th>Use when</th></tr>
+    <tr><td><strong>edge</strong></td><td>The router; plain HTTP to the Pod</td><td>You do not need in-cluster encryption, or a mesh handles it. The router can present the default wildcard cert</td></tr>
+    <tr><td><strong>reencrypt</strong></td><td>Router, then a second TLS session to the Pod</td><td>In-cluster encryption required; the router validates the backend certificate (<code>destinationCACertificate</code>)</td></tr>
+    <tr><td><strong>passthrough</strong></td><td>The Pod itself; router forwards the encrypted stream by SNI</td><td>mTLS to the app, non-HTTP protocols over TLS. The router cannot see or route by path, and cannot add headers</td></tr>
+  </table>
+  <p><code>insecureEdgeTerminationPolicy</code> (<code>Redirect</code>, <code>Allow</code>, <code>None</code>) controls plain-HTTP behaviour — set <code>Redirect</code> unless there is a reason not to.</p>
+
+  <h3>Admission and host claims</h3>
+  <p>The router admits a Route only if its host is allowed. By default, hosts are claimed per namespace: the first namespace to use <code>shop.example.com/api</code> owns that host, and with the default <code>InterNamespaceAllowed</code> policy another namespace may claim <em>different paths</em> on the same host, which lets tenants hijack each other's paths. Setting <code>routeAdmission.namespaceOwnership: Strict</code> restricts a host to one namespace. A Route that is rejected shows its reason in <code>status.ingress[].conditions</code> (<code>Admitted: False</code>), which is where to look first when a Route "does nothing".</p>
+
+  <h2>Which layer cut the request?</h2>
+  <p>A long request that dies has several candidate killers: the client, the cloud LB idle timeout, the router's timeout, and the application. The router's default <strong>server/response timeout is 30 seconds</strong>, overridable per Route with <code>haproxy.router.openshift.io/timeout</code> (and <code>timeout-tunnel</code> for upgraded connections like WebSockets). Whichever layer has the smallest limit fires first:</p>
+  <div class="widget">
+    <h3>Timeout stack</h3>
+    <div class="row">
+      <label>app takes (s) <input id="app" type="number" min="1" max="600" value="45" style="width:70px"></label>
+      <label>router route timeout (s) <input id="rt" type="number" min="1" max="600" value="30" style="width:70px"></label>
+      <label>cloud LB idle timeout (s) <input id="lb" type="number" min="1" max="4000" value="60" style="width:70px"></label>
+      <label>client timeout (s) <input id="cl" type="number" min="1" max="600" value="120" style="width:70px"></label>
+    </div>
+    <p id="to"></p>
+  </div>
+  <p>Fix by raising the <em>smallest</em> limit that is wrong — or, better, by making a request that takes a minute asynchronous. Remember that every layer after the router, including a service mesh, can also have its own timeout.</p>
+
+  <h2>Debugging order: 503, 502, 504</h2>
+  <table>
+    <tr><th>Symptom</th><th>Meaning</th><th>Check</th></tr>
+    <tr><td>HTML "Application is not available" (503)</td><td>Route not admitted, no host match, or no ready endpoints</td><td><code>oc describe route</code>; <code>oc get endpoints,endpointslices</code>; readiness of the Pods</td></tr>
+    <tr><td>502 Bad Gateway</td><td>Router reached a backend but got an invalid response or the connection was reset — often reencrypt/TLS mismatch, or the app closed the connection</td><td>Backend certificate/CA; app logs; protocol (HTTP vs HTTPS port)</td></tr>
+    <tr><td>504 Gateway Timeout</td><td>Backend did not respond within the route timeout</td><td>Timeout annotation, app latency, Pod saturation</td></tr>
+    <tr><td>Connection refused/timeout to the VIP</td><td>LB or keepalived problem, router Pods not running, or a security group</td><td><code>oc -n openshift-ingress get pods -o wide</code>; LB health checks</td></tr>
+    <tr><td>Wrong certificate</td><td>Route cert missing so the default wildcard is served, or SNI mismatch</td><td><code>openssl s_client -connect &lt;vip&gt;:443 -servername &lt;host&gt;</code></td></tr>
+  </table>
+  <pre><code>oc -n openshift-ingress get pods -o wide
+oc -n openshift-ingress logs deploy/router-default --tail=50
+oc -n openshift-ingress rsh deploy/router-default cat conf/haproxy.config | grep -A8 '&lt;route-host&gt;'
+oc get ingresscontroller/default -n openshift-ingress-operator -o jsonpath='{.status.conditions}' | jq
+oc -n openshift-ingress-canary get route,pods     # the operator's own end-to-end probe</code></pre>
+
+  <h2>The API VIP and the ingress VIP</h2>
+  <p>On public clouds, the API (<code>api.cluster.example.com</code>, port 6443, and the internal <code>api-int</code>) and the router sit behind cloud load balancers the installer created. On <strong>bare metal IPI</strong>, there is no cloud LB: the platform runs <code>keepalived</code> on control-plane (API VIP) and router-hosting (ingress VIP) nodes with HAProxy, and the VIPs move with VRRP. On UPI you provide external load balancers yourself, and their health checks, TLS passthrough on 6443 and 22623, and <code>api-int</code> reachability for nodes become your responsibility.</p>
+  <p>The <code>api-int</code> endpoint matters: nodes and operators use it, and a mis-set LB that works for humans on <code>api</code> but not for <code>api-int</code> yields nodes that cannot join or update.</p>
+
+  <h2>Cluster DNS</h2>
+  <p>CoreDNS runs as a DaemonSet <code>dns-default</code> in <code>openshift-dns</code>, serving the Service IP (typically <code>172.30.0.10</code>). The DNS Operator (<code>operator.openshift.io/DNS</code>) lets you forward specific zones to corporate resolvers, set upstream resolvers, and tune caching. Remember <code>ndots:5</code> in Pod <code>/etc/resolv.conf</code>: a lookup like <code>api.partner.com</code> tries several search-suffix variations first, multiplying DNS load and latency; use fully qualified names with a trailing dot for hot paths, or lower <code>ndots</code> in the Pod's <code>dnsConfig</code>.</p>
+  <p>The <code>*.apps</code> wildcard is a record created by the Ingress Operator in the cloud DNS zone (via a <code>DNSRecord</code>), or by you on bare metal. A cluster that comes up with all operators healthy but whose console is unreachable usually has a missing or wrong wildcard record.</p>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>A batch-export endpoint takes 70s. Users on the Route get a 504 at 30s. Raising the Route timeout to 120s fixes it for most — but a handful still drop at 60s from inside the corporate network, and a second tenant reports their Route "stopped working" after a teammate created a Route for the same hostname.</p>
+    <ol>
+      <li>Which layer produced the 504, and what is the fix?</li>
+      <li>What is likely cutting the remaining requests at 60s?</li>
+      <li>What is the better long-term design?</li>
+      <li>What explains the second tenant's problem and how do you prevent it?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) The router's default 30s server timeout. Set <code>haproxy.router.openshift.io/timeout: 120s</code> on that Route only — a cluster-wide increase ties up router connections for every tenant.</p>
+      <p>2) A 60s idle timeout on a layer outside the cluster: the cloud load balancer in front of the router (a common default) or a corporate proxy. Raise it where it is set, or avoid the long idle connection.</p>
+      <p>3) Make the export asynchronous: return 202 with a job id, poll or notify, and download the result. Long synchronous requests tie up router and app connections and fail in many layers.</p>
+      <p>4) A host collision. With the default inter-namespace policy another namespace can claim a different path on a hostname, or if the router was not strict, conflicting Routes get arbitrated by age, so the older one wins. Set <code>routeAdmission.namespaceOwnership: Strict</code> on the IngressController and check <code>status.ingress[].conditions</code> on the rejected Route.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>Networking done. Next is state: <a href="12-storage.html">storage</a>, which includes the disk under etcd.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"What does the OpenShift router send traffic to?","options":["The Service ClusterIP via kube-proxy","The Pod endpoints directly, from EndpointSlices","The node port of each Service","The API server"],"answer":1,"why":"HAProxy reads endpoints and balances itself, which is why a Service with no ready endpoints produces the router's own 503 page."},
+ {"q":"A Route times out for requests that take 45 seconds. Default cause?","options":["DNS TTL","The router's default 30s server timeout","etcd latency","The SCC"],"answer":1,"why":"Raise haproxy.router.openshift.io/timeout on that Route only, and consider why a request takes that long."},
+ {"q":"What is a good reason to create an additional IngressController?","options":["To get a second kube-proxy","A shard with its own selectors, placement or exposure (e.g. an internal LB) to isolate blast radius","To duplicate RBAC","To store images"],"answer":1,"why":"Shards isolate noisy tenants and different exposure levels, with their own replicas and tuning."},
+ {"q":"Which termination type lets the Pod terminate TLS and see client certificates end to end?","options":["edge","reencrypt","passthrough","none"],"answer":2,"why":"Passthrough forwards the encrypted stream by SNI; the router cannot inspect paths or add headers."},
+ {"q":"On bare metal IPI, what provides the API and ingress VIPs?","options":["A cloud load balancer","keepalived with HAProxy on nodes, using VRRP","MetalLB only","CoreDNS"],"answer":1,"why":"There is no cloud LB. The platform runs keepalived so the VIPs fail over between nodes."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  function draw(){
+    const app=+$("app").value, L=[["router (route timeout)",+$("rt").value],["cloud load balancer idle",+$("lb").value],["client",+$("cl").value]];
+    L.sort((a,b)=>a[1]-b[1]);
+    const first=L[0];
+    if(app<first[1]){ $("to").innerHTML=`<span class="ok">The app finishes in ${app}s, before the smallest limit (${first[0]}: ${first[1]}s). The request succeeds.</span>`; return; }
+    const note = first[0].startsWith("router") ? "Client sees a <strong>504</strong> from HAProxy." :
+                 first[0].startsWith("cloud") ? "Connection is reset by the load balancer; the router never gets to return an error, so the router logs may look clean." :
+                 "The client gives up first; the server logs a cancelled request.";
+    $("to").innerHTML=`<span class="err">Cut at ${first[1]}s by the <strong>${first[0]}</strong>.</span> ${note}`;
+  }
+  ["app","rt","lb","cl"].forEach(i=>$(i).addEventListener("input",draw)); draw();
+})();
+</script>
+</body>
+</html>

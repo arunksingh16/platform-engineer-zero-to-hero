@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>3. The Cluster Version Operator and ClusterOperators · OpenShift for senior SREs</title>
+<meta name="description" content="How the CVO applies the release payload, how to read ClusterOperator Available/Progressing/Degraded, the dependency chain behind cascading degradation, managementState and unsupported overrides.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="3">
+<main>
+  <span class="tag">Lesson 3</span>
+  <h1>The Cluster Version Operator and ClusterOperators</h1>
+  <p class="lead">If you learn one thing on this platform, learn this: <code>oc get clusteroperators</code> is the cluster's health summary, and the three columns <em>Available, Progressing, Degraded</em> tell you whether a fault is in a component or merely downstream of one. Most senior on-call time is saved by reading that table correctly.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Explain what the CVO does, interpret any combination of ClusterOperator conditions, trace cascading degradation to its root, and say what <code>managementState</code> and <code>overrides</code> do to your support position.
+  </div>
+
+  <h2>The release image is the unit</h2>
+  <p>An OpenShift version is a single container image, the <strong>release payload</strong>. Inside it is a list of every operator image digest plus the manifests the platform needs, numbered so they apply in a defined order. The <strong>Cluster Version Operator</strong> (CVO) runs in <code>openshift-cluster-version</code> and continuously applies that payload: it creates or patches the operator Deployments and their CRDs, then waits for each to report healthy before moving on.</p>
+  <p>That is the same reconcile loop as lesson 1 of the main course, applied to the platform itself. Notice three consequences:</p>
+  <ul>
+    <li><strong>Updating is changing the desired release image.</strong> There is no per-component upgrade procedure; the CVO converges to the new payload.</li>
+    <li><strong>The CVO is self-healing.</strong> If you delete an operator Deployment it is recreated; if you edit it, the CVO reverts it. That is what makes the platform consistent and what makes hand edits pointless.</li>
+    <li><strong>Order is part of the contract.</strong> Manifests are grouped into run levels; etcd and the API server come before things that need them. A wrong-order upgrade is not possible, which is also why a stuck early operator blocks everything behind it.</li>
+  </ul>
+
+  <h2>Reading the table</h2>
+  <pre><code>$ oc get clusterversion
+NAME      VERSION   AVAILABLE   PROGRESSING   SINCE   STATUS
+version   4.18.4    True        False         12d     Cluster version is 4.18.4
+
+$ oc get co
+NAME                 VERSION  AVAILABLE  PROGRESSING  DEGRADED  SINCE
+authentication       4.18.4   True       False        False     12d
+etcd                 4.18.4   True       False        False     12d
+ingress              4.18.4   True       True         False     4m
+machine-config       4.18.4   True       False        True      9m</code></pre>
+  <p>Each operator publishes a <code>ClusterOperator</code> object with condition types. They are <strong>not</strong> a severity ladder; they are three independent questions:</p>
+  <table>
+    <tr><th>Condition</th><th>Question it answers</th><th>Meaning of <code>True</code></th></tr>
+    <tr><td><strong>Available</strong></td><td>Is the operand doing its job right now?</td><td>The component is serving. <code>False</code> means a user-visible outage of that function.</td></tr>
+    <tr><td><strong>Progressing</strong></td><td>Is the operator moving toward a new desired state?</td><td>A rollout is in flight — normal during an update or config change, suspicious if it lasts hours.</td></tr>
+    <tr><td><strong>Degraded</strong></td><td>Does the operator believe something is wrong that it cannot fix on its own?</td><td>Needs a human, even though it may still be Available.</td></tr>
+    <tr><td><strong>Upgradeable</strong></td><td>Is it safe to take a <em>minor</em> update?</td><td>Usually shown as <code>False</code> with a reason when something blocks it.</td></tr>
+  </table>
+  <p>Degraded has a hysteresis: operators generally wait a short period before flipping it so a Pod restart does not page you. A <strong>sustained Degraded</strong> is a real signal; a momentary one on a rollout is not.</p>
+
+  <h3>Decode a triple</h3>
+  <div class="widget">
+    <h3>Condition decoder</h3>
+    <div class="row">
+      <label>Available <select id="a"><option>True</option><option>False</option></select></label>
+      <label>Progressing <select id="p"><option>False</option><option>True</option></select></label>
+      <label>Degraded <select id="d"><option>False</option><option>True</option></select></label>
+    </div>
+    <div id="read"></div>
+  </div>
+
+  <h2>Cascading degradation: find the root, not the loudest</h2>
+  <p>Operators depend on each other, and many report Degraded when something they use is broken. The commonly surprising chains:</p>
+  <pre><code>etcd ──► kube-apiserver ──► openshift-apiserver, oauth-apiserver
+                      └────► almost everything else
+
+network ──► DNS ──► ingress ──► authentication ──► console
+                                  (authentication needs the OAuth route to be reachable,
+                                   which needs the router, which needs DNS and the network)
+
+machine-config ──► nodes ──► every operator whose operand runs on a node being drained</code></pre>
+  <p>When <code>console</code>, <code>authentication</code> and <code>monitoring</code> are all red, the instinct is to open the console one. Resist it. Walk the chain from the bottom: is <code>etcd</code> healthy? <code>kube-apiserver</code>? <code>network</code>? <code>dns</code>? <code>ingress</code>? The <em>lowest</em> broken operator is almost always the cause, and the ones above it clear themselves when it recovers.</p>
+
+  <div class="callout">
+    <h3>The 90-second triage</h3>
+    <pre><code>oc get clusterversion
+oc get co | grep -vE 'True +False +False'        # show only unhealthy rows
+oc describe co &lt;lowest-in-the-chain&gt;               # message + reason per condition
+oc -n openshift-&lt;operator&gt; get pods                # operand health
+oc -n openshift-&lt;operator&gt; logs deploy/&lt;operator&gt;   # operator's own reasoning
+oc get events -A --sort-by=.lastTimestamp | tail -30
+oc get mcp                                         # is a config rollout the cause?
+oc adm must-gather                                 # attach to the support case</code></pre>
+    <p>If the API itself is unreachable, none of this works and neither does <code>oc debug</code>. SSH to a control-plane node as <code>core</code> (break-glass only), use <code>crictl ps</code> and <code>crictl logs</code> for the etcd and kube-apiserver containers, and use the on-node <code>localhost-recovery.kubeconfig</code> described in the recovery docs.</p>
+  </div>
+
+  <h2>managementState and overrides: how to void your support</h2>
+  <p>Each operator CR has <code>spec.managementState</code> with three values. <strong>Managed</strong> is normal. <strong>Unmanaged</strong> tells the operator to stop reconciling — an intentional escape hatch used for debugging, and one that makes the cluster unsupported until restored. <strong>Removed</strong> tells operators that support it to remove the operand (the Image Registry uses this when a cluster has no storage).</p>
+  <p>At the CVO level, <code>ClusterVersion.spec.overrides</code> can mark a specific manifest <code>unmanaged: true</code> so the CVO stops applying it. It exists for emergencies. It also sets <code>Upgradeable=False</code>, the cluster is unsupported, and every later update is blocked until you remove the override. Treat any override in a fleet audit as a finding.</p>
+  <table>
+    <tr><th>Tempting action</th><th>What you risk</th></tr>
+    <tr><td>Scale an operator Deployment to 0 "to stop it fighting me"</td><td>The CVO scales it back; you lose the intended pause and, if the CVO is also scaled down, you lose all convergence.</td></tr>
+    <tr><td>Set <code>managementState: Unmanaged</code> to patch an operand</td><td>No more reconciliation, no support, and the patch may be wiped on the next update.</td></tr>
+    <tr><td>Add a ClusterVersion override for a manifest</td><td>Blocks updates; deferred debt that always comes due at the worst time.</td></tr>
+  </table>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>At 02:10 you see: <code>authentication</code> Available=False, <code>console</code> Available=False, <code>ingress</code> Degraded=True with reason <em>IngressControllerUnavailable</em>, <code>dns</code> healthy, <code>network</code> healthy, <code>machine-config</code> Progressing=True. Users report logins failing, but running apps still answer.</p>
+    <ol>
+      <li>Which operator do you investigate first, and why not authentication?</li>
+      <li>Why are existing applications still working?</li>
+      <li>machine-config is Progressing. Why is that relevant?</li>
+      <li>What would you check on the ingress operator?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) <strong>ingress.</strong> It is lowest in the chain that is broken. Authentication's OAuth endpoint is exposed through a Route served by the router; if the router is unavailable the login route is unreachable and authentication reports unavailable. Fixing authentication directly is chasing a symptom.</p>
+      <p>2) Pods keep running regardless of the control plane, and east-west traffic does not use the router. If external application Routes also answer, the router is only partly down (some replicas, or a subset of shards) and the failing piece is narrower than the status suggests — for example only the OAuth route's endpoints. Check whether <em>all</em> routes fail or just the authentication one before widening the incident.</p>
+      <p>3) A MachineConfig rollout drains nodes. If router replicas are being evicted at the same time and a PDB or node placement leaves too few, you can produce exactly this: the rollout is the <em>trigger</em>, ingress the symptom. Check <code>oc get mcp</code> and which nodes are draining.</p>
+      <p>4) <code>oc describe co ingress</code> for the message, <code>oc -n openshift-ingress get pods -o wide</code> for placement and readiness, <code>oc -n openshift-ingress-operator get ingresscontroller/default -o yaml</code> for conditions (they are detailed: <em>PodsScheduled</em>, <em>DeploymentAvailable</em>, <em>LoadBalancerReady</em>, <em>DNSReady</em>), and the router pod logs.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>The commonest reason an operator is Progressing for a long time is that a node is mid-drain. <a href="04-nodes-and-machine-api.html">Lesson 4</a> covers where nodes come from; <a href="05-machine-config-operator.html">lesson 5</a> covers why they reboot.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"A ClusterOperator shows Available=True, Progressing=False, Degraded=True. What does it mean?","options":["It is down","It is serving, but the operator has detected a problem it cannot self-heal and needs a human","It is mid-upgrade","It is unmanaged"],"answer":1,"why":"The conditions are independent questions. Degraded with Available is a working-but-wrong state: the capability exists now, but something is off that will not fix itself."},
+ {"q":"console, authentication and monitoring are all unhealthy. Where do you start?","options":["console","monitoring","The lowest operator in the dependency chain that is unhealthy, such as ingress, network, dns, kube-apiserver or etcd","Delete the operators' Pods"],"answer":2,"why":"Higher-level operators depend on lower ones. Fix the base of the chain and the rest recover without intervention."},
+ {"q":"What does setting a manifest override in ClusterVersion do to the cluster?","options":["Speeds up updates","Stops the CVO applying that manifest, marks the cluster unsupported, and blocks minor updates (Upgradeable=False)","Rolls back the release","Nothing; it is advisory"],"answer":1,"why":"Overrides are an emergency escape hatch. They leave deferred debt and block updates until removed."},
+ {"q":"What is the CVO's source of truth?","options":["A Helm chart","The release payload image, with manifests applied in run-level order","The oc client version","etcd snapshots"],"answer":1,"why":"One release image holds every operator digest and manifest. The CVO converges the cluster to it, which makes an update simply a change of desired release."},
+ {"q":"What is a legitimate use of managementState: Removed?","options":["Delete a failing node","Telling an operator to remove its operand, as with the Image Registry on a cluster with no storage","Pausing a MachineConfigPool","Disabling RBAC"],"answer":1,"why":"Managed is normal, Unmanaged stops reconciliation, Removed removes the operand where supported. The registry operator uses Removed when it has nowhere to store images."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  function draw(){
+    const a=$("a").value==="True", p=$("p").value==="True", d=$("d").value==="True";
+    let t,c;
+    if(!a&&d){t="Down and the operator knows it.";c="err";}
+    else if(!a&&p){t="Not serving yet, still converging. Normal during install or a node roll; page if it persists.";c="muted";}
+    else if(!a){t="Not serving and not trying. Check whether the operator itself is running.";c="err";}
+    else if(d&&p){t="Serving, mid-change, and something is wrong. Often a rollout stuck on a drain or an image pull.";c="err";}
+    else if(d){t="Serving, but a fault needs a human. Read the Degraded message — it names the reason.";c="err";}
+    else if(p){t="Serving and rolling out a change. Normal. Watch how long it lasts.";c="muted";}
+    else {t="Healthy and stable. The only state you can ignore.";c="ok";}
+    $("read").innerHTML=`<p class="${c}"><strong>${t}</strong></p>`;
+  }
+  ["a","p","d"].forEach(i=>$(i).addEventListener("change",draw)); draw();
+})();
+</script>
+</body>
+</html>

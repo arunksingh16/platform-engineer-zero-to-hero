@@ -40,6 +40,13 @@ planning, the packet path and MTU, NetworkPolicy and who enforces it, choosing
 between Flannel, Calico, Cilium and the cloud CNIs, and the eBPF dataplane.
 Vendor-neutral, with its own references section at the end of lesson 5.
 
+`openshift/` — **OpenShift for senior SREs**, fifteen lessons: operator-managed
+architecture, installation and hosted control planes, the CVO and ClusterOperators,
+Machine API and MachineConfig, updates, OLM, OAuth and RBAC, SCCs and hardening,
+OVN-Kubernetes, routers and DNS, storage, multi-tenancy, etcd and day-two
+operations, and fleet management with an incident playbook. References are at
+the end of lesson 15.
+
 Platform-specific material goes in a child directory with its own `lessons.js`
 and its own progress key, so progress never bleeds between courses:
 
@@ -51,7 +58,7 @@ Kubernetes/
     lessons.js          const COURSE = { key: "k8s-eks", ... }
     01-....html
   aks/
-  openshift/
+  openshift/              const COURSE = { key: "kubernetes-openshift", up: {...}, ... }
 ```
 
 Child lesson pages reach the shared assets two levels up:

@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>9. SecurityContextConstraints and hardening · OpenShift for senior SREs</title>
+<meta name="description" content="How SCC admission works, restricted-v2 and the built-in SCCs, UID range allocation, the anyuid priority trap, Pod Security Admission label sync, and a platform hardening checklist.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="9">
+<main>
+  <span class="tag">Lesson 9</span>
+  <h1>SecurityContextConstraints and hardening</h1>
+  <p class="lead">Most "it works on Kubernetes but not on OpenShift" tickets are the same ticket: the image wants to run as root. SCCs are the reason, and they are also the best control you have against a compromised workload becoming a compromised node. This lesson is about reading them, not just granting <code>anyuid</code> until the error goes away.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Explain how an SCC is selected for a Pod, read the UID range on a namespace, predict which SCC admits a workload, avoid the <code>anyuid</code> priority trap, relate SCCs to Pod Security Admission, and run through a hardening checklist.
+  </div>
+
+  <h2>What an SCC is</h2>
+  <p>A <strong>SecurityContextConstraints</strong> object is a cluster-scoped policy describing what a Pod may ask for: which UIDs, which Linux capabilities, whether it may use the host network, host PID, host paths, privileged mode, which volume types, which SELinux context and seccomp profile. It is both a <em>validator</em> (reject Pods that exceed it) and a <em>mutator</em> (fill in defaults, such as a UID).</p>
+  <p>Authorisation to use an SCC is ordinary RBAC: the verb <code>use</code> on the resource <code>securitycontextconstraints</code> by name. You grant it to a ServiceAccount (or user or group) with <code>oc adm policy add-scc-to-user</code> — which creates the RBAC for you — or by writing the Role and RoleBinding yourself. The admission plugin considers the SCCs available to the <em>Pod's ServiceAccount</em> and to the <em>requesting user</em>.</p>
+
+  <h2>The built-ins you will meet</h2>
+  <table>
+    <tr><th>SCC</th><th>Allows</th><th>Notes</th></tr>
+    <tr><td><code>restricted-v2</code></td><td>Non-root, UID from the namespace range, drop ALL capabilities (may add <code>NET_BIND_SERVICE</code>), RuntimeDefault seccomp, no privilege escalation, no host access</td><td>The default for authenticated users on current releases. It succeeded the original <code>restricted</code></td></tr>
+    <tr><td><code>nonroot-v2</code></td><td>Any non-zero UID, otherwise restricted</td><td>For images that hardcode a UID such as 1001</td></tr>
+    <tr><td><code>hostnetwork-v2</code></td><td>Restricted-like, plus the host network and host ports</td><td>Router, some CNI helpers</td></tr>
+    <tr><td><code>anyuid</code></td><td>Any UID, including root. Does not allow privileged or host access</td><td><strong>Priority 10</strong> — evaluated first among those the account can use</td></tr>
+    <tr><td><code>hostmount-anyuid</code></td><td>Any UID and hostPath volumes</td><td>Backup and logging agents</td></tr>
+    <tr><td><code>privileged</code></td><td>Everything</td><td>Equivalent to root on the node</td></tr>
+  </table>
+  <p>The platform's own namespaces and operators run under purpose-built SCCs; do not edit the built-ins. Create a custom SCC if you need something specific, and give it a name that cannot be confused with a platform one.</p>
+
+  <h2>UID ranges: why your image gets a random user</h2>
+  <p>On namespace creation, OpenShift assigns three annotations:</p>
+  <pre><code>$ oc get ns payments -o yaml | grep openshift.io/sa.scc
+openshift.io/sa.scc.mcs: s0:c26,c10
+openshift.io/sa.scc.supplemental-groups: 1000680000/10000
+openshift.io/sa.scc.uid-range: 1000680000/10000</code></pre>
+  <p>The range is a block of 10,000 UIDs unique to that namespace, and the <strong>MCS label</strong> is the SELinux category pair that isolates its containers from other namespaces' containers on the same node. With <code>restricted-v2</code> and no <code>runAsUser</code> in the Pod, the first UID in that range is assigned. The process runs as an arbitrary non-root UID with GID 0 as an extra group.</p>
+  <p>What follows for image authors: files that the process must write need <strong>group-0 write permission</strong> (<code>chgrp -R 0 /data &amp;&amp; chmod -R g=u /data</code>), the image cannot rely on <code>/etc/passwd</code> containing the running UID, and binding to ports below 1024 needs <code>NET_BIND_SERVICE</code> or — better — a high port. SELinux isolation between namespaces comes from the MCS pairs; disabling SELinux enforcement on a node removes it.</p>
+
+  <h2>Which SCC admits this Pod?</h2>
+  <p>The algorithm: gather the SCCs the Pod's ServiceAccount and requester may <code>use</code>, order them by <strong>priority (highest first), then by restrictiveness</strong>, and take the first that can validate the Pod, applying its mutations. Try it below — especially with <code>anyuid</code> granted.</p>
+  <div class="widget">
+    <h3>SCC admission simulator</h3>
+    <div class="row">
+      <label>runAsUser <select id="uid"><option value="none">unspecified</option><option value="1001">1001 (outside range)</option><option value="0">0 (root)</option></select></label>
+      <label>capability added <select id="cap"><option value="">none</option><option>NET_BIND_SERVICE</option><option>SYS_ADMIN</option></select></label>
+    </div>
+    <div class="row" style="flex-direction:column;align-items:flex-start;gap:4px">
+      <label><input type="checkbox" id="hn"> hostNetwork: true</label>
+      <label><input type="checkbox" id="hp"> hostPath volume</label>
+      <label><input type="checkbox" id="pv"> privileged: true</label>
+    </div>
+    <div class="row">
+      <label>SCCs the ServiceAccount may <code>use</code>
+        <select id="grant">
+          <option value="default">default only (restricted-v2)</option>
+          <option value="nonroot">+ nonroot-v2</option>
+          <option value="anyuid">+ anyuid</option>
+          <option value="hostmount">+ hostmount-anyuid</option>
+          <option value="priv">+ privileged</option>
+        </select>
+      </label>
+    </div>
+    <div id="scc"></div>
+  </div>
+
+  <div class="callout">
+    <h3>The anyuid trap</h3>
+    <p>Because <code>anyuid</code> has priority 10, once a ServiceAccount may use it, it is chosen <em>before</em> <code>restricted-v2</code> for every Pod it can admit — including Pods that did not ask for anything unusual. Its UID strategy is <em>RunAsAny</em>, so a Pod with no <code>runAsUser</code> runs as whatever the image's <code>USER</code> says, which is often root. Granting <code>anyuid</code> to "fix" one image silently makes the whole ServiceAccount run root everywhere. Use a <em>dedicated ServiceAccount</em> per such workload, grant the narrowest SCC that works, and fix the image when you can.</p>
+  </div>
+
+  <h2>SCCs and Pod Security Admission</h2>
+  <p>Upstream Kubernetes' <strong>Pod Security Admission</strong> (PSA) enforces three profiles — <em>privileged</em>, <em>baseline</em>, <em>restricted</em> — through namespace labels. OpenShift runs both. SCCs remain the authoritative control; to keep PSA from fighting them, a <strong>label-sync controller</strong> sets each namespace's PSA labels to the strictest profile that matches the SCCs its ServiceAccounts can use. Namespaces whose names start with <code>openshift-</code>, and those you opt out of with <code>security.openshift.io/scc.podSecurityLabelSync: "false"</code>, are not synced.</p>
+  <p>Two consequences. First, a workload may be admitted by SCC and still produce a PSA <em>warning</em> in <code>oc apply</code> output; read it, as it tells you the Pod is less restricted than the cluster would like. Second, if you manage PSA labels in Git for a namespace, turn off the sync for it or the two controllers will fight forever.</p>
+
+  <h2>A hardening checklist</h2>
+  <table>
+    <tr><th>Area</th><th>Action</th></tr>
+    <tr><td>Workload admission</td><td>Keep <code>restricted-v2</code> as the default. Review every use of <code>anyuid</code>, <code>privileged</code>, <code>hostmount-anyuid</code>. Alert on new bindings to them.</td></tr>
+    <tr><td>Access</td><td>Remove <code>kubeadmin</code>; groups only; short token lifetimes (lesson 8). Restrict <code>self-provisioner</code>.</td></tr>
+    <tr><td>Secrets</td><td>Enable etcd encryption; integrate an external secret store (Vault, a cloud KMS, the Secrets Store CSI driver); no secrets in images or Git.</td></tr>
+    <tr><td>Supply chain</td><td>Restrict registries (<code>config.openshift.io/Image</code> allow-list); require signed images through policy (sigstore / cluster image policy); scan and gate with ACS/Quay.</td></tr>
+    <tr><td>Network</td><td>Default-deny NetworkPolicy via the project template (lesson 13); egress firewall and EgressIP for sensitive tenants (lesson 10).</td></tr>
+    <tr><td>Nodes</td><td>No SSH by default; <code>oc debug</code> audited; FIPS if required (install time); keep RHCOS updated through cluster updates only.</td></tr>
+    <tr><td>Compliance</td><td>Compliance Operator with profiles such as CIS or a national standard; the File Integrity Operator for node file drift; scan on a schedule and remediate through MachineConfigs.</td></tr>
+    <tr><td>Observation</td><td>Audit profile appropriate to risk, forwarded off-cluster. Runtime detection through ACS (StackRox) or an eBPF-based tool where required.</td></tr>
+    <tr><td>Certificates</td><td>Replace the default ingress and API certificates with your PKI via <code>config.openshift.io/APIServer</code> and the <code>IngressController</code> default certificate. Monitor expiry.</td></tr>
+  </table>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>A vendor image requires UID 1001 and writes to <code>/var/lib/app</code>. A developer grants <code>anyuid</code> to the <code>default</code> ServiceAccount in <code>payments</code>. A week later a security scan shows several unrelated Pods in that namespace running as root.</p>
+    <ol>
+      <li>Why are unrelated Pods now running as root?</li>
+      <li>What is the smallest SCC that fits the vendor image?</li>
+      <li>What does the filesystem need for it to work under a random UID?</li>
+      <li>Where do you find out which SCC admitted a running Pod?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) <code>anyuid</code> has priority 10, so for any Pod using the <code>default</code> ServiceAccount it is evaluated first and chosen; its RunAsAny UID strategy leaves each image's <code>USER</code> alone, and many images default to root.</p>
+      <p>2) <code>nonroot-v2</code> — it accepts any non-zero UID such as 1001 and keeps everything else restricted. Grant it to a <em>dedicated</em> ServiceAccount used only by that Deployment.</p>
+      <p>3) With the fixed UID under nonroot-v2, the directory must be writable by 1001 (or via a group in <code>fsGroup</code> through a PVC). If the app later runs under restricted-v2 with a random UID, the directory must be group-0 writable.</p>
+      <p>4) The Pod annotation <code>openshift.io/scc</code> names the SCC. <code>oc get pod x -o jsonpath='{.metadata.annotations.openshift\.io/scc}'</code>. Use <code>oc adm policy scc-subject-review -f pod.yaml</code> to predict it before deploy.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>Security of what runs is half the story; the other half is what it can reach. <a href="10-ovn-kubernetes.html">Lesson 10</a> opens networking.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"How does a ServiceAccount get permission to use an SCC?","options":["SCCs are global","RBAC: the use verb on securitycontextconstraints, usually created by oc adm policy add-scc-to-user","Pod annotations","An admission webhook list"],"answer":1,"why":"SCC use is plain RBAC. You can inspect it with who-can and review it like any other permission."},
+ {"q":"Why is granting anyuid to the default ServiceAccount dangerous?","options":["It breaks networking","anyuid has priority 10, so it is selected first for every Pod using that account and lets images run as their own USER, often root","It disables SELinux on the cluster","It changes the namespace UID range"],"answer":1,"why":"Priority beats restrictiveness in ordering. The right pattern is a dedicated ServiceAccount and the narrowest SCC, like nonroot-v2."},
+ {"q":"What does the openshift.io/sa.scc.uid-range annotation represent?","options":["Allowed ports","A unique block of UIDs assigned to the namespace, from which restricted-v2 picks","Node IP range","SELinux level"],"answer":1,"why":"Each namespace gets its own UID block. The MCS annotation separately isolates namespaces at the SELinux level."},
+ {"q":"What is the label-sync controller for?","options":["Syncing group membership","Setting PSA namespace labels to match the SCCs available to a namespace's ServiceAccounts, so PSA and SCC do not conflict","Replicating SCCs to nodes","Syncing Secrets across clusters"],"answer":1,"why":"SCC remains authoritative. Sync keeps Pod Security labels aligned and can be disabled per namespace when you manage labels yourself."},
+ {"q":"An image writes to a directory but fails under restricted-v2 with permission denied. The most appropriate fix is?","options":["Run it as privileged","Make the directory group-0 writable in the image (chgrp 0, chmod g=u) so any assigned UID can write","Disable SELinux","Use hostPath"],"answer":1,"why":"The arbitrary UID runs with GID 0. Giving group 0 the same permissions as the owner makes the image portable across namespaces and ranges."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  // order is priority-then-restrictiveness; anyuid is priority 10
+  const ALL=["anyuid","restricted-v2","nonroot-v2","hostnetwork-v2","hostmount-anyuid","privileged"];
+  const GRANT={
+    default:["restricted-v2"],
+    nonroot:["restricted-v2","nonroot-v2"],
+    anyuid:["restricted-v2","anyuid"],
+    hostmount:["restricted-v2","hostmount-anyuid"],
+    priv:["restricted-v2","privileged"],
+  };
+  function admits(scc,p){
+    const rootish=p.uid==="0", fixed=p.uid==="1001";
+    const capOk = p.cap===""||p.cap==="NET_BIND_SERVICE";
+    switch(scc){
+      case "restricted-v2": return !rootish&&!fixed&&capOk&&!p.hn&&!p.hp&&!p.pv;
+      case "nonroot-v2": return !rootish&&capOk&&!p.hn&&!p.hp&&!p.pv;
+      case "hostnetwork-v2": return !rootish&&!fixed&&capOk&&!p.hp&&!p.pv;
+      case "anyuid": return capOk&&!p.hn&&!p.hp&&!p.pv;
+      case "hostmount-anyuid": return capOk&&!p.hn&&!p.pv;
+      case "privileged": return true;
+    }
+  }
+  function draw(){
+    const p={uid:$("uid").value,cap:$("cap").value,hn:$("hn").checked,hp:$("hp").checked,pv:$("pv").checked};
+    const mine=GRANT[$("grant").value];
+    const order=ALL.filter(s=>mine.includes(s));
+    const tried=[];
+    let chosen=null;
+    for(const s of order){
+      const ok=admits(s,p);
+      tried.push(`<code>${s}</code>: ${ok?"<span class='ok'>admits</span>":"<span class='err'>rejects</span>"}`);
+      if(ok){chosen=s;break;}
+    }
+    let out=`<p class="muted">Evaluation order for this account: ${order.join(" → ")}</p><p>${tried.join("<br>")}</p>`;
+    if(chosen){
+      out+=`<p><strong>Admitted by <code>${chosen}</code>.</strong></p>`;
+      if(chosen==="anyuid"&&p.uid==="none")
+        out+=`<p class="err">The Pod asked for no particular UID, yet it will run as the image's own USER (often root) because <code>anyuid</code> outranks <code>restricted-v2</code>.</p>`;
+      if(chosen==="privileged")
+        out+=`<p class="err">This Pod has root on the node.</p>`;
+    } else out+=`<p class="err"><strong>Forbidden:</strong> no SCC this account may use admits the Pod. The error names the first constraint it failed.</p>`;
+    $("scc").innerHTML=out;
+  }
+  ["uid","cap","hn","hp","pv","grant"].forEach(i=>$(i).addEventListener("change",draw)); draw();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>15. Fleet operations, incident playbook and references · OpenShift for senior SREs</title>
+<meta name="description" content="Operating OpenShift as a fleet with GitOps and ACM, platform SLOs, a symptom-to-layer incident playbook, and every source used in the OpenShift sub-course.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="15">
+<main>
+  <span class="tag">Lesson 15</span>
+  <h1>Fleet operations, incident playbook and references</h1>
+  <p class="lead">One well-run cluster is a craft. Twenty is a system: the same configuration everywhere, drift detected rather than discovered, and an incident process that starts from the layer model you have built over the previous fourteen lessons.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Describe a GitOps and policy-driven fleet model, define platform SLOs, run an incident from symptom to layer in a fixed order, and know where to verify any claim in this course.
+  </div>
+
+  <h2>The fleet model</h2>
+  <p>Treat clusters as <strong>instances of a template</strong>, with differences declared in Git. The common building blocks:</p>
+  <table>
+    <tr><th>Piece</th><th>Role</th></tr>
+    <tr><td><strong>OpenShift GitOps</strong> (Argo CD operator)</td><td>Reconciles manifests from Git into a cluster. <code>ApplicationSet</code> generates one Application per cluster, environment or tenant. A pull model: a compromised pipeline cannot push to the cluster directly.</td></tr>
+    <tr><td><strong>Advanced Cluster Management (ACM)</strong></td><td>A hub cluster that imports and manages spokes: inventory (<code>ManagedCluster</code>), placement, <strong>Policy</strong> objects that enforce or inform on configuration, cluster lifecycle (create, upgrade, destroy), and fleet observability</td></tr>
+    <tr><td><strong>Policy engines</strong></td><td>ACM policies, Kyverno or Gatekeeper, and ACS for runtime and image policy, for rules SCCs and RBAC cannot express</td></tr>
+    <tr><td><strong>Zero-touch provisioning</strong></td><td>For edge and bare metal: declare a site in Git; the hub builds the cluster through the Agent-based or Assisted installer and applies a baseline</td></tr>
+    <tr><td><strong>Central observability</strong></td><td>Remote-written metrics, forwarded logs and audit, a single alerting tier</td></tr>
+  </table>
+  <p>What belongs in Git: MachineConfigs and pools, IngressControllers, the OAuth identity-provider config (minus secrets), project templates and quota policy, cluster-monitoring config, OLM Subscriptions (with Manual approval and pinned versions), ANPs, and your tenant onboarding objects. What does not: secrets in clear text — use an external secret manager or sealed secrets — and anything an operator should generate.</p>
+  <p>Three disciplines separate a managed fleet from a collection of clusters. <strong>Drift detection</strong>: Argo CD's diff and ACM's compliance status tell you when a cluster no longer matches. <strong>Staged rollout</strong>: changes go to a canary cluster, wait, then to a ring of non-critical clusters, then everything, with automatic halt on failed health. <strong>Version discipline</strong>: a small set of supported versions, with the update cadence from lesson 6 run as a standing process rather than a project.</p>
+
+  <h2>Platform SLOs</h2>
+  <p>If the platform has no SLO, the platform team's priorities are set by whoever is loudest. Choose a few service level indicators that reflect what tenants actually depend on, and measure them from outside where possible (see the <a href="../../Observability/09-slos.html">SLOs lesson</a>):</p>
+  <table>
+    <tr><th>SLI</th><th>How to measure</th></tr>
+    <tr><td>Kubernetes API availability and latency</td><td>Ratio of successful (non-5xx) requests, and p99 latency by verb, from <code>apiserver_request_*</code> metrics, plus an external probe against <code>/readyz</code></td></tr>
+    <tr><td>Ingress availability</td><td>Synthetic probes through the router (the canary route is a start) and router-reported 5xx ratio</td></tr>
+    <tr><td>Scheduling and node readiness</td><td>Time from Pod create to Running for a canary Deployment; fraction of Ready nodes</td></tr>
+    <tr><td>Provisioning</td><td>PVC bind time; new node time-to-Ready</td></tr>
+    <tr><td>Update health</td><td>Fraction of the fleet within the supported version window; update success rate and duration</td></tr>
+    <tr><td>Security posture</td><td>Open critical CVEs in the platform; clusters with <code>anyuid</code>/<code>privileged</code> grants outside the exceptions list; compliance scan pass rate</td></tr>
+  </table>
+  <p>Give each a budget, and burn-rate alerts (as in the SLO lesson), so the update-cadence argument becomes an arithmetic one: "we have a 4-hour error budget this quarter; an update cluster costs 20 minutes of API blips, so we can afford it."</p>
+
+  <h2>The incident playbook</h2>
+  <p>An order that works because it follows the dependency chain, not the loudest symptom. Carry it as a checklist.</p>
+  <ol>
+    <li><strong>Scope.</strong> What is down, for whom, since when, how big? One tenant, one cluster, the fleet? What changed in the last 24 hours: update, MachineConfig, operator approval, certificate expiry, a tenant release, an infra event?</li>
+    <li><strong>Can you reach the API?</strong> <code>oc get --raw /readyz</code>. If no: LB and VIP, API certificates, etcd and kube-apiserver static Pods via <code>crictl</code> on the control-plane nodes.</li>
+    <li><strong>Platform health at a glance.</strong> <code>oc get clusterversion; oc get co | grep -vE 'True +False +False'; oc get mcp; oc get nodes; oc get csr | grep Pending</code>.</li>
+    <li><strong>Walk the chain from the bottom.</strong> etcd → kube-apiserver → network → DNS → ingress → authentication → the rest. The lowest broken layer is the cause (lesson 3).</li>
+    <li><strong>Collect evidence.</strong> <code>oc adm must-gather</code>, timestamps, the YAML of unhealthy objects.</li>
+    <li><strong>Mitigate with the smallest reversible change.</strong> Pause a pool, stop the competing job, scale a router shard, fail over, cordon a node. Avoid restoring from backup unless quorum or data is lost.</li>
+    <li><strong>Communicate</strong> on a cadence, even when nothing has changed.</li>
+    <li><strong>Verify recovery</strong> with the SLIs, not just with green operators.</li>
+    <li><strong>Write the post-incident review</strong>: timeline, root cause, what made it hard to see, and which alert, runbook or guardrail now exists.</li>
+  </ol>
+
+  <h3>Symptom to layer</h3>
+  <table>
+    <tr><th>Symptom</th><th>First command</th><th>Likely layer</th><th>Lesson</th></tr>
+    <tr><td>API slow or timing out</td><td>etcd fsync and leader changes; <code>oc get --raw /readyz?verbose</code></td><td>etcd disk, API priority and fairness, a tenant flood</td><td>3, 13, 14</td></tr>
+    <tr><td>Everything Progressing, nothing finishing</td><td><code>oc get mcp</code>; <code>oc get co</code></td><td>A drain blocked by a PDB, a paused pool</td><td>5, 6</td></tr>
+    <tr><td>Console or login down, apps fine</td><td><code>oc get co authentication ingress</code></td><td>Router or the OAuth route</td><td>8, 11</td></tr>
+    <tr><td>Pods stuck ContainerCreating</td><td><code>oc describe pod</code></td><td>CNI on that node, CSI attach, pull secrets</td><td>10, 12</td></tr>
+    <tr><td>Pods rejected: "unable to validate against any SCC"</td><td><code>oc adm policy scc-subject-review</code></td><td>SCC grants</td><td>9</td></tr>
+    <tr><td>Node NotReady, many at once</td><td><code>oc get csr</code>; network to API</td><td>Certificates expired, an AZ or network event (watch the MHC)</td><td>4</td></tr>
+    <tr><td>Intermittent 503/504 at the edge</td><td>Route status, router logs, timeouts</td><td>Router shard, endpoints, a timeout layer</td><td>11</td></tr>
+    <tr><td>Update stalled</td><td><code>oc describe clusterversion</code></td><td>Upgradeable, operator compatibility, pool state</td><td>6, 7</td></tr>
+    <tr><td>Stateful Pod will not start after node loss</td><td><code>oc describe pod</code> (Multi-Attach)</td><td>RWO attach, fencing</td><td>12</td></tr>
+  </table>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>Friday 16:30. A fleet-wide MachineConfig was merged at 16:00 and Argo CD synced it everywhere: a new kubelet setting. By 16:30 on three clusters, ingress is intermittently 503; <code>oc get mcp</code> shows workers Updating and two nodes per cluster cordoned; one cluster's router Pods are both on cordoned nodes. The SLO dashboard shows ingress burning budget fast.</p>
+    <ol>
+      <li>What is the likely mechanism?</li>
+      <li>What is your first, smallest mitigation?</li>
+      <li>What process failure does the fleet-wide sync reveal?</li>
+      <li>What guardrails fix it?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) A MachineConfig change on the worker pool drains and reboots nodes. On the affected cluster both router replicas share draining nodes (no spread or too few replicas), so for a time there is no healthy router. Elsewhere reduced capacity plus long request times cause 503s.</p>
+      <p>2) Pause the worker MachineConfigPool on all affected clusters to stop further drains, and scale the router (or fix its placement) so replicas cover at least two failure domains. Do not delete the MachineConfig first; that triggers another rollout.</p>
+      <p>3) A change that reboots every node was released everywhere at once, on a Friday, with no canary stage or maintenance-window awareness. GitOps did what it was told.</p>
+      <p>4) Staged sync waves with ApplicationSets by ring, an automatic halt on SLO burn, canary pools, change-freeze windows in the sync policy, <code>maxUnavailable</code> set from capacity, topology spread plus PDBs for routers, and a policy that flags any MachineConfig as a high-risk change requiring review.</p>
+    </details>
+  </div>
+
+  <h2>You are done</h2>
+  <p>You can now say which operator owns any part of the platform, choose a topology and avoid the one-way doors, roll node and cluster changes safely, review an access request against OAuth, RBAC and SCCs, trace traffic through OVN-Kubernetes and the router, choose and rehearse storage failure, design tenancy with honest limits, keep etcd healthy, and run an incident in an order that follows the dependency chain.</p>
+  <p>The honest next step is practice, not more reading: build a three-node cluster, deliberately break a ClusterOperator, pause a pool during an update, fill an etcd quota in a lab, restore from a backup, and write the runbook for each. Back to the <a href="../index.html">Kubernetes course</a> or to the <a href="../../index.html">other courses</a>.</p>
+
+  <h2 id="references">References</h2>
+  <p>Everything claimed in this sub-course and where to verify it. Written against OpenShift 4.x documentation current in <strong>November 2026</strong>. OpenShift documentation is versioned per release; <strong>always open the page for the version you run</strong>, and prefer <code>oc explain</code> and the CRD schemas on your own cluster over any tutorial, including this one. Guide names below are the headings in the product documentation at <a href="https://docs.redhat.com/en/documentation/openshift_container_platform">docs.redhat.com</a>.</p>
+
+  <h3>Architecture, installation and operators</h3>
+  <table>
+    <tr><th>Topic</th><th>Source</th></tr>
+    <tr><td>Platform architecture, ClusterOperators, CVO, config versus operator APIs</td><td>OCP docs: <em>Architecture</em>; <a href="https://github.com/openshift/cluster-version-operator">cluster-version-operator</a> and its <code>docs/dev</code> on ClusterOperator conditions</td></tr>
+    <tr><td>Installation methods, <code>install-config.yaml</code> parameters, capabilities, credentials modes</td><td>OCP docs: <em>Installing</em>, <em>Installation configuration</em>, and the Cloud Credential Operator docs in <em>Authentication and authorization</em></td></tr>
+    <tr><td>Hosted control planes (HyperShift)</td><td>OCP docs: <em>Hosted control planes</em>; <a href="https://github.com/openshift/hypershift">openshift/hypershift</a></td></tr>
+    <tr><td>Enhancement proposals (design rationale for most platform behaviours)</td><td><a href="https://github.com/openshift/enhancements">openshift/enhancements</a></td></tr>
+    <tr><td>OKD, the community upstream</td><td><a href="https://www.okd.io/">okd.io</a></td></tr>
+  </table>
+
+  <h3>Nodes, Machine API and MCO</h3>
+  <table>
+    <tr><th>Topic</th><th>Source</th></tr>
+    <tr><td>Machine, MachineSet, autoscalers, MachineHealthCheck, <code>maxUnhealthy</code></td><td>OCP docs: <em>Machine management</em></td></tr>
+    <tr><td>MachineConfig, pools, <code>maxUnavailable</code>, pausing, KubeletConfig, ContainerRuntimeConfig, node disruption policies, drift detection</td><td>OCP docs: <em>Machine configuration</em>; <a href="https://github.com/openshift/machine-config-operator">machine-config-operator</a></td></tr>
+    <tr><td>RHCOS, Ignition, rpm-ostree</td><td>OCP docs: <em>Architecture</em> (RHCOS); <a href="https://coreos.github.io/ignition/">Ignition</a></td></tr>
+    <tr><td>Kubelet certificate CSR approval</td><td>OCP docs: <em>Machine management</em>, <em>Support</em> (node issues)</td></tr>
+  </table>
+
+  <h3>Updates and OLM</h3>
+  <table>
+    <tr><th>Topic</th><th>Source</th></tr>
+    <tr><td>Channels, update graph, conditional updates, EUS-to-EUS, <code>Upgradeable</code>, admin acks, disconnected updates, OSUS</td><td>OCP docs: <em>Updating clusters</em>; <a href="https://access.redhat.com/labs/ocpupgradegraph/update_path">Red Hat update path helper</a></td></tr>
+    <tr><td>Support lifecycle and EUS designations</td><td><a href="https://access.redhat.com/support/policy/updates/openshift">OpenShift life cycle policy</a></td></tr>
+    <tr><td><code>oc-mirror</code>, <code>ImageDigestMirrorSet</code>, <code>ImageTagMirrorSet</code></td><td>OCP docs: <em>Disconnected environments</em></td></tr>
+    <tr><td>OLM objects, install modes, approvals, OLM v1</td><td>OCP docs: <em>Operators</em>; <a href="https://olm.operatorframework.io/">Operator Framework</a></td></tr>
+  </table>
+
+  <h3>Security</h3>
+  <table>
+    <tr><th>Topic</th><th>Source</th></tr>
+    <tr><td>SCCs, built-in list, priority and ordering, UID ranges, <code>podSecurityLabelSync</code></td><td>OCP docs: <em>Authentication and authorization</em> (Managing security context constraints)</td></tr>
+    <tr><td>Pod Security Admission</td><td><a href="https://kubernetes.io/docs/concepts/security/pod-security-admission/">Kubernetes: Pod Security Admission</a></td></tr>
+    <tr><td>OAuth server, identity providers, mapping methods, token configuration, <code>kubeadmin</code> removal, group sync</td><td>OCP docs: <em>Authentication and authorization</em></td></tr>
+    <tr><td>Audit profiles, etcd encryption, custom certificates</td><td>OCP docs: <em>Security and compliance</em>, <em>Security</em></td></tr>
+    <tr><td>Compliance Operator, File Integrity Operator, ACS</td><td>OCP docs: <em>Security and compliance</em>; Red Hat Advanced Cluster Security docs</td></tr>
+    <tr><td>RBAC and ServiceAccount tokens</td><td><a href="https://kubernetes.io/docs/reference/access-authn-authz/rbac/">Kubernetes: RBAC</a>, <a href="https://kubernetes.io/docs/concepts/security/service-accounts/">Service accounts</a></td></tr>
+  </table>
+
+  <h3>Networking</h3>
+  <table>
+    <tr><th>Topic</th><th>Source</th></tr>
+    <tr><td>OVN-Kubernetes architecture, default CIDRs, Geneve MTU overhead, EgressIP, EgressFirewall, UDN, IPsec</td><td>OCP docs: <em>Networking</em>; <a href="https://ovn-kubernetes.io/">ovn-kubernetes.io</a>; <a href="https://github.com/ovn-org/ovn-kubernetes">ovn-org/ovn-kubernetes</a></td></tr>
+    <tr><td>AdminNetworkPolicy and BaselineAdminNetworkPolicy</td><td><a href="https://network-policy-api.sigs.k8s.io/">Network Policy API</a>; OCP docs: <em>Networking</em></td></tr>
+    <tr><td>IngressController, router, endpoint publishing, route types, timeouts and annotations, admission policy, tuning</td><td>OCP docs: <em>Networking → Ingress Operator</em>, <em>Routes</em></td></tr>
+    <tr><td>Gateway API</td><td><a href="https://gateway-api.sigs.k8s.io/">Gateway API</a>; OCP docs: <em>Networking</em></td></tr>
+    <tr><td>DNS Operator, CoreDNS, <code>ndots</code></td><td>OCP docs: <em>Networking → DNS Operator</em>; <a href="https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/">Kubernetes: DNS for Services and Pods</a></td></tr>
+    <tr><td>MetalLB, Multus, SR-IOV</td><td>OCP docs: <em>Networking</em></td></tr>
+  </table>
+
+  <h3>Storage, tenancy and operations</h3>
+  <table>
+    <tr><th>Topic</th><th>Source</th></tr>
+    <tr><td>CSI, StorageClass binding modes, expansion, snapshots</td><td>OCP docs: <em>Storage</em>; <a href="https://kubernetes.io/docs/concepts/storage/storage-classes/">Kubernetes: Storage classes</a>, <a href="https://kubernetes.io/docs/concepts/storage/volume-snapshots/">Volume snapshots</a></td></tr>
+    <tr><td>Out-of-service taint, non-graceful node shutdown</td><td><a href="https://kubernetes.io/docs/concepts/cluster-administration/node-shutdown/">Kubernetes: Node shutdowns</a></td></tr>
+    <tr><td>ODF, Ceph thresholds, LVMS</td><td>Red Hat OpenShift Data Foundation docs; <a href="https://docs.ceph.com/">Ceph documentation</a></td></tr>
+    <tr><td>OADP backup and restore</td><td>OCP docs: <em>Backup and restore</em></td></tr>
+    <tr><td>Project template, <code>self-provisioner</code>, ResourceQuota, ClusterResourceQuota, LimitRange</td><td>OCP docs: <em>Building applications</em>, <em>Applications</em>; <a href="https://kubernetes.io/docs/concepts/policy/resource-quotas/">Kubernetes: Resource quotas</a></td></tr>
+    <tr><td>API Priority and Fairness</td><td><a href="https://kubernetes.io/docs/concepts/cluster-administration/flow-control/">Kubernetes: API Priority and Fairness</a></td></tr>
+    <tr><td>Admission webhook behaviour and failure policy</td><td><a href="https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/">Kubernetes: Dynamic admission control</a></td></tr>
+    <tr><td>etcd hardware guidance, quota, defragmentation, metrics</td><td><a href="https://etcd.io/docs/latest/op-guide/hardware/">etcd hardware</a>, <a href="https://etcd.io/docs/latest/op-guide/maintenance/">etcd maintenance</a>; OCP docs: <em>Backup and restore</em>, <em>Scalability and performance</em></td></tr>
+    <tr><td>etcd backup and restore procedures; replacing a member</td><td>OCP docs: <em>Backup and restore</em> (control plane)</td></tr>
+    <tr><td>Monitoring stack, user-workload monitoring, Alertmanager, remote write</td><td>OCP docs: <em>Monitoring</em></td></tr>
+    <tr><td>Logging: Vector, ClusterLogForwarder, LokiStack</td><td>OCP docs: <em>Logging</em></td></tr>
+    <tr><td><code>must-gather</code>, <code>oc debug</code>, node logs, support procedures</td><td>OCP docs: <em>Support</em></td></tr>
+    <tr><td>GitOps, ACM policies and placement, ZTP</td><td>OCP docs: <em>GitOps</em>; Red Hat Advanced Cluster Management docs; <a href="https://argo-cd.readthedocs.io/">Argo CD</a></td></tr>
+  </table>
+  <p class="muted">Version-sensitive items to re-verify on your release: the OpenShift SDN removal boundary; node disruption policies; automated etcd defragmentation and the backup API; UDN, ANP/BANP and Gateway API stages; OLM v1; external OIDC authentication; the logging 6 resource names; and any default value quoted in a table here (token lifetimes, quota sizes, timeouts).</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"A fleet-wide change that reboots every node is synced by GitOps to all clusters at once and causes an outage. What is the main process fix?","options":["Stop using GitOps","Staged rings with a canary, automatic halt on SLO burn, change windows, and capacity-aware maxUnavailable","Make clusters larger","Disable PDBs"],"answer":1,"why":"GitOps faithfully applies what it is given. Safety comes from how changes are staged and gated, not from the tool."},
+ {"q":"In the incident order, why walk the dependency chain from the bottom?","options":["It is faster to type","Higher-level operators report degraded because of lower layers; fix etcd, API, network, DNS or ingress first and the rest recover","Because the console is down","Because it is alphabetical"],"answer":1,"why":"The lowest broken layer is usually the cause; the rest is cascade, as in lesson 3."},
+ {"q":"What is the best use of an ApplicationSet in a fleet?","options":["Generate one Argo CD Application per cluster, environment or tenant from a template","Install operators","Replace RBAC","Run MachineSets"],"answer":0,"why":"It turns one definition into many consistent, per-target Applications, and supports staged rollout by ring."},
+ {"q":"Which is a good platform SLI?","options":["CPU of one node","Percentage of successful API requests and p99 latency, measured including an external probe","Number of namespaces","Count of Pods"],"answer":1,"why":"SLIs should reflect what tenants depend on. Combined with budgets and burn-rate alerts they make trade-offs like update cadence arithmetic."},
+ {"q":"How should you use the documentation links in the references section?","options":["Treat them as authoritative for every version","Open the page for the exact version you run and verify defaults and feature stages there","Ignore them","Use only the community docs"],"answer":1,"why":"OpenShift docs are versioned and defaults move between minors. Confirm on your own cluster with oc explain and the CRDs too."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+</body>
+</html>

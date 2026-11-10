@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>6. Updates, channels and lifecycle · OpenShift for senior SREs</title>
+<meta name="description" content="Channels and the update graph, conditional updates, pre-update checks, what happens in order during an update, EUS-to-EUS, canary pools, disconnected updates, and recovery.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="6">
+<main>
+  <span class="tag">Lesson 6</span>
+  <h1>Updates, channels and lifecycle</h1>
+  <p class="lead">An OpenShift update is one command and several hours of coordinated reconciliation across the control plane, the operating system and every operator. The command is easy. The skill is the preparation before it and the judgement about what to do when one phase stalls.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Choose a channel, read the update graph including conditional risks, run a pre-update checklist, explain the order the platform updates in, plan an EUS-to-EUS update with paused pools, mirror content for a disconnected cluster, and describe the real recovery options.
+  </div>
+
+  <h2>Channels and the graph</h2>
+  <p>A cluster subscribes to a <strong>channel</strong>, set in <code>ClusterVersion.spec.channel</code>. The CVO polls the Red Hat <em>Cincinnati</em> update service for the set of releases that are valid next steps from your current version. That graph is curated: Red Hat adds and removes edges as problems are found.</p>
+  <table>
+    <tr><th>Channel</th><th>What lands in it</th><th>Used for</th></tr>
+    <tr><td><code>candidate-4.x</code></td><td>Release candidates, before general availability</td><td>Test and lab clusters</td></tr>
+    <tr><td><code>fast-4.x</code></td><td>Releases as soon as they are generally available</td><td>Early production adopters, non-critical</td></tr>
+    <tr><td><code>stable-4.x</code></td><td>Releases promoted after additional telemetry signals</td><td>Most production</td></tr>
+    <tr><td><code>eus-4.y</code></td><td>Only on even-numbered minor releases designated Extended Update Support</td><td>Fleets that update once a year or so, EUS to EUS</td></tr>
+  </table>
+  <p>Switching channels does not update anything; it changes which targets <code>oc adm upgrade</code> offers. Changing from stable-4.17 to stable-4.18 is the usual way to "unlock" the next minor version.</p>
+  <p>Some edges are <strong>conditional updates</strong>: the target is known to have a risk that affects only clusters matching a condition (a certain platform, a particular configuration). The graph evaluates the condition against your cluster; if you match, the update is shown as not recommended, with a link to the issue. You can still choose it with <code>--include-not-recommended</code>, and that is an informed risk acceptance, not a default.</p>
+
+  <h2>The pre-update checklist</h2>
+  <ol>
+    <li><strong>Read the release notes</strong> for every minor you will cross — deprecations, removed APIs, behavioural changes.</li>
+    <li><strong><code>oc get clusterversion -o yaml</code></strong> — look for <code>Upgradeable=False</code>, and read its reason. Common ones: an unacknowledged API removal (the <em>admin ack</em> ConfigMap in <code>openshift-config</code> asks you to confirm), an operator that is not compatible with the next minor, or a pool that is paused.</li>
+    <li><strong>Removed APIs in use.</strong> The <code>APIRemovedInNextReleaseInUse</code> and <code>APIRemovedInNextEUSReleaseInUse</code> alerts and <code>oc get apirequestcounts</code> tell you which clients still call a deprecated API. Fix the callers; an update that removes an API they use will break them.</li>
+    <li><strong>All ClusterOperators healthy</strong> (<code>Available=True Degraded=False</code>) and all MachineConfigPools Updated. Starting on a Degraded cluster is how an update becomes an incident.</li>
+    <li><strong>Operators installed through OLM</strong> are compatible: many declare a maximum OpenShift version, and the update will be blocked or the operator will break. Upgrade them <em>first</em> where required (lesson 7).</li>
+    <li><strong>Capacity and PDBs.</strong> You are about to drain every node. Confirm headroom, and that no PDB allows zero disruptions on a workload that must not stop.</li>
+    <li><strong>An etcd backup</strong>, taken and copied <em>off</em> the cluster (lesson 14). This is your recovery path, not a formality.</li>
+    <li><strong>Certificates and CSRs</strong> in good order; no stuck pending requests.</li>
+  </ol>
+
+  <h2>What actually happens, in order</h2>
+  <ol>
+    <li>You set the desired release (<code>oc adm upgrade --to=4.18.9</code>, or the console). The CVO pulls the release image and verifies its signature.</li>
+    <li>The CVO applies manifests in run-level order. <strong>etcd and the kube-apiserver are updated first</strong>, each by its operator rolling a new revision across the control-plane nodes one at a time.</li>
+    <li>The remaining operators update — network, ingress, authentication, console, monitoring, storage, and the rest — each reporting Progressing and then healthy before the CVO continues.</li>
+    <li>The <strong>machine-config operator</strong> publishes a new rendered config that includes the new OS image. The <strong>control-plane pool</strong> rolls first (one node at a time, each drained and rebooted), then workers per pool settings.</li>
+    <li>When every operator reports the new version and every pool is updated, <code>ClusterVersion</code> goes <em>Progressing=False</em>.</li>
+  </ol>
+  <p>The time budget is dominated by node reboots, not by operators. A control-plane roll is usually sequential and short; worker time is nodes × per-node time ÷ <code>maxUnavailable</code> (lesson 5's calculator).</p>
+  <p>Within a minor release (z-stream, 4.18.3 → 4.18.9) the same mechanics apply. Minor updates (4.17 → 4.18) must be taken <em>one minor at a time</em>, except for the documented EUS-to-EUS path.</p>
+
+  <h2>EUS-to-EUS: skipping a minor safely</h2>
+  <p>Between two designated even-numbered releases (for example 4.16 → 4.18), you can update the control plane through the intermediate minor while <em>workers stay on the old OS</em>:</p>
+  <ol>
+    <li>Pause the worker (and any custom) MachineConfigPools.</li>
+    <li>Update the control plane 4.16 → 4.17 → 4.18 through the CVO. Workers are not rebooted for each step.</li>
+    <li>Unpause the pools; the workers roll <em>once</em> to the 4.18 OS.</li>
+  </ol>
+  <p>Result: one worker reboot cycle instead of two, which for a large bare-metal fleet is days saved. The constraints are real: the version skew between control plane and kubelets must stay within Kubernetes' supported skew, pools can only be paused for a limited time, and every workload still has to tolerate the intermediate API surface. Follow the documented procedure for your exact pair.</p>
+
+  <h2>Canary and fleet strategy</h2>
+  <p>At fleet scale, do not update everything on the same day. A defensible pattern: a lab cluster on <code>candidate</code>, a <strong>canary production cluster</strong> that takes releases first on <code>fast</code>, then the main fleet on <code>stable</code> after the canary has soaked. Inside a cluster, a canary MachineConfigPool lets you validate the new OS on a few nodes before the rest. Track a release's soak time in telemetry from your own environment — not just Red Hat's.</p>
+
+  <h2>Disconnected clusters</h2>
+  <p>A cluster with no internet cannot reach Cincinnati or the release registry. You mirror content and provide a local update service:</p>
+  <ul>
+    <li><strong><code>oc-mirror</code></strong> mirrors a declared set of releases, operator catalogs and additional images into your registry from an <code>ImageSetConfiguration</code>.</li>
+    <li>Cluster resources generated by it (<code>ImageDigestMirrorSet</code>, <code>ImageTagMirrorSet</code>, <code>CatalogSource</code>) redirect image pulls to the mirror. These replace the older <code>ImageContentSourcePolicy</code>.</li>
+    <li>The <strong>OpenShift Update Service (OSUS)</strong> operator runs a local Cincinnati so the cluster still sees an update graph.</li>
+  </ul>
+  <p>Mirror catalogs and release content <em>before</em> the maintenance window, and mirror the complete upgrade path, including intermediate minors and any operator versions you will need.</p>
+
+  <h2>When it goes wrong</h2>
+  <table>
+    <tr><th>Stuck at</th><th>Usual cause</th><th>Action</th></tr>
+    <tr><td>Early: CVO will not start the update</td><td>Signature or mirror issue; <code>Upgradeable=False</code> for a minor</td><td><code>oc describe clusterversion</code>; clear the cause; do not force unless instructed</td></tr>
+    <tr><td>An operator Progressing for hours</td><td>Its operand cannot roll: PDB, scheduling, an unhealthy node</td><td>Lesson 3's triage; go to the lowest broken operator</td></tr>
+    <tr><td>Workers never start</td><td>MachineConfigPool paused, drain blocked</td><td><code>oc get mcp</code>; lesson 5 table</td></tr>
+    <tr><td>Update looks complete but an operator is Degraded</td><td>A removed API or an incompatible add-on operator</td><td>Alerts for API usage; update the add-on operator</td></tr>
+  </table>
+  <div class="callout">
+    <h3>There is no rollback button</h3>
+    <p>For the general case, Red Hat does not support rolling a cluster back to a previous minor version. Your options are to update forward to a fixed release, or to restore the cluster from an <strong>etcd backup taken before the update</strong> — a control-plane disaster-recovery procedure with its own requirements (the backup must be from the <em>same</em> version, with a coherent set of control-plane nodes). Some narrow rollback paths have appeared in recent releases; do not plan on them without reading the current docs.</p>
+    <p>This is why the backup in the checklist is not optional, and why a canary cluster is your real rollback strategy: you learn about a bad release on a cluster you can afford to lose.</p>
+  </div>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>You run 4.16 on 12 bare-metal clusters with 40 workers each and want 4.18 by the end of the quarter. Per-node reboot time is about 20 minutes, and you may lose 4 workers per cluster at once.</p>
+    <ol>
+      <li>Which path do you take, and what do you pause?</li>
+      <li>How many worker reboot cycles does that save per cluster?</li>
+      <li>Roughly how long is the worker roll per cluster?</li>
+      <li><code>oc adm upgrade</code> refuses the minor step with <code>Upgradeable=False: AdminAckRequired</code>. What is happening?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) EUS-to-EUS 4.16 → 4.18. Pause the <code>worker</code> pool (and any custom pools) before updating the control plane, and unpause it after the control plane reaches 4.18. Workers roll once.</p>
+      <p>2) One cycle saved: the normal path would reboot workers for 4.17 and again for 4.18; EUS-to-EUS reboots them once.</p>
+      <p>3) 40 nodes ÷ 4 per wave = 10 waves × 20 min ≈ <strong>3.3 hours</strong> of worker roll, excluding the control-plane phase and drains that run slowly because of PDBs.</p>
+      <p>4) The release notes include a change that could affect your workloads (commonly an API removal). The platform requires an administrator to acknowledge it in the <code>admin-acks</code> ConfigMap in <code>openshift-config</code> after you have verified nothing depends on the removed behaviour. It is a deliberate gate; verify first, then ack.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>Many of the blocking conditions above involve software installed by operators rather than the platform. <a href="07-olm-and-operatorhub.html">Lesson 7</a> covers OLM and its failure modes.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"What does changing the channel do?","options":["Starts an update immediately","Changes which update targets the cluster is offered; it does not update anything by itself","Changes the cluster's OS","Rolls back to the previous minor"],"answer":1,"why":"Channel selection controls which edges of the graph you see. You still choose and trigger the update."},
+ {"q":"In an EUS-to-EUS update, what do you pause?","options":["The CVO","The worker and custom MachineConfigPools, so workers roll once at the end","etcd","The ingress controllers"],"answer":1,"why":"The control plane steps through the intermediate minor while worker OS updates are deferred. Unpausing then rolls the workers a single time."},
+ {"q":"Which component updates first during a cluster update?","options":["Worker nodes","Console","etcd and kube-apiserver, via their operators, ahead of the rest","The registry"],"answer":2,"why":"Run-level ordering puts the control plane's foundation first. Workers roll last through the MCO."},
+ {"q":"What is the real recovery path from a failed minor update?","options":["oc adm upgrade --rollback","Update forward to a fixed release, or restore from an etcd backup taken before the update","Re-run the installer","Edit ClusterVersion.status"],"answer":1,"why":"A general rollback is not supported. This is why the pre-update off-cluster backup and a canary cluster matter."},
+ {"q":"Which supplies an update graph to a disconnected cluster?","options":["Cincinnati over the internet","A local OpenShift Update Service, with content mirrored by oc-mirror","kube-proxy","The router"],"answer":1,"why":"Mirror releases and catalogs, apply the generated mirror and catalog resources, and run OSUS so the cluster has a graph to follow."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+</body>
+</html>

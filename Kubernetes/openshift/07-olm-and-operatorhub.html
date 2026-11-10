@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>7. Operator Lifecycle Manager · OpenShift for senior SREs</title>
+<meta name="description" content="CatalogSource, OperatorGroup, Subscription, InstallPlan and ClusterServiceVersion; approval strategies, install modes, update behaviour, disconnected catalogs, OLM v1, and the failure modes of each stage.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="7">
+<main>
+  <span class="tag">Lesson 7</span>
+  <h1>Operator Lifecycle Manager</h1>
+  <p class="lead">Platform operators come from the release image; everything else — databases, service mesh, GitOps, storage, logging — arrives through the Operator Lifecycle Manager. OLM is the package manager for operators, and an operator update is a production change that can go out unattended unless you decide otherwise.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Name each OLM object and what it does, trace an install from catalog to running operator, choose approval and channel settings for production, diagnose the commonest failures at each stage, and say where OLM v1 differs.
+  </div>
+
+  <h2>The objects, as a pipeline</h2>
+  <pre><code>CatalogSource ──► PackageManifest ──► Subscription ──► InstallPlan ──► ClusterServiceVersion ──► operator Deployment
+ (an index image   (what the catalog     (I want this     (the concrete    (the operator's metadata,     (the thing that
+  served by a Pod)  offers; read-only)    package + channel) steps, approvable) install strategy, CRDs)    actually runs)
+                                                   ▲
+                                            OperatorGroup (which namespaces the operator may watch)</code></pre>
+  <table>
+    <tr><th>Object</th><th>What it is</th></tr>
+    <tr><td><strong>CatalogSource</strong></td><td>Points at an index image; OLM runs it as a Pod that serves a gRPC API. Defaults in <code>openshift-marketplace</code>: <code>redhat-operators</code>, <code>certified-operators</code>, <code>community-operators</code>, <code>redhat-marketplace</code>.</td></tr>
+    <tr><td><strong>Subscription</strong></td><td>"Keep operator X installed from this catalog, on this <em>channel</em>." Fields: <code>channel</code>, <code>installPlanApproval</code> (<code>Automatic</code> or <code>Manual</code>), optional <code>startingCSV</code>.</td></tr>
+    <tr><td><strong>InstallPlan</strong></td><td>The computed list of resources to create or update, including CRDs and dependencies. When approval is Manual, nothing proceeds until an InstallPlan is approved.</td></tr>
+    <tr><td><strong>ClusterServiceVersion (CSV)</strong></td><td>A specific operator version: its Deployment, RBAC, owned and required CRDs, install modes, and its upgrade edges (<code>replaces</code>, <code>skips</code>). Phases: <em>Pending, InstallReady, Installing, Succeeded, Failed, Replacing, Deleting</em>.</td></tr>
+    <tr><td><strong>OperatorGroup</strong></td><td>Defines the set of namespaces an operator in this namespace will watch, and generates the RBAC for it. One per namespace.</td></tr>
+  </table>
+
+  <h2>Install modes and OperatorGroups</h2>
+  <p>A CSV declares which install modes it supports: <em>OwnNamespace</em>, <em>SingleNamespace</em>, <em>MultiNamespace</em>, <em>AllNamespaces</em>. The OperatorGroup in the operator's namespace selects one. This decides the scope of the operator's watch and therefore the <strong>blast radius</strong> of its bugs and of its credentials.</p>
+  <p>Hard rules that cause outages: only <strong>one OperatorGroup per namespace</strong>, and the CRDs an operator owns are <strong>cluster-scoped</strong> — two operators cannot own the same CRD, and two versions of one CRD cannot coexist. A namespace-scoped install of an operator that ships a CRD still changes a cluster-wide API.</p>
+
+  <h2>Production settings</h2>
+  <pre><code>apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata: {name: my-operator, namespace: my-operator}
+spec:
+  channel: stable-v2
+  name: my-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Manual        # review before each upgrade
+  startingCSV: my-operator.v2.3.1    # pin the first version for reproducible builds</code></pre>
+  <p>With <code>Automatic</code> approval, the moment a new version appears in your channel OLM upgrades the operator. For an operator that owns a database or storage layer, that is a production change you did not schedule. With <code>Manual</code>, an InstallPlan sits in <code>RequiresApproval</code> until a human or pipeline approves it. The trade is simple: <strong>Manual for anything stateful or critical</strong>, Automatic for low-risk tooling. Remember that an operator update can in turn change the operand it manages; read its release notes like you would an application upgrade.</p>
+  <p>Channels also matter. They are the operator author's way of grouping upgrade streams; moving between channels can skip or change versions. A subscription cannot jump arbitrary versions: it follows the <code>replaces</code>/<code>skips</code> graph, so a long-pinned operator may need to pass through intermediate versions one InstallPlan at a time.</p>
+
+  <h2>Failure modes, by stage</h2>
+  <table>
+    <tr><th>Stage</th><th>Symptom</th><th>Cause and check</th></tr>
+    <tr><td>Catalog</td><td>PackageManifest missing; <code>CatalogSource</code> not READY</td><td>Index image cannot be pulled (pull secret, mirror, disconnected). <code>oc -n openshift-marketplace get pods</code></td></tr>
+    <tr><td>Resolution</td><td>Subscription condition <em>ResolutionFailed</em> / <em>ConstraintsNotSatisfiable</em></td><td>Dependency cannot be satisfied, or two operators claim the same CRD. <code>oc describe sub</code></td></tr>
+    <tr><td>Approval</td><td>InstallPlan <code>RequiresApproval</code>, nothing moves</td><td>Manual mode working as designed. <code>oc patch installplan ... --type merge -p '{"spec":{"approved":true}}'</code></td></tr>
+    <tr><td>Install</td><td>CSV <em>Failed</em> or stuck <em>Installing</em></td><td>Operator Pod crash, missing image, missing RBAC, or an SCC rejecting it. <code>oc describe csv</code>; the Pod events</td></tr>
+    <tr><td>Upgrade</td><td>CSV <em>Replacing</em> forever</td><td>New version unhealthy. Old keeps running until the new succeeds; read the new CSV's conditions</td></tr>
+    <tr><td>Cluster update</td><td>Minor update blocked</td><td>An operator's declared maximum OpenShift version is lower than the target; update the operator first</td></tr>
+  </table>
+  <div class="callout">
+    <h3>The stuck-subscription reflex</h3>
+    <pre><code>oc get csv,sub,installplan,og -n &lt;ns&gt;
+oc get sub &lt;name&gt; -n &lt;ns&gt; -o jsonpath='{.status.conditions}' | jq
+oc -n openshift-marketplace get pods,catalogsource
+oc -n openshift-operator-lifecycle-manager logs deploy/catalog-operator | tail
+oc -n openshift-operator-lifecycle-manager logs deploy/olm-operator | tail</code></pre>
+    <p>Deleting a CSV removes the operator Deployment but leaves its CRDs and your custom resources. Deleting a <em>CRD</em> deletes every custom resource of that kind cluster-wide — including the data they represent. Never delete a CRD to "clean up" an operator.</p>
+  </div>
+
+  <h2>Disconnected catalogs</h2>
+  <p>The default catalogs live on the internet. In a disconnected cluster you disable them and mirror a <em>filtered</em> catalog containing only the packages you will use (with <code>oc-mirror</code>), then create a <code>CatalogSource</code> pointing at your registry. Pin and mirror specific versions: the graph an operator upgrades along must be mirrored in full, or upgrades will fail at resolution with no obvious reason.</p>
+
+  <h2>OLM v1</h2>
+  <p>The original OLM is being succeeded by <strong>OLM v1</strong>, which replaces Subscription/InstallPlan/OperatorGroup with a simpler model: <code>ClusterCatalog</code> and <code>ClusterExtension</code> objects, with upgrade constraints stated directly and explicit service-account permissions (<em>no implicit god-mode RBAC</em>). The aim is to make cluster-scoped extensions install like packages. The migration is gradual and release-dependent; run what your OpenShift release supports, and keep an eye on the deprecation timetable for the classic API.</p>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>A team's database operator is subscribed on channel <code>stable</code> with <code>Automatic</code> approval. Overnight, version 2.5 is published; by morning, the operator rolled and rolled every database cluster. Two clusters are unhealthy. Separately, a cleanup script deleted "the old CRDs" for another operator.</p>
+    <ol>
+      <li>What setting would have prevented the surprise rollout?</li>
+      <li>How do you stop further automatic upgrades now?</li>
+      <li>What happened to the databases when the CRD was deleted?</li>
+      <li>How do you check whether a pending OpenShift minor update will break this operator?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) <code>installPlanApproval: Manual</code> on the Subscription, so each new version is an InstallPlan that someone approves in a window.</p>
+      <p>2) Patch the Subscription to Manual. Any pending InstallPlan stays unapproved until you decide. You may also pin <code>startingCSV</code> for new installs.</p>
+      <p>3) Deleting a CRD cascades to deleting every custom resource of that kind. The operator's CRs — the declared databases — are removed and the operator, if running, then tears down what it created from them. Restore from backups of the manifests (GitOps) and of the data, and never delete CRDs as a cleanup step.</p>
+      <p>4) Read the CSV's declared compatibility (the operator may set a maximum OpenShift version), check <code>Upgradeable</code> on the ClusterVersion, and check the operator's compatibility matrix. Update the operator to a release that supports the target <em>before</em> the cluster minor update.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>Now the security half of the course. <a href="08-identity-and-rbac.html">Lesson 8</a> starts with who may do anything at all.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"Which Subscription setting keeps a new operator version from rolling out without review?","options":["channel: stable","installPlanApproval: Manual","startingCSV","sourceNamespace"],"answer":1,"why":"With Manual approval each upgrade becomes an InstallPlan awaiting approval. Use it for stateful or critical operators."},
+ {"q":"What is a ClusterServiceVersion?","options":["A catalog index image","A specific operator version: its Deployment, RBAC, CRDs, install modes, and upgrade edges","An approval record","A namespace selector"],"answer":1,"why":"The CSV is the operator package metadata OLM installs and tracks, with phases such as Installing, Succeeded, Failed and Replacing."},
+ {"q":"What does deleting a CRD do?","options":["Removes only the operator","Deletes all custom resources of that kind across the cluster, and what the operator built from them","Nothing, since CRDs are protected","Disables the API server"],"answer":1,"why":"CRD deletion cascades to every instance of the kind. Cleaning up an operator means deleting the Subscription and CSV, not its CRDs."},
+ {"q":"Why can only one operator own a given CRD?","options":["Naming convention","CRDs are cluster-scoped APIs, so two owners would conflict","OperatorGroups forbid it, but it is technically possible","Performance"],"answer":1,"why":"Even a namespace-scoped install of an operator shipping a CRD changes a cluster-wide API, which is why install mode does not remove all cluster-level interaction."},
+ {"q":"A minor cluster update is blocked and one operator is the cause. What is the usual fix?","options":["Force the update with an override","Update that operator to a version that supports the target OpenShift release, then retry","Delete the CSV and ignore it","Switch channel to candidate"],"answer":1,"why":"Operators can declare a maximum supported OpenShift version. Upgrading them first respects that contract; overrides leave you unsupported."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+</body>
+</html>

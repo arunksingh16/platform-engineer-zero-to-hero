@@ -11,7 +11,8 @@ Access github pages - https://arunksingh16.github.io/platform-engineer-zero-to-h
 | Code analysis | Available | Pure functions and IO, abstract syntax trees, call graphs, runtime detection, and measuring a detector honestly |
 | Kubernetes | Available | Control loops, Pods and controllers, scheduling, requests and limits, HPA, KEDA, Karpenter, and operators |
 | Kubernetes: Pod networking and the CNI | Available | The network model, the packet path and MTU, NetworkPolicy enforcement, Flannel/Calico/Cilium/cloud CNIs, and eBPF |
-| Kubernetes on EKS / AKS / OpenShift | Planned | Provider specifics layered on the vendor-neutral course, in child directories |
+| Kubernetes: OpenShift for senior SREs | Available | Operator-managed architecture, installation, MachineConfig and updates, OLM, OAuth and SCCs, OVN-Kubernetes, routers, storage, multi-tenancy, etcd and operations, fleet management |
+| Kubernetes on EKS / AKS | Planned | Provider specifics layered on the vendor-neutral course, in child directories |
 | Infrastructure foundations | Planned | Linux, networking, Git, and containers |
 | Platform systems | Planned | Cloud fundamentals, infrastructure as code, and CI/CD |
 | Reliability and operations | Planned | Site reliability engineering, incident response, and production operations |
@@ -57,7 +58,8 @@ Kubernetes/                Course
   lessons.js
   01-...html to 09-...html Interactive lessons, ending in a references page
   cni/                     Child course: Pod networking and the CNI (5 lessons)
-  eks/ aks/ openshift/     Planned child courses, each with its own lessons.js
+  openshift/               Child course: OpenShift for senior SREs (15 lessons)
+  eks/ aks/                Planned child courses, each with its own lessons.js
 ```
 
 Courses nest. A child course is just a course one level deeper: it gets its own

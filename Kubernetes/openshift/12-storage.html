@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>12. Storage · OpenShift for senior SREs</title>
+<meta name="description" content="CSI on OpenShift, access modes, volume binding, snapshots and expansion, OpenShift Data Foundation, LVMS, the registry's storage, etcd disk requirements, node failure and Multi-Attach, and backup strategy.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="12">
+<main>
+  <span class="tag">Lesson 12</span>
+  <h1>Storage</h1>
+  <p class="lead">Storage on OpenShift is Kubernetes storage with an opinionated default stack: CSI drivers managed by operators, a default StorageClass from your platform, and an optional software-defined storage layer, OpenShift Data Foundation. The hard parts are not creating a PVC. They are what happens when a node fails with a volume attached, when the disk under etcd is slow, and when "backup" means a snapshot on the same array.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Choose a StorageClass and access mode for a workload, explain WaitForFirstConsumer and its effect on multi-zone placement, describe what ODF adds and what it costs, size the etcd disk correctly, resolve a stuck volume after node failure, and design backups that survive a storage failure.
+  </div>
+
+  <h2>The stack</h2>
+  <table>
+    <tr><th>Layer</th><th>What it is on OpenShift</th></tr>
+    <tr><td>CSI driver</td><td>Installed and updated with the platform on cloud IPI (AWS EBS/EFS, Azure Disk/File, GCP PD, vSphere, Cinder, …) as <strong>cluster storage operators</strong>; on bare metal you add one via OLM</td></tr>
+    <tr><td>StorageClass</td><td>Created by the platform per cloud (for example <code>gp3-csi</code>), one marked default via <code>storageclass.kubernetes.io/is-default-class</code></td></tr>
+    <tr><td>Snapshots</td><td>The snapshot controller and CRDs are part of the platform: <code>VolumeSnapshot</code>, <code>VolumeSnapshotClass</code>, <code>VolumeSnapshotContent</code></td></tr>
+    <tr><td>Image registry</td><td>The Image Registry Operator needs persistent storage (object storage on cloud, a RWX or RWO PVC on bare metal) or sits in <code>managementState: Removed</code> if none</td></tr>
+    <tr><td>Software-defined</td><td>ODF (Ceph via Rook, with NooBaa for object), LVMS for local single-node, Local Storage Operator for raw devices, third-party CSI (NetApp Trident, Portworx, Dell, Pure…)</td></tr>
+  </table>
+
+  <h2>Access modes and what they imply</h2>
+  <table>
+    <tr><th>Mode</th><th>Meaning</th><th>Typical backing</th></tr>
+    <tr><td><strong>RWO</strong></td><td>One <em>node</em> mounts it read-write (multiple Pods on that node can)</td><td>Cloud block (EBS, Azure Disk), Ceph RBD, LVMS</td></tr>
+    <tr><td><strong>RWOP</strong></td><td>Exactly one <em>Pod</em></td><td>CSI drivers that support it</td></tr>
+    <tr><td><strong>RWX</strong></td><td>Many nodes read-write</td><td>NFS, CephFS, EFS, Azure Files</td></tr>
+    <tr><td><strong>ROX</strong></td><td>Many nodes read-only</td><td>Shared content, snapshots-as-clones</td></tr>
+  </table>
+  <p>The practical rule: block storage is RWO, fast and low latency; shared file storage is RWX, slower, with locking semantics that bite databases. Do not put a database on RWX file storage because it was the one that "worked" with two replicas.</p>
+
+  <h3>Binding mode and zones</h3>
+  <p>A StorageClass with <code>volumeBindingMode: Immediate</code> provisions the volume as soon as the PVC is created — in whichever zone the provisioner picks, before the Pod is scheduled. A zonal volume then pins the Pod to that zone, and if no node there fits, the Pod is <code>Pending</code> forever. <strong><code>WaitForFirstConsumer</code></strong> delays provisioning until a Pod is scheduled, so the volume is created where the Pod landed. On multi-zone clusters it is the right default for block storage; the platform's default classes generally use it. Check yours.</p>
+  <p>Also check <code>allowVolumeExpansion</code> (expansion on the fly, online for most CSI drivers, grow only, never shrink) and <code>reclaimPolicy</code> (<code>Delete</code> destroys the volume with the PVC; <code>Retain</code> keeps it for manual recovery — the safer choice for data you cannot recreate).</p>
+
+  <h2>ODF in one honest page</h2>
+  <p><strong>OpenShift Data Foundation</strong> deploys Ceph through Rook and presents block (RBD, RWO), file (CephFS, RWX) and object (RGW and NooBaa's multicloud gateway). It runs <em>inside the cluster</em> on dedicated or shared nodes, so storage and compute share a failure domain and an update cycle.</p>
+  <ul>
+    <li><strong>Minimum 3 failure domains</strong> (nodes or racks/zones) with replica-3 by default; erasure coding exists for some pools. Raw capacity is roughly <em>one third</em> of usable at replica 3.</li>
+    <li><strong>Dedicated storage nodes</strong> are strongly preferred in production: OSDs and MONs have CPU and memory floors, and recovery after a node loss is I/O- and network-heavy, which hurts co-located workloads.</li>
+    <li><strong>Network matters.</strong> Replication and recovery traffic needs a solid, ideally dedicated, network with enough bandwidth for rebalancing; a slow network makes every write slow.</li>
+    <li><strong>Updates</strong> follow OLM and the OpenShift cadence; one version skew rule is that ODF must be compatible with your OpenShift minor. Upgrade it per its docs, one failure domain at a time.</li>
+    <li><strong>Capacity is a hard cliff.</strong> ODF raises alerts well before Ceph's own thresholds — by default Ceph flags <code>nearfull</code> at 85%, stops backfill at 90% (<code>backfillfull</code>) and blocks writes at 95% (<code>full</code>). A full cluster halts every PVC at once, so alert early and plan expansion by lead time, not by the last warning.</li>
+  </ul>
+  <p>The alternative is to keep storage outside (cloud block, an enterprise array through CSI). That separates failure domains and lifecycles at the cost of a different vendor dependency. Neither is wrong; know which you chose and rehearse its failure.</p>
+
+  <h2>etcd and disk, again</h2>
+  <p>The one storage requirement that is not negotiable: etcd needs <strong>fast, low-latency, consistent fsync</strong>. The guidance is that the 99th percentile of WAL fsync duration stays under about <strong>10 ms</strong>; sustained values beyond that cause leader elections, slow API, and operators flapping. Use local NVMe/SSD or high-IOPS dedicated disks, do not share the control-plane disk with other I/O, and never place etcd on network file storage. The metrics to watch are <code>etcd_disk_wal_fsync_duration_seconds</code> and <code>etcd_disk_backend_commit_duration_seconds</code>; the alert <code>etcdHighFsyncDurations</code> is the warning. A <code>fio</code>-based check before go-live is cheap insurance. More in lesson 14.</p>
+
+  <h2>Failure: node dies, volume stays attached</h2>
+  <p>A RWO volume attached to a dead node cannot be attached elsewhere until the control plane is sure it is detached. The Pod rescheduled elsewhere shows <code>Multi-Attach error for volume … Volume is already exclusively attached to one node</code>, and sits in <code>ContainerCreating</code>. For a node that is truly gone, the attach/detach controller force-detaches after a timeout (around six minutes by default) once the Pod is deleted; for a node that is <em>unreachable but possibly alive</em>, forced detach is dangerous because two writers could corrupt a filesystem.</p>
+  <p>The safe mechanism for a confirmed-dead node is the <strong>out-of-service taint</strong>: after fencing the node (power it off), taint it <code>node.kubernetes.io/out-of-service=nodeshutdown:NoExecute</code>. Pods are evicted without waiting for the kubelet and volumes are force-detached. The word <em>fenced</em> matters; if you taint a node that is still running and writing, you cause the exact corruption the safeguard existed to prevent. On Machine-API clusters, MachineHealthCheck plus deleting the Machine does the fencing for you.</p>
+
+  <h2>Backup is not a snapshot</h2>
+  <p>A <code>VolumeSnapshot</code> on the same storage system is a point-in-time copy that shares the storage's failure domain: lose the array or delete the PVC with its snapshots and both are gone. A backup is a copy in a <em>different failure domain</em>, restorable, tested.</p>
+  <ul>
+    <li><strong>OADP</strong> (OpenShift API for Data Protection, Velero-based) backs up Kubernetes resources and, via CSI snapshots or file-level Kopia/Restic, volume data to object storage elsewhere.</li>
+    <li>Application-aware backups for databases (logical dumps, WAL archiving, the operator's own backup feature) beat crash-consistent volume copies.</li>
+    <li>Declarative state belongs in Git; etcd backup is for cluster recovery, not a substitute for application backup.</li>
+    <li>Restore tests are the only proof. Schedule them and record the time taken.</li>
+  </ul>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>A 3-zone cluster uses a StorageClass with <code>volumeBindingMode: Immediate</code>. A StatefulSet's Pod is <code>Pending</code> with "0/9 nodes available: 3 node(s) had volume node affinity conflict". Later, a worker in zone A is powered off by a hypervisor fault, and the replacement Pod sits in ContainerCreating with a Multi-Attach error.</p>
+    <ol>
+      <li>Explain the first Pending.</li>
+      <li>Fix for new volumes?</li>
+      <li>What exactly is the second problem, and how do you safely resolve it?</li>
+      <li>Management asks if snapshots are their backup. Answer.</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) Immediate binding provisioned the EBS-style volume in a zone chosen before scheduling. A zonal volume forces the Pod into that zone; the Pod's other constraints (taints, resources, anti-affinity) leave no feasible node there, so it is Pending with a volume node affinity conflict.</p>
+      <p>2) Use <code>WaitForFirstConsumer</code>. Existing PVs stay where they are; you recreate the PVCs (restoring data from backup or a snapshot clone into the right zone) or move the Pod's constraints.</p>
+      <p>3) The RWO volume still appears attached to the dead node. Confirm the node is truly off (fence it), then either wait for the force-detach timeout or apply the <code>node.kubernetes.io/out-of-service:NoExecute</code> taint to speed it up. If the node might be alive, do not do either: stop the writer first.</p>
+      <p>4) No, not on their own. Snapshots in the same storage system share its failure domain. A backup is an independent, tested copy (OADP to remote object storage, application-level backups), and the restore has to be rehearsed.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>With networking and storage covered, <a href="13-multi-tenancy.html">lesson 13</a> asks how to share a cluster among teams who do not trust each other.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"Why is WaitForFirstConsumer usually right for block storage on a multi-zone cluster?","options":["It is faster","The volume is provisioned in the zone where the Pod is scheduled, avoiding stranded zonal volumes","It enables RWX","It encrypts data"],"answer":1,"why":"Immediate binding creates the volume before scheduling and can pin the Pod to a zone with no capacity for it."},
+ {"q":"What is the etcd disk guideline?","options":["Any network filesystem","Low-latency fast storage with 99th-percentile WAL fsync under about 10 ms","RWX CephFS","Spinning disks in RAID 5"],"answer":1,"why":"Slow fsync causes leader elections and a sluggish API. Use dedicated fast local disks and watch etcd_disk_wal_fsync_duration_seconds."},
+ {"q":"A node is dead. The Pod elsewhere has a Multi-Attach error. What is the safe approach?","options":["Force delete everything","Fence the node (confirm it is off) and use the out-of-service taint or wait for force detach","Switch the volume to RWX","Restart the router"],"answer":1,"why":"Forced detach is safe only if the old writer cannot write. Fencing first prevents filesystem corruption."},
+ {"q":"What does ODF cost you that cloud block does not?","options":["Nothing","Raw capacity overhead (replica 3), cluster resources, shared lifecycle with the cluster, and the need to manage a full Ceph cluster","Snapshots","RWX"],"answer":1,"why":"ODF gives you flexibility and RWX/object but puts storage in your cluster's failure domain and update cycle."},
+ {"q":"Is a VolumeSnapshot a backup?","options":["Yes, always","No, it shares the storage's failure domain; a backup is an independent tested copy elsewhere","Only for RWX","Only with ODF"],"answer":1,"why":"Snapshots protect against logical mistakes; independent copies protect against loss of the array or the PVC. Test restores."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+</body>
+</html>

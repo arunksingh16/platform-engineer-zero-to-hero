@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>2. Installation, topologies and hosted control planes · OpenShift for senior SREs</title>
+<meta name="description" content="IPI, UPI, Assisted and Agent-based installs, standard, compact and single-node topologies, hosted control planes, CIDR sizing, credentials modes, and what is immutable after day 1.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="2">
+<main>
+  <span class="tag">Lesson 2</span>
+  <h1>Installation, topologies and hosted control planes</h1>
+  <p class="lead">Installation is a design review in disguise. Several fields in <code>install-config.yaml</code> can never be changed on a running cluster, and the topology you pick decides your failure domains for years. Get these wrong and the fix is a rebuild.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Choose between IPI, UPI, Assisted and Agent-based installs, pick a topology (standard, compact, SNO, hosted), size the cluster and service networks so they do not strand you, and say which day-1 choices are effectively permanent.
+  </div>
+
+  <h2>How an install actually works</h2>
+  <p><code>openshift-install</code> takes <code>install-config.yaml</code> and generates manifests and <strong>Ignition</strong> files. A temporary <strong>bootstrap</strong> node boots first and runs a minimal control plane that brings up the three real control-plane nodes, which pull the release payload, form an etcd quorum, and take over. Once the real control plane is healthy the bootstrap node is destroyed, the Cluster Version Operator starts rolling out every other operator, and <code>wait-for install-complete</code> returns.</p>
+  <p>Everything on the cluster after that moment is reconciled by operators from the release image. The installer is not involved again, which is why the install-time options are so consequential: the platform was built around them and there is no "reinstall this one part".</p>
+
+  <h2>Install methods</h2>
+  <table>
+    <tr><th>Method</th><th>You provide</th><th>The installer provisions</th><th>Typical use</th></tr>
+    <tr><td><strong>IPI</strong> — installer-provisioned infrastructure</td><td>Cloud credentials and a pull secret</td><td>VMs, load balancers, DNS, storage, instance profiles — everything, and creates MachineSets</td><td>Public cloud; vSphere; bare metal via Metal3/BMC</td></tr>
+    <tr><td><strong>UPI</strong> — user-provisioned infrastructure</td><td>Machines, load balancers, DNS, and Ignition delivery</td><td>Nothing; you build the platform</td><td>Locked-down environments, custom networks, unusual clouds. No Machine API by default</td></tr>
+    <tr><td><strong>Assisted Installer</strong></td><td>Discovery ISO booted on hosts; web UI or API</td><td>Validations and the install orchestration</td><td>Bare metal and edge with connectivity to the service</td></tr>
+    <tr><td><strong>Agent-based installer</strong></td><td>A bootable image you generate; works fully disconnected</td><td>The same Assisted engine, run locally on one host</td><td>Disconnected bare metal; repeatable, scripted rollouts</td></tr>
+  </table>
+  <p>The practical consequence of IPI versus UPI is lesson 4: IPI gives you MachineSets, autoscaling and MachineHealthChecks, which is what lets nodes be disposable. On UPI you get a pile of Nodes and no controller that replaces them.</p>
+
+  <h2>Topologies</h2>
+  <table>
+    <tr><th>Topology</th><th>Shape</th><th>Fails like</th></tr>
+    <tr><td><strong>Standard</strong></td><td>3 control-plane nodes, N workers, infra nodes optionally split out</td><td>Lose one control-plane node: fine. Lose two: etcd loses quorum, API read-only/unavailable, workloads keep running</td></tr>
+    <tr><td><strong>Compact (three-node)</strong></td><td>Three nodes act as both control plane and worker</td><td>Workloads compete with etcd and the API server for the same CPU and disk. Plan capacity for the control plane first</td></tr>
+    <tr><td><strong>Single-node (SNO)</strong></td><td>One node, everything</td><td>No HA. A reboot is an outage. Designed for edge; updates mean downtime</td></tr>
+    <tr><td><strong>Hosted control planes (HyperShift)</strong></td><td>Control plane runs as Pods on a <em>management</em> cluster; workers live elsewhere</td><td>See below — a different failure domain entirely</td></tr>
+  </table>
+  <p>Newer small-footprint topologies (for example two-node designs with an arbiter) keep appearing in recent releases. Treat their support status as release-specific and check the current docs.</p>
+
+  <h2>Hosted control planes</h2>
+  <p>In a classic cluster each cluster carries three dedicated control-plane machines. With <strong>hosted control planes</strong> (the HyperShift project, shipped as "hosted control planes" in OpenShift and underlying ROSA HCP), a <code>HostedCluster</code> object on a management cluster causes the API server, etcd, controller managers and OAuth to run as Pods in a dedicated namespace there. Worker nodes are described by <code>NodePool</code> objects and join across the network.</p>
+  <ul>
+    <li><strong>Density and cost.</strong> Tens or hundreds of control planes share one set of management nodes, so you stop paying for three idle machines per cluster.</li>
+    <li><strong>Speed.</strong> A control plane is a set of Pods; it starts in minutes, not as a node install.</li>
+    <li><strong>Stronger tenancy.</strong> A tenant gets their own control plane and etcd. That is the hard-isolation answer in lesson 13.</li>
+    <li><strong>Different blast radius.</strong> The management cluster is now a shared dependency. If it fails, hosted clusters keep serving workloads but cannot be managed; if it is compromised, every hosted control plane is exposed. Treat it as tier zero.</li>
+  </ul>
+
+  <h2>install-config.yaml: the fields that bite</h2>
+  <pre><code>apiVersion: v1
+baseDomain: example.com            # permanent: the API and *.apps DNS hang off this
+metadata: {name: prod-east}        # permanent: cluster name is baked into DNS and infra tags
+networking:
+  networkType: OVNKubernetes
+  clusterNetwork:
+    - {cidr: 10.128.0.0/14, hostPrefix: 23}   # pod IPs: size once
+  serviceNetwork: [172.30.0.0/16]              # ClusterIP space: size once
+  machineNetwork: [{cidr: 10.0.0.0/16}]        # where nodes live
+controlPlane: {name: master, replicas: 3}
+compute: [{name: worker, replicas: 3}]
+capabilities:
+  baselineCapabilitySet: None      # opt out of optional components up front
+  additionalEnabledCapabilities: [Ingress, marketplace, NodeTuning]
+credentialsMode: Manual            # CCO: cloud credentials approach (see below)
+fips: false                        # permanent: FIPS mode is an install-time choice
+platform: {aws: {region: us-east-1}}
+pullSecret: '...'
+sshKey: '...'</code></pre>
+  <p>The following are effectively <strong>permanent</strong>: base domain, cluster name, platform and region, FIPS, and the overall network type plus the pod and service CIDRs. Some CIDR knobs can be extended in later releases, but do not design around that; plan to be right on day 1. The <code>machineNetwork</code> and node IPs depend on your environment and can change with the infra, but the cluster and service networks cannot collide with anything the cluster must reach, including on-prem ranges across a VPN.</p>
+
+  <h3>Cloud credentials: who may the cluster act as</h3>
+  <p>The Cloud Credential Operator (CCO) has three modes. <strong>Mint</strong> uses an admin credential to create narrowly scoped per-component credentials. <strong>Passthrough</strong> shares one credential everywhere — simple and over-privileged. <strong>Manual</strong> (with short-lived tokens: AWS STS, Azure Workload Identity, GCP Workload Identity Federation) means no long-lived cloud secret is stored in the cluster; you pre-create the roles with <code>ccoctl</code>. For a high-assurance estate, manual/short-lived is the target, and it must be chosen at install.</p>
+
+  <h3>Capabilities</h3>
+  <p>Optional platform components (console, marketplace, insights, baremetal, and others) can be excluded at install with <code>baselineCapabilitySet</code> and enabled later but not removed again. Smaller footprint means a smaller update and attack surface — worth deciding deliberately.</p>
+
+  <h2>Size the networks before they size you</h2>
+  <p>Each node takes a slice of the cluster network equal to the <code>hostPrefix</code>. The maximum node count falls out of the arithmetic, and so does the Pod headroom on each node. Try it.</p>
+  <div class="widget">
+    <h3>Pod and service network calculator</h3>
+    <div class="row">
+      <label>cluster CIDR /<input id="cc" type="number" min="8" max="22" value="14" style="width:60px"></label>
+      <label>hostPrefix /<input id="hp" type="number" min="16" max="27" value="23" style="width:60px"></label>
+      <label>service CIDR /<input id="sc" type="number" min="12" max="24" value="16" style="width:60px"></label>
+      <label>max pods per node <input id="mp" type="number" min="10" max="500" value="250" style="width:70px"></label>
+    </div>
+    <p id="calc"></p>
+  </div>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>A platform team proposes <code>clusterNetwork: 10.128.0.0/16, hostPrefix: 23</code> "to leave room for other uses of 10/8". They expect about 120 nodes in two years.</p>
+    <ol>
+      <li>How many nodes can this cluster ever hold?</li>
+      <li>How many Pod IPs does each node get?</li>
+      <li>Can they fix it by adding nodes? By editing the config later?</li>
+      <li>You must connect the cluster to an on-prem network using 172.30.0.0/16. What is wrong?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) A /16 split into /23 slices gives $2^{23-16}=2^{7}=128$ node slices. That holds 120 nodes but leaves almost no room for growth, replacement during rolling updates (a surge node needs a slice), or an autoscaler burst. Real headroom here is about 8 slices.</p>
+      <p>2) A /23 is 512 addresses, usable around 510. With a default of 250 pods per node that is ample, but note the per-node range is fixed once chosen.</p>
+      <p>3) No. The CIDR and host prefix are install-time design inputs; adding nodes only consumes slices. Some releases allow extending the cluster network, but it is a delicate, version-specific procedure — plan to be right at install.</p>
+      <p>4) 172.30.0.0/16 is the <em>default service network</em>. A collision between the ClusterIP range and an on-prem route means Pods cannot reach on-prem hosts in that range, or reach the wrong thing. Choose a non-overlapping service network at install; also check the internal join/transit/masquerade subnets in lesson 10.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>The cluster exists. <a href="03-cvo-and-cluster-operators.html">Lesson 3</a> is the single most useful thing to learn on this platform: how the CVO and ClusterOperators report health, and how to read them.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"What is the main operational consequence of choosing UPI over IPI?","options":["No etcd","Typically no Machine API: no MachineSets, autoscaling or MachineHealthChecks, so nodes are not automatically replaced","No OAuth server","You cannot update the cluster"],"answer":1,"why":"IPI provisions the infrastructure and creates MachineSets. UPI hands you a set of Nodes with no controller that can create a replacement, so lifecycle automation is yours to build."},
+ {"q":"Which is effectively impossible to change after installation?","options":["The number of worker nodes","The identity provider","The cluster name and base domain, FIPS mode, and the overall pod and service CIDR design","Which monitoring alerts are routed"],"answer":2,"why":"Names, platform, FIPS and the network design are baked into infrastructure, DNS and certificates. Plan them as one-way doors."},
+ {"q":"With hostPrefix /23 and a cluster CIDR of /14, roughly how many nodes can the cluster have?","options":["128","512","2,048","65,536"],"answer":1,"why":"$2^{23-14}=512$ node slices. Each node's /23 is about 510 usable Pod IPs."},
+ {"q":"What is the key new risk with hosted control planes?","options":["Workers cannot run Pods","The management cluster is a shared dependency and tier-zero asset for every hosted control plane","etcd is removed","OAuth stops working"],"answer":1,"why":"You trade three machines per cluster for a shared management plane. Its failure removes manageability from all hosted clusters and its compromise exposes all their control planes."},
+ {"q":"Cloud Credential Operator in Manual mode with short-lived tokens gives you what?","options":["Faster installs","No long-lived cloud secret stored in the cluster; roles are pre-created with ccoctl","Automatic cost reports","Per-namespace cloud accounts"],"answer":1,"why":"Mint and Passthrough keep a cloud credential in the cluster. Manual with STS/Workload Identity avoids that, which is the stronger posture but must be chosen at install."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  function draw(){
+    const cc=+$("cc").value, hp=+$("hp").value, sc=+$("sc").value, mp=+$("mp").value;
+    if(hp<=cc){ $("calc").innerHTML='<span class="err">hostPrefix must be longer than the cluster CIDR prefix.</span>'; return; }
+    const nodes=Math.pow(2,hp-cc);
+    const podsPerNode=Math.pow(2,32-hp)-2;
+    const svc=Math.pow(2,32-sc)-2;
+    const headroom=podsPerNode/mp;
+    $("calc").innerHTML=
+      `Maximum nodes: <strong>${nodes.toLocaleString()}</strong><br>`+
+      `Pod IPs per node: <strong>${podsPerNode.toLocaleString()}</strong> `+
+      (podsPerNode<mp*1.5?`<span class="err">— tight against maxPods ${mp}; rolling restarts will exhaust it</span>`:`<span class="ok">— ${headroom.toFixed(1)}× maxPods, healthy headroom for churn</span>`)+`<br>`+
+      `Maximum Services: <strong>${svc.toLocaleString()}</strong><br>`+
+      `Total Pod IPs: <strong>${(nodes*podsPerNode).toLocaleString()}</strong>`;
+  }
+  ["cc","hp","sc","mp"].forEach(i=>$(i).addEventListener("input",draw)); draw();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>10. Networking I: OVN-Kubernetes · OpenShift for senior SREs</title>
+<meta name="description" content="OVN-Kubernetes architecture, the logical network, Geneve and MTU, default CIDRs and reserved subnets, NetworkPolicy and AdminNetworkPolicy, EgressIP, EgressFirewall, secondary networks, and debugging.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="10">
+<main>
+  <span class="tag">Lesson 10</span>
+  <h1>Networking I: OVN-Kubernetes</h1>
+  <p class="lead">OVN-Kubernetes is the default and, for new clusters, the only supported OpenShift CNI. It implements the CNI contract from the <a href="../cni/index.html">CNI sub-course</a> with Open Virtual Network on top of Open vSwitch: a logical network described in a database and compiled into flows on every node. You will rarely touch OVS directly, but you will meet its constraints — MTU, reserved subnets, and what happens when the databases misbehave.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Describe the OVN-K components, compute the pod MTU, avoid subnet overlaps, use EgressIP and EgressFirewall, understand which policy APIs apply, attach secondary networks, and start a debugging session in the right layer.
+  </div>
+
+  <h2>History in one paragraph</h2>
+  <p>Older OpenShift 4 clusters used <strong>OpenShift SDN</strong>. It was deprecated and then removed; clusters still on it had to migrate to OVN-Kubernetes before moving to the release that dropped it. If you inherit a fleet, check <code>oc get network.config cluster -o jsonpath='{.status.networkType}'</code> first. The migration is an offline-ish, node-by-node operation with a defined rollback window — a project, not a command.</p>
+
+  <h2>The architecture</h2>
+  <pre><code>Per node (current "interconnect" architecture, one OVN zone per node):
+  ovnkube-node  DaemonSet Pod, containing:
+     ovnkube-controller   translates Kubernetes objects into OVN logical config
+     ovn-controller       programs OVS from the OVN southbound DB
+     northd, nbdb, sbdb   the node-local OVN databases
+     ovs-vswitchd / ovsdb-server  (run on the host via the openvswitch services)
+  ovnkube-control-plane   cluster-wide helpers (allocating node subnets, coordinating zones)
+
+Logical topology:
+  each node: a logical switch (the node's pod subnet) ─► a ovn_cluster_router
+  ovn_cluster_router ─► join switch ─► per-node gateway router (GR) ─► br-ex ─► physical NIC
+  inter-node pod traffic: Geneve tunnels between nodes (UDP 6081)</code></pre>
+  <p>The older design had one cluster-wide pair of OVN databases on the control plane, which was a scaling and failure-domain bottleneck. In current releases each node has its own zone, so the DB failure domain is one node. When you read older runbooks that say "restart the ovnkube-master Pod", check they apply to your release.</p>
+  <p>Pod-to-Pod is the overlay model from <a href="../cni/02-pod-to-pod.html">the CNI lessons</a>: a veth pair into the node's logical switch, Geneve encapsulation between nodes, no NAT between Pods. Pod-to-external goes through the node's gateway router with SNAT to the node IP unless an EgressIP applies. Services are implemented by OVN load balancers rather than kube-proxy — there is <strong>no kube-proxy</strong> on an OVN-K cluster, so reasoning about iptables Service rules is a dead end.</p>
+
+  <h2>Defaults and the subnets you must not collide with</h2>
+  <table>
+    <tr><th>Network</th><th>Typical default</th><th>Notes</th></tr>
+    <tr><td>Cluster (Pod) network</td><td><code>10.128.0.0/14</code>, hostPrefix <code>/23</code></td><td>Lesson 2 maths; permanent in practice</td></tr>
+    <tr><td>Service network</td><td><code>172.30.0.0/16</code></td><td>Cluster-internal; must not overlap anything routed to the cluster</td></tr>
+    <tr><td>Machine network</td><td>Your node subnet</td><td>Defined by infrastructure</td></tr>
+    <tr><td>Join / transit / masquerade</td><td>Internal subnets such as <code>100.64.0.0/16</code>, <code>100.88.0.0/16</code>, <code>169.254.x</code></td><td>Cluster-internal, not routable, but an overlap with real networks on the nodes can break host connectivity. Check configurable options in your release</td></tr>
+  </table>
+
+  <h2>MTU: the silent breaker</h2>
+  <p>Geneve adds a header, so Pod MTU must be smaller than the node's. The documented overhead is <strong>100 bytes</strong> for OVN-Kubernetes (with IPsec encryption, a further amount). Mis-set MTU shows up as the pattern from the CNI course: small requests work, large responses hang, TLS handshakes stall at the certificate. Try the numbers:</p>
+  <div class="widget">
+    <h3>Pod MTU</h3>
+    <div class="row">
+      <label>host / underlay MTU <select id="host"><option>1500</option><option>9001</option><option>9000</option><option>1450</option><option>1400</option></select></label>
+      <label><input type="checkbox" id="ipsec"> IPsec encryption enabled</label>
+    </div>
+    <p id="mtu"></p>
+  </div>
+  <p>Changing the cluster MTU after install is possible through the Network operator with a controlled, rolling procedure, and it is risky; set it correctly (for example jumbo frames on a 9000-byte fabric) at install, and make sure every hop — including VPN and Direct Connect style links — agrees.</p>
+
+  <h2>Policy APIs</h2>
+  <ul>
+    <li><strong>NetworkPolicy</strong> — standard, namespace-scoped, additive, implemented as OVN ACLs. Behaves as in the <a href="../cni/03-network-policy.html">CNI lesson</a>.</li>
+    <li><strong>AdminNetworkPolicy and BaselineAdminNetworkPolicy</strong> — cluster-scoped, ordered, with explicit <code>Allow</code>, <code>Deny</code> and <code>Pass</code> actions. ANP sits <em>above</em> tenant NetworkPolicy and can enforce platform rules tenants cannot override; BANP sits <em>below</em> and sets defaults tenants can refine. This is the supported answer for platform-wide guardrails.</li>
+    <li><strong>EgressFirewall</strong> (per namespace) — allow or deny egress to CIDRs and DNS names. Rules are ordered, first match wins, and a final <code>deny 0.0.0.0/0</code> turns it into an allow-list. Intended for traffic leaving the cluster; check its interaction with cluster-internal destinations on your release.</li>
+  </ul>
+
+  <h2>Egress that has an identity</h2>
+  <p>By default, outbound traffic from a Pod is SNATed to the IP of the node it runs on, which changes whenever the Pod moves. External systems that firewall by source IP then need to trust every node. An <strong>EgressIP</strong> object assigns a stable source address to Pods selected by namespace and Pod labels:</p>
+  <pre><code>apiVersion: k8s.ovn.org/v1
+kind: EgressIP
+metadata: {name: payments-egress}
+spec:
+  egressIPs: ["10.0.40.50", "10.0.40.51"]      # several = HA candidates
+  namespaceSelector: {matchLabels: {team: payments}}</code></pre>
+  <p>Nodes eligible to host egress IPs are labelled <code>k8s.ovn.org/egress-assignable</code>. The IP is held by one node at a time and moves if that node fails. On a public cloud the IP must be within the node's subnet and the cloud network API has to cooperate; on bare metal it is an address you own and route. EgressIP is how a tenant gets a firewall-friendly source address — and, combined with EgressFirewall, a defensible outbound posture.</p>
+
+  <h2>More than one network</h2>
+  <p>The Cluster Network Operator can install <strong>Multus</strong>, which lets a Pod have extra interfaces defined by <code>NetworkAttachmentDefinition</code> objects. Common uses: SR-IOV or macvlan for telecom and data-plane workloads, VLAN-isolated management networks, and <em>User Defined Networks</em> (UDN) in recent releases, which give a tenant namespace its own primary L2 or L3 overlay, isolated from the default network. The <strong>MetalLB operator</strong> supplies <code>type: LoadBalancer</code> Services on bare metal using BGP or L2 announcements, where there is no cloud to create one.</p>
+
+  <h2>Debugging in layers</h2>
+  <ol>
+    <li><strong>Is the network operator healthy?</strong> <code>oc get co network</code>; <code>oc -n openshift-ovn-kubernetes get pods -o wide</code>. A crash-looping <code>ovnkube-node</code> means new Pods on that node stay <code>ContainerCreating</code>.</li>
+    <li><strong>Pod stuck ContainerCreating:</strong> <code>oc describe pod</code> for the CNI error, then the node's <code>ovnkube-node</code> logs.</li>
+    <li><strong>Connectivity:</strong> test Pod-to-Pod on the same node, then across nodes, then to the Service, then external. The first layer that fails is the culprit. Across-node-only failures point at Geneve (UDP 6081 blocked, or MTU).</li>
+    <li><strong>Packet trace:</strong> <code>oc debug node/x</code> then <code>chroot /host</code>; <code>ovs-ofctl dump-flows br-int</code>, <code>ovn-trace</code>, and <code>ovs-appctl ofproto/trace</code> show what the logical network will do with a packet; <code>tcpdump -i br-ex</code> and on the Geneve device show it on the wire.</li>
+    <li><strong>Policy:</strong> <code>oc get networkpolicy,adminnetworkpolicy -A</code>; the OVN ACLs and drop logging (<code>k8s.ovn.org/acl-logging</code> annotation on the namespace) tell you which rule denied a flow.</li>
+  </ol>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>After a rollout, a Java service cannot reach a payment partner. Small health-check requests succeed; the TLS handshake with the partner hangs after the ClientHello. Same-node Pods work with each other. A firewall team insists on a single source IP for the partner. The cluster was configured for jumbo frames: Pod MTU shows 8900. One hop between two racks turns out to be 1500.</p>
+    <ol>
+      <li>What pattern is this, and what is the maximum Pod MTU on this fabric?</li>
+      <li>What did someone likely do?</li>
+      <li>How do you give the partner one source IP?</li>
+      <li>How do you stop tenants from reaching the partner except this service?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) The classic MTU black hole: small packets pass, large ones are silently dropped where a link cannot carry them and ICMP "fragmentation needed" is filtered. Pod MTU 8900 is right for a 9000 underlay (9000 − 100 Geneve), but only if <em>every</em> hop carries 9000. A 1500 hop makes full-size packets vanish. A Pod MTU that is too <em>small</em> is safe, only slower; too large is what hangs.</p>
+      <p>2) Someone assumed jumbo frames end to end (or the cluster MTU was raised without verifying the path). Compare MTU with <code>ip link</code> on the Pod interface, the Geneve device and the physical NIC on both ends, and test with <code>ping -M do -s 8800</code> between nodes. Fix the weak link, or lower the cluster MTU to what the path supports.</p>
+      <p>3) An <code>EgressIP</code> selecting the service's namespace (and Pod labels), on nodes labelled egress-assignable. The partner allow-lists one address.</p>
+      <p>4) An <code>EgressFirewall</code> in other namespaces denying the partner CIDR, or default-deny with an allow-list, and an <code>AdminNetworkPolicy</code> if the rule must override tenants. The payments namespace is the one exception.</p>
+    </details>
+  </div>
+
+  <h2>Where this goes next</h2>
+  <p>Pod networking carries east-west traffic. Traffic from outside takes a different path: <a href="11-routes-ingress-dns.html">lesson 11</a>.</p>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"Which is true of Services on an OVN-Kubernetes cluster?","options":["kube-proxy programs iptables rules","There is no kube-proxy; OVN load balancers implement Services","Services are only DNS records","They use IPVS"],"answer":1,"why":"OVN-K implements Services itself. Debugging iptables Service chains is a dead end on this CNI."},
+ {"q":"What is the effect of the Geneve overhead on Pod MTU?","options":["None","Pod MTU must be about 100 bytes lower than the underlay MTU, lower with IPsec","Pod MTU must be higher than the underlay","It only affects UDP"],"answer":1,"why":"Encapsulated packets must fit the physical path. Mismatches cause large-packet black holes: small requests work, large ones hang."},
+ {"q":"How does AdminNetworkPolicy differ from NetworkPolicy?","options":["It is namespaced and additive","It is cluster-scoped, ordered, and has explicit Allow/Deny/Pass; ANP sits above tenant policy and BANP below","It only affects egress","It is deprecated"],"answer":1,"why":"ANP supports platform guardrails tenants cannot override; BANP sets defaults tenants can refine."},
+ {"q":"Why use EgressIP?","options":["To speed up DNS","To give selected Pods a stable source address for external allow-lists instead of the changing node IP","To expose Services","To encrypt Pod traffic"],"answer":1,"why":"Default SNAT uses the hosting node's IP. EgressIP provides a stable, HA-capable address held by an egress-assignable node."},
+ {"q":"Cross-node Pod traffic fails but same-node works. First suspicion?","options":["RBAC","Geneve: UDP 6081 blocked or MTU mismatch between nodes","The registry","SCC"],"answer":1,"why":"Same-node stays on the node's switch; cross-node uses the Geneve overlay, so firewalls and MTU are the first things to check."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  function draw(){
+    const h=+$("host").value, ip=$("ipsec").checked;
+    const pod=h-100-(ip?46:0);
+    $("mtu").innerHTML=`Geneve overhead 100`+(ip?` + IPsec ≈ 46`:``)+` → Pod MTU <strong>${pod}</strong>. `+
+      (h===1500?`This is the common case; remember the same value must hold on every hop between nodes.`:
+       h>=9000?`Jumbo frames: every switch, router and cloud path between nodes must really carry ${h}. If one link is 1500, large packets disappear.`:
+       `A reduced underlay (VPN, overlay-on-overlay). Check whether the path truly requires it.`);
+  }
+  ["host","ipsec"].forEach(i=>$(i).addEventListener("change",draw)); draw();
+})();
+</script>
+</body>
+</html>

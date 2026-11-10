@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OpenShift for senior SREs</title>
+<meta name="description" content="OpenShift architecture, operations, security, networking, storage, multi-tenancy and lifecycle management for engineers who already run Kubernetes in production.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-page="index">
+<main>
+  <span class="tag">15 lessons, about 30 minutes each</span>
+  <h1>OpenShift for senior SREs</h1>
+  <p class="lead">You already know Kubernetes. OpenShift is not Kubernetes plus a console — it is a platform in which almost everything, including the control plane, the operating system and the upgrade, is itself a set of operators reconciling toward a declared state. That changes where you look when something breaks, what you are allowed to touch, and how a bad change spreads.</p>
+
+  <div class="goal">
+    <h3>How each lesson works</h3>
+    <ol>
+      <li><strong>Idea</strong> in plain words, assuming you have run production clusters.</li>
+      <li><strong>Play</strong> with a small interactive model where one helps.</li>
+      <li><strong>Do it by hand</strong> — an incident-shaped exercise with a hidden answer.</li>
+      <li><strong>Quiz</strong> — pass it to complete the lesson.</li>
+    </ol>
+  </div>
+
+  <h2>Lessons</h2>
+  <ol class="lessons" id="lessons"></ol>
+
+  <div class="callout">
+    <h3>Who this is written for</h3>
+    <p>An engineer with several years of Kubernetes on-call behind them who is about to own OpenShift clusters at scale. It does not re-teach Pods, Services or RBAC. It teaches what is <em>different</em>, what is <em>managed for you and therefore off-limits</em>, and the failure modes that only exist on this platform: a degraded ClusterOperator, a paused MachineConfigPool, an SCC that admits the wrong workload, a Route that times out at exactly thirty seconds.</p>
+    <p>Version note: written against OpenShift 4.x documentation current in November 2026. Defaults and feature stages move between minor releases. Where a behaviour is version-sensitive it is flagged — verify it against the release you actually run.</p>
+  </div>
+
+  <h2>What you will be able to do</h2>
+  <p>Explain which operator owns any given piece of the platform and read its status to find the real fault. Choose an installation topology and know which choices are permanent. Roll node configuration and cluster updates through production without taking down quorum or stranding a pool. Reason about SCCs, OAuth and RBAC well enough to review a tenant's access request. Trace traffic through OVN-Kubernetes and the HAProxy router. Pick storage for etcd, databases and shared files and know how each one fails. Design multi-tenancy with honest limits, take and restore an etcd backup, and run an incident in a sensible order.</p>
+
+  <h2>Before you start</h2>
+  <p>Do the <a href="../index.html">main Kubernetes course</a> first, especially <a href="../08-operators.html">operators and custom resources</a> — this whole sub-course is that lesson applied to an entire platform. The <a href="../cni/index.html">CNI sub-course</a> helps for lessons 10 and 11, and the <a href="../../Observability/index.html">Observability course</a> for lesson 14.</p>
+
+  <p class="muted">Every claim is sourced at the end of <a href="15-incident-playbook-and-references.html">lesson 15</a>. Progress is stored only in your browser. No tracking, no dependencies.</p>
+</main>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+</body>
+</html>
