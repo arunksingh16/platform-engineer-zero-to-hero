@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>1. The managed-service contract · AKS</title>
+<meta name="description" content="AKS ownership boundaries, Azure versus Kubernetes APIs, node resource groups and the differences between Standard and Automatic.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="1">
+<main>
+  <span class="tag">AKS / Lesson 1</span>
+  <h1>The managed-service contract</h1>
+  <p class="lead">A managed control plane removes machines from your pager. It does not remove dependencies from your service. Separate “Azure accepted the change” from “Kubernetes converged” and “customers can use the application.”</p>
+  <div class="goal"><h3>By the end you can…</h3>Map a failure to its owner, distinguish the two control surfaces, and explain why changing an AKS-managed VM directly is not a durable fix.</div>
+  <h2>Two APIs, three kinds of health</h2>
+  <pre><code>Azure Resource Manager → AKS resource and node pool lifecycle
+Kubernetes API         → workload desired state and reconciliation
+Customer request       → DNS + network + workload + dependencies</code></pre>
+  <p>A successful ARM operation means the resource operation succeeded. A Deployment can still have zero ready replicas. Conversely, an Azure operation can fail while existing Pods keep serving traffic. Keep provisioning state, Kubernetes health and application SLIs separate in dashboards and incident reports.</p>
+  <table>
+    <tr><th>Surface</th><th>Provider responsibility</th><th>Your responsibility</th></tr>
+    <tr><td>Control plane</td><td>Operate API server, scheduler, controllers and managed etcd</td><td>Choose supported configuration and lifecycle policy; manage access, API usage and workload compatibility</td></tr>
+    <tr><td>Nodes</td><td>Provide supported images and AKS pool lifecycle mechanisms</td><td>Capacity, pool configuration, OS support, upgrade policy, disruption readiness and workload placement</td></tr>
+    <tr><td>Applications</td><td>Supply platform capabilities</td><td>Images, secrets handling, probes, requests, isolation, data, SLOs and recovery</td></tr>
+    <tr><td>Dependencies</td><td>Operate the Azure service within its contract</td><td>DNS, routing, firewall rules, quotas, identity grants and end-to-end availability</td></tr>
+  </table>
+  <h2>The node resource group is not your playground</h2>
+  <p>AKS uses a separate node resource group for infrastructure such as VM scale sets, load balancers and disks. Its name is often generated, but can be customized. Discover it instead of constructing a name. Resources there are AKS-managed; do not resize a scale set, delete a load balancer rule or install a hand-maintained node fix as your desired-state system. AKS operations can overwrite unsupported changes.</p>
+  <pre><code>az account show --query '{subscription:id,tenant:tenantId}' -o yaml
+az aks show -g example-rg -n example-aks \
+  --query '{state:provisioningState,nodeRG:nodeResourceGroup,sku:sku,network:networkProfile}' -o yaml
+kubectl config current-context
+kubectl get nodes
+kubectl get deployments -A</code></pre>
+  <p>Read the effective configuration, not the creation command someone remembers. Record subscription, region, resource ID, service mode, control-plane access path, network mode, identities and pool ownership in the runbook. Do not copy tokens or kubeconfig credentials into tickets.</p>
+  <h2>Standard versus Automatic</h2>
+  <p><strong>Standard</strong> exposes more explicit choices for pools, networking, scaling and lifecycle. <strong>Automatic</strong> supplies opinionated configuration and more managed operations. That changes which settings you can tune, not whether you must validate workload readiness and recovery. Do not copy a Standard surge or node-pool recipe into Automatic without checking its contract. Similarly, a pricing/SLA tier is not the same concept as the service mode.</p>
+  <div class="callout"><h3>Availability is a chain</h3><p>An API-server SLA is not an application SLA. One replica, a zone-bound database, an expired certificate or a blocked egress path can each break your service while the managed API remains healthy. Model those dependencies before buying a higher tier as the “fix.”</p></div>
+  <h2>Do it by hand: green cluster, failed checkout</h2>
+  <div class="hand"><p>The AKS resource says Succeeded. All nodes are Ready. Checkout fails after a firewall change. What evidence separates a platform incident from an application incident?</p><details><summary>Work through it</summary><p>Measure checkout errors and dependency latency first. Compare the change timestamp with Pod readiness, restarts and scheduling events. Trace application DNS and outbound connectivity to the payment dependency; inspect firewall denies, routes and SNAT capacity. Involve the network owner with the destination, timestamp and correlation ID. Neither Ready nodes nor a green ARM operation proves that path works. Prefer reverting the correlated firewall change through its owner over restarting every Pod.</p></details></div>
+  <h2>Sources</h2>
+  <ul>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/core-aks-concepts">Core AKS concepts and managed architecture</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/faq">AKS FAQ: node resource group and supported changes</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/intro-aks-automatic">AKS Automatic scope and defaults</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/cli/azure/aks#az-aks-show">Azure CLI inspection reference</a></li>
+  </ul>
+  <div id="quiz"></div>
+  <script type="application/json" id="quiz-data">[
+    {"q":"The AKS resource is Succeeded. What does that prove?","options":["All customer requests succeed","The Azure resource operation succeeded","Every Deployment has ready replicas"],"answer":1,"why":"ARM provisioning, Kubernetes convergence and application availability are different signals."},
+    {"q":"Where should a lasting node-pool size change be expressed?","options":["Through the AKS pool configuration and its owning IaC workflow","By resizing the VM scale set directly","Inside an application ConfigMap"],"answer":0,"why":"Use the supported AKS control surface, not an underlying resource that AKS manages."},
+    {"q":"Does Automatic eliminate the need for application recovery testing?","options":["Yes, because it manages nodes","Only if the portal is green","No, application data and recovery objectives still need validation"],"answer":2,"why":"More managed operations do not transfer responsibility for the application's recovery outcome."}
+  ]</script>
+</main>
+<script src="lessons.js"></script><script src="../../course.js"></script>
+</body>
+</html>

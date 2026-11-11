@@ -40,6 +40,12 @@ planning, the packet path and MTU, NetworkPolicy and who enforces it, choosing
 between Flannel, Calico, Cilium and the cloud CNIs, and the eBPF dataplane.
 Vendor-neutral, with its own references section at the end of lesson 5.
 
+## Kubernetes platforms
+
+OpenShift, AKS and the EKS roadmap are grouped as peers under **Kubernetes
+platforms** on both the site catalog and this course's home page. CNI remains
+a vendor-neutral deep dive. Existing OpenShift paths and progress are unchanged.
+
 `openshift/` — **OpenShift for senior SREs**, fifteen lessons: operator-managed
 architecture, installation and hosted control planes, the CVO and ClusterOperators,
 Machine API and MachineConfig, updates, OLM, OAuth and RBAC, SCCs and hardening,
@@ -47,18 +53,30 @@ OVN-Kubernetes, routers and DNS, storage, multi-tenancy, etcd and day-two
 operations, and fleet management with an incident playbook. References are at
 the end of lesson 15.
 
+`aks/` — **AKS: production operations**, nine lessons: managed-service
+ownership, node pools and failure domains, Entra and workload identity, Azure
+CNI and IP planning, ingress/egress/private DNS, scaling and cost, upgrades and
+maintenance, CSI storage and tested recovery, observability and incident
+playbooks. Each lesson includes a worked scenario, quiz and primary sources.
+Lesson 4 includes an interactive flat-versus-overlay surge-IP calculator with
+explicit assumptions. AKS Standard is the baseline; Automatic differences and
+version-sensitive behavior are called out. Inspection examples do not provision
+resources and require your own authorized environment.
+
+EKS remains planned; there is no published EKS directory or lesson link.
+
 Platform-specific material goes in a child directory with its own `lessons.js`
 and its own progress key, so progress never bleeds between courses:
 
 ```text
 Kubernetes/
   cni/                    const COURSE = { key: "kubernetes-cni", up: {...}, ... }
-  eks/
+  aks/                     const COURSE = { key: "kubernetes-aks", up: {...}, ... }
     index.html
-    lessons.js          const COURSE = { key: "k8s-eks", ... }
-    01-....html
-  aks/
+    lessons.js
+    01-....html to 09-....html
   openshift/              const COURSE = { key: "kubernetes-openshift", up: {...}, ... }
+  eks/                    Planned; not yet created
 ```
 
 Child lesson pages reach the shared assets two levels up:

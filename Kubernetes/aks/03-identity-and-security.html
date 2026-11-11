@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>3. Identity without shared secrets · AKS</title>
+<meta name="description" content="Understand AKS Entra authorization, cluster and kubelet managed identities, workload federation and least privilege.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="3">
+<main>
+  <span class="tag">AKS / Lesson 3</span>
+  <h1>Identity without shared secrets</h1>
+  <p class="lead">“The cluster identity has access” is usually an incomplete diagnosis. An operator, the control plane, the kubelet and an application are four different callers. Trace the principal before changing a role.</p>
+  <div class="goal"><h3>By the end you can…</h3>Identify the caller at each boundary, explain direct workload federation, and separate authentication, authorization and network failures.</div>
+  <h2>Four identity paths</h2>
+  <table>
+    <tr><th>Caller</th><th>Purpose</th><th>Common confusion</th></tr>
+    <tr><td>Human / deployment automation</td><td>Authenticate to the Kubernetes API through the configured Entra integration</td><td>Permission to fetch kubeconfig is not permission to read Secrets</td></tr>
+    <tr><td>AKS cluster identity</td><td>Manage supported Azure infrastructure, such as network resources</td><td>Its Azure role is not the application's role</td></tr>
+    <tr><td>Kubelet identity</td><td>Node-side Azure operations such as authorized ACR pulls</td><td>Image pull authentication is not application authentication</td></tr>
+    <tr><td>Workload identity</td><td>Let a specific ServiceAccount obtain a token for an Azure resource</td><td>Creating a ServiceAccount does not itself grant Azure data access</td></tr>
+  </table>
+  <p>For API access, distinguish Entra authentication from authorization. The cluster may use Kubernetes RBAC or Azure RBAC for Kubernetes authorization, according to its configuration. An Azure management-plane role and a Kubernetes data-plane role solve different problems. Use namespace-scoped grants and managed group membership; treat cluster-admin as controlled break-glass access, not an onboarding default.</p>
+  <h2>The direct federation chain</h2>
+  <pre><code>Pod using a named ServiceAccount
+  → projected, short-lived Kubernetes token
+  → Entra validates issuer + subject + audience against federated credential
+  → Entra access token for the Azure service
+  → service checks data-plane permissions + network access</code></pre>
+  <p>For the direct-federation model, enable OIDC issuer and workload identity on the cluster as required by its service mode. Configure the federated credential on the intended identity with the exact issuer URL, subject <code>system:serviceaccount:payments:reader</code> and audience <code>api://AzureADTokenExchange</code>. Grant that identity the narrow data-plane role needed at the target resource. Use a supported Azure Identity SDK credential flow. Identity-binding features have a different contract; do not mix their token audiences with this model.</p>
+  <p>This review fragment shows the ServiceAccount annotation and the <strong>Pod template</strong> label. It intentionally omits the application container, identity creation and role grants; it is not a complete Deployment.</p>
+  <pre><code>apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: reader
+  namespace: payments
+  annotations:
+    azure.workload.identity/client-id: "&lt;managed-identity-client-id&gt;"
+---
+# Fragment of the application's Deployment:
+spec:
+  template:
+    metadata:
+      labels:
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: reader</code></pre>
+  <p>The workload identity webhook mutates labeled Pods to supply token projection and environment configuration. A label on only the Deployment's top-level metadata is not the Pod label. After a ServiceAccount annotation change, existing Pods need recreation to pick up the changed injection. Do not print projected tokens into logs while debugging.</p>
+  <h2>Debug the boundary, not the symptom</h2>
+  <pre><code>az aks show -g example-rg -n example-aks \
+  --query '{clusterIdentity:identity,kubelet:identityProfile,oidc:oidcIssuerProfile,security:securityProfile}' -o yaml
+kubectl auth can-i get pods -n payments
+kubectl get serviceaccount reader -n payments -o yaml
+kubectl describe pod example-pod -n payments</code></pre>
+  <p>Token exchange errors suggest issuer, subject, audience, tenant or credential propagation problems. A resource's 403 can indicate missing data-plane permission, but some firewalls also return 403: read the service error code and request ID. DNS failure or timeout points to connectivity, not a missing role. <code>ImagePullBackOff</code> starts with image reference, registry network access and the kubelet's pull permissions, not the application's Key Vault role.</p>
+  <h2>Defense beyond identity</h2>
+  <p>Enforce appropriate Pod Security Admission or supported policy controls, non-root images, minimal capabilities, restricted host access and resource quotas. Apply default-deny network policy with explicit DNS and dependency allowances on a supported enforcing dataplane. Workload identity reduces secret distribution; it does not isolate a privileged container or protect an over-permissioned ServiceAccount. Evaluate Key Vault CSI rotation and application reload behavior separately; mounting a refreshed secret does not ensure the process rereads it.</p>
+  <div class="hand"><h3>Do it by hand: a namespace migration</h3><p>The app moves from <code>payments</code> to <code>payments-v2</code>. Client ID and role assignment are unchanged. Token exchange now fails. Why?</p><details><summary>Trace the subject</summary><p>The ServiceAccount subject includes the namespace. The old federated credential trusts <code>system:serviceaccount:payments:reader</code>, not <code>system:serviceaccount:payments-v2:reader</code>. Add the reviewed trust for the new subject, verify issuer and audience and retire the old trust when migration completes. Granting a broader Azure role does not fix a failed token exchange.</p></details></div>
+  <h2>Sources</h2>
+  <ul>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/concepts-identity">AKS identity and authorization options</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview">Workload identity, labels and token audiences</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/workload-identity-deploy-cluster">Direct federation setup and manifest examples</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/use-managed-identity">Cluster and kubelet managed identities</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/csi-secrets-store-driver">Key Vault CSI integration</a></li>
+  </ul>
+  <div id="quiz"></div>
+  <script type="application/json" id="quiz-data">[
+    {"q":"Which identity normally needs the registry pull grant for node image pulls?","options":["Every human operator","The kubelet identity","The application's Key Vault identity"],"answer":1,"why":"Node-side image pulling and application Azure API access are different identity paths."},
+    {"q":"Which direct-federation trust field changes when a ServiceAccount moves namespaces?","options":["The subject","The Azure region","The container port"],"answer":0,"why":"The subject contains system:serviceaccount followed by namespace and account name."},
+    {"q":"A workload cannot resolve its private Key Vault hostname. What is the first fix?","options":["Assign subscription Owner","Print its projected token","Diagnose private DNS and the network path"],"answer":2,"why":"An identity grant cannot make DNS resolution work. Diagnose the failed boundary first."}
+  ]</script>
+</main>
+<script src="lessons.js"></script><script src="../../course.js"></script>
+</body>
+</html>

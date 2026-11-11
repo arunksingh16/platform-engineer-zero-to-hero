@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>6. Scaling without wishful thinking · AKS</title>
+<meta name="description" content="AKS HPA, KEDA, Cluster Autoscaler, node autoprovisioning, scheduling constraints and cost-aware capacity planning.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="6">
+<main>
+  <span class="tag">AKS / Lesson 6</span>
+  <h1>Scaling without wishful thinking</h1>
+  <p class="lead">Autoscaling is a chain of delayed control loops. A demand signal can request more Pods immediately while quota, IP capacity or a placement rule prevents new compute from ever arriving.</p>
+  <div class="goal"><h3>By the end you can…</h3>Distinguish Pod and node scaling, diagnose a blocked scale-up and include lead time and interruption risk in the cost model.</div>
+  <h2>Keep each controller's job separate</h2>
+  <table>
+    <tr><th>Controller</th><th>Decision</th><th>Not its job</th></tr>
+    <tr><td>HPA</td><td>Desired replicas from configured resource/custom/external metrics</td><td>Create Azure nodes or fix an unsuitable metric</td></tr>
+    <tr><td>KEDA</td><td>Event-driven activation and HPA integration for a target</td><td>Guarantee downstream throughput or provision VM capacity</td></tr>
+    <tr><td>Cluster Autoscaler</td><td>Grow/shrink eligible existing pools within configured bounds</td><td>Ignore scheduling rules or scale merely because a node has high observed CPU</td></tr>
+    <tr><td>Node autoprovisioning</td><td>Select/provision capacity under its supported node-pool constraints</td><td>Remove Azure quota, IP limits or SKU shortages</td></tr>
+  </table>
+  <p>AKS node autoprovisioning uses Karpenter-based concepts, but the Azure-specific provider objects and service constraints differ from EKS examples. Do not copy an EC2NodeClass. Check supported combinations, migration requirements and ownership before enabling it. Do not let Cluster Autoscaler, a separate VMSS autoscaler and another capacity controller compete over the same resources.</p>
+  <h2>Read Pending as an explanation</h2>
+  <pre><code>kubectl get hpa -A
+kubectl describe hpa checkout -n payments
+kubectl describe pod example-pending-pod -n payments
+kubectl get events -n payments --sort-by=.metadata.creationTimestamp
+az aks nodepool list -g example-rg --cluster-name example-aks -o yaml
+az aks show -g example-rg -n example-aks --query autoScalerProfile -o yaml</code></pre>
+  <p>Start with the exact scheduling failure: insufficient memory, an untolerated taint, affinity mismatch, topology constraint, Pod slots or volume topology. Then ask whether any eligible pool can produce a node that solves it. Increasing the maximum of a general pool does not help a GPU-only Pod. A 20 GiB request will not fit a node with 16 GiB allocatable memory, even when its observed usage is near zero.</p>
+  <p>The Cluster Autoscaler profile is a cluster-level tuning surface. Scan intervals, scale-down delays and utilization thresholds trade response speed against churn and disruption. Do not reduce every delay to “make it faster.” First establish the service's latency budget, normal burst duration and node provisioning lead time. Inspect the currently supported profile values in the reference.</p>
+  <h2>Lead time is part of reliability</h2>
+  <p>Consider a burst that must be served within 30 seconds. Metrics collection, HPA reconciliation, unschedulable detection, Azure allocation, node bootstrap, image pull and application warmup may take longer. Minimum replicas and warm node capacity buy response time. Scale-to-zero is useful for suitable asynchronous work, not a free answer to a synchronous tail-latency SLO.</p>
+  <p>For queue consumers, estimate sustainable processing rate and oldest-message age, not just queue length. Add consumers only if the downstream database or API can accept the concurrency. Multiple controllers must not independently own replica count for the same target; KEDA creates/manages the HPA it uses.</p>
+  <h2>Cheapest node is not cheapest reliable service</h2>
+  <p>Spot capacity fits interruptible workloads with retries, checkpoints and duplicate-safe processing. Keep a deliberate non-Spot baseline where required. PDBs do not guarantee protection from involuntary infrastructure loss. Include stranded pool capacity, disks, load balancers, NAT, telemetry ingestion and network transfer in cost review. Measure cost per useful request or completed job alongside the error budget.</p>
+  <div class="hand"><h3>Do it by hand: why did twelve replicas not help?</h3><p>HPA grows from 4 to 12 replicas. Eight are Pending. The pool is at its maximum and all eligible nodes lack requested memory. Current CPU is only 30%. What should you change first?</p><details><summary>Separate the loops</summary><p>Confirm the memory requests and pool limits, then check quota, SKU and IP headroom for an approved capacity increase. If requests are inflated, right-size them using evidence rather than deleting them. CPU is irrelevant to the memory fit. Do not tune the HPA interval or keep raising its maximum: the replica decision already happened. Validate both scheduling and end-to-end service performance after mitigation.</p></details></div>
+  <h2>Sources</h2>
+  <ul>
+    <li><a href="../05-hpa.html">Vendor-neutral HPA model</a> and <a href="../06-keda.html">KEDA model</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/cluster-autoscaler">AKS Cluster Autoscaler and profile</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/node-autoprovision">AKS node autoprovisioning and supported configurations</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/spot-node-pool">Spot node-pool interruption behavior</a></li>
+  </ul>
+  <div id="quiz"></div>
+  <script type="application/json" id="quiz-data">[
+    {"q":"HPA requests more replicas, but no eligible node fits them. Which controller decision is still blocked?","options":["Capacity provisioning or placement","Whether to render the HPA object","The application's TLS hostname"],"answer":0,"why":"The replica loop succeeded; scheduling and capacity must now converge."},
+    {"q":"Does low observed node CPU prove Cluster Autoscaler should not scale up?","options":["Yes","No"],"answer":1,"why":"Unschedulable Pod requests and constraints drive scale-up, not observed CPU alone."},
+    {"q":"Which workload best suits Spot-only capacity?","options":["A no-retry synchronous payment path","A quorum database with no recovery plan","Checkpointed, retryable batch work designed for interruption"],"answer":2,"why":"Spot availability and eviction are not controlled by the workload, so interruption must be safe."}
+  ]</script>
+</main>
+<script src="lessons.js"></script><script src="../../course.js"></script>
+</body>
+</html>

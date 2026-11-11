@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>7. Upgrades as a reliability exercise · AKS</title>
+<meta name="description" content="AKS upgrade preflight, supported versions and node OS lifecycle, surge, PDBs, maintenance windows and recovery planning.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="7">
+<main>
+  <span class="tag">AKS / Lesson 7</span>
+  <h1>Upgrades as a reliability exercise</h1>
+  <p class="lead">An upgrade is a controlled failure test: nodes disappear, Pods move, IPs are allocated and old API assumptions are exercised. Passing it requires spare capacity and correct application behavior, not just a scheduled maintenance window.</p>
+  <div class="goal"><h3>By the end you can…</h3>Build a preflight checklist, calculate surge, diagnose blocked drains and describe recovery without inventing an unsupported downgrade.</div>
+  <h2>There is more than one lifecycle</h2>
+  <p>Track Kubernetes control-plane and pool versions, node image versions, OS distribution support, CSI/networking components and ingress/add-on lifecycles separately. A supported Kubernetes minor does not make an end-of-life node OS safe. Read the current AKS release tracker and OS retirement notices; do not pin a production plan to a tutorial's version.</p>
+  <p>Query the actual upgrade path. Standard non-LTS upgrades normally proceed by consecutive minor versions; LTS has its own supported paths. Control-plane/pool version skew is constrained by AKS support policy. Manual staged control-plane/pool upgrades and cluster autoupgrade have different constraints; choose a supported workflow rather than combining recipes.</p>
+  <pre><code>az aks get-upgrades -g example-rg -n example-aks -o table
+az aks nodepool list -g example-rg --cluster-name example-aks \
+  --query '[].{pool:name,version:orchestratorVersion,image:nodeImageVersion,os:osSKU,upgrade:upgradeSettings}' -o yaml
+kubectl get pdb -A
+kubectl get pods -A -o wide
+kubectl get events -A --sort-by=.metadata.creationTimestamp</code></pre>
+  <h2>A safe sequence</h2>
+  <ol>
+    <li><strong>Compatibility:</strong> inspect removed API use in manifests, live clients and admission webhooks. Validate charts, CRDs, CSI, policy and ingress against the target release.</li>
+    <li><strong>Recovery:</strong> prove data backups and a rebuild or alternate-cluster path. A manifest backup alone is not data recovery.</li>
+    <li><strong>Capacity:</strong> reserve quota, regional SKU capacity where applicable, subnet IPs, overlay Pod blocks and eligible scheduling headroom for surge.</li>
+    <li><strong>Disruption:</strong> inspect PDB allowance, replica distribution, termination grace periods, readiness, shutdown behavior and startup time under load.</li>
+    <li><strong>Canary:</strong> rehearse in a representative non-production environment, then stage supported pool updates. A new canary pool tests scheduling/runtime compatibility, but does not reproduce every in-place drain behavior.</li>
+    <li><strong>Observe and gate:</strong> compare application error rate, latency, restarts, DNS and dependency health against explicit stop criteria before expanding rollout.</li>
+  </ol>
+  <h2>Surge and PDBs solve different problems</h2>
+  <p>Surge adds temporary nodes during a rolling pool upgrade. For a percentage, fractional nodes round up: 33% of 10 nodes requires 4 surge nodes. Those nodes need both compute and network headroom. Extra nodes do not make a single-replica workload with a strict PDB evictable.</p>
+  <p>A PDB limits voluntary disruptions through the eviction API. Three healthy replicas with <code>minAvailable: 2</code> permit one disruption; if one replica is already unhealthy, allowance can fall to zero. A PDB is not a replica controller and does not protect against every involuntary failure. Read <code>disruptionsAllowed</code> and the exact blocking event before changing anything.</p>
+  <div class="callout"><h3>Do not “fix” the upgrade by deleting every PDB</h3><p>Restore healthy replicas, correct a mistaken budget through the application owner, or use a reviewed maintenance plan. A forceful bypass can convert a blocked change into a customer outage. Drain timeout and soak settings are safeguards, not proof the application can tolerate eviction.</p></div>
+  <h2>Windows and recovery are explicit policies</h2>
+  <p>Cluster Kubernetes autoupgrade and node OS/image update policies are distinct. Planned maintenance configurations determine allowed scheduling windows for their relevant operations; they are not a guarantee that every operation completes within that window or that no exceptional service maintenance occurs outside it. Check the current contract and monitor actual execution.</p>
+  <p>AKS does not provide a general “downgrade the cluster” rollback. Recovery may mean rolling back application configuration, moving workloads to a compatible pool where supported, rebuilding a cluster or failing over to a tested alternate environment. Each depends on data compatibility, DNS and available capacity. Decide the recovery path before starting.</p>
+  <div class="hand"><h3>Do it by hand: a perfectly healthy single replica</h3><p>A service has one Ready replica, <code>minAvailable: 1</code> and ample surge capacity. Why is its node drain blocked?</p><details><summary>Explain the contract</summary><p>Evicting the only replica would violate the budget. Add and verify another replica if the application supports it, or coordinate an accepted maintenance interruption and a reviewed budget change. A larger VM does not create another application replica; the PDB is correctly exposing a design decision.</p></details></div>
+  <h2>Sources</h2>
+  <ul>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/upgrade-aks-cluster">Supported upgrade workflows and CLI inspection</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/upgrade-aks-node-pools-rolling">Pool rolling upgrades, surge, drain and soak</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/supported-kubernetes-versions">Version support, skew and upgrade rules</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/planned-maintenance">Planned maintenance scope</a> and <a href="https://learn.microsoft.com/en-us/azure/aks/auto-upgrade-node-os-image">node OS update channels</a></li>
+    <li><a href="https://kubernetes.io/docs/tasks/run-application/configure-pdb/">PDB behavior</a></li>
+  </ul>
+  <div id="quiz"></div>
+  <script type="application/json" id="quiz-data">[
+    {"q":"What is 33% maxSurge on a 10-node pool?","options":["3 nodes","4 nodes","Exactly 3.3 virtual machines"],"answer":1,"why":"A fractional surge node count rounds up; budget for four additional nodes."},
+    {"q":"A PDB permits zero disruptions. Does adding surge nodes necessarily fix the drain?","options":["Yes","No"],"answer":1,"why":"The PDB counts application availability. Spare nodes alone do not add healthy replicas."},
+    {"q":"Which is a sound recovery assumption?","options":["A general AKS downgrade is always available","A maintenance window guarantees zero disruption","A tested rebuild or failover path may be required"],"answer":2,"why":"Plan recovery explicitly instead of depending on an unsupported downgrade."}
+  ]</script>
+</main>
+<script src="lessons.js"></script><script src="../../course.js"></script>
+</body>
+</html>

@@ -1,12 +1,10 @@
-/* Shared theme for every course on the site.
-   Direction: an instrument panel you can read. Blueprint paper, navy ink, brass
-   signal accent. Serif for prose, monospace for anything measured.
-   Radius encodes kind: data surfaces are near-sharp, things you touch are rounded. */
+/* Shared handbook theme. System fonts keep GitHub Pages self-contained. */
 
 :root{
-  --paper:#eef1f6; --card:#fafcfe; --ink:#16202e; --muted:#5a6a7d;
-  --line:#c9d4e2; --line-strong:#9fb0c4; --grid:rgba(29,90,122,.13);
-  --signal:#8a5805; --signal-fill:#b4740c; --signal-soft:#f7efdd; --on-signal:#fff;
+  color-scheme:light;
+  --paper:#f5f7fa; --card:#fff; --ink:#142b41; --muted:#526679;
+  --line:#dce4ec; --line-strong:#9fb4c5; --grid:rgba(29,90,122,.08);
+  --signal:#08766d; --signal-fill:#08766d; --signal-soft:#e3f3ef; --on-signal:#fff;
   --note:#1d5a7a; --note-soft:#e5eef4;
   --good:#136b3c; --good-soft:#e2f1e7;
   --bad:#a81f1f; --bad-soft:#fbe9e9;
@@ -14,14 +12,15 @@
   --code:#e4eaf2;
   --shadow:0 1px 2px rgba(22,32,46,.05),0 6px 18px rgba(22,32,46,.06);
   --shadow-lift:0 2px 4px rgba(22,32,46,.07),0 12px 28px rgba(22,32,46,.11);
-  --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+  --serif:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
-  --r-panel:3px; --r-control:7px;
+  --r-panel:14px; --r-control:8px;
 }
 @media(prefers-color-scheme:dark){:root{
-  --paper:#101620; --card:#18202c; --ink:#e3e9f0; --muted:#93a2b5;
+  color-scheme:dark;
+  --paper:#0e1925; --card:#152433; --ink:#e3edf5; --muted:#a3b6c8;
   --line:#2c3747; --line-strong:#49596d; --grid:rgba(104,184,216,.11);
-  --signal:#e0a63c; --signal-fill:#e0a63c; --signal-soft:#241d10; --on-signal:#101620;
+  --signal:#67d8c3; --signal-fill:#67d8c3; --signal-soft:#12332f; --on-signal:#0e1925;
   --note:#68b8d8; --note-soft:#10222b;
   --good:#5bc98a; --good-soft:#102419;
   --bad:#f08a8a; --bad-soft:#2a1618;
@@ -33,11 +32,11 @@
 
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
-body{margin:0;background:var(--paper);color:var(--ink);font:18px/1.72 var(--serif)}
-main{max-width:760px;margin:0 auto;padding:30px 22px 90px}
+body{margin:0;background:var(--paper);color:var(--ink);font:18px/1.72 var(--serif);overflow-wrap:anywhere}
+main{max-width:850px;margin:0 auto;padding:48px 30px 90px;min-width:0}
 p,li{max-width:72ch}
 
-h1{font-size:2.35rem;line-height:1.12;letter-spacing:-.015em;margin:.35em 0 .35em;font-weight:700}
+h1{font-size:2.65rem;line-height:1.14;letter-spacing:-.04em;margin:.35em 0 .5em;font-weight:750}
 h2{font-size:1.5rem;line-height:1.25;letter-spacing:-.01em;margin:2.4em 0 .5em;font-weight:700}
 h3{font-size:1.1rem;margin:1.5em 0 .3em;font-weight:700}
 /* sticky header would otherwise swallow the heading you jumped to */
@@ -52,15 +51,15 @@ a:hover{text-decoration-thickness:.12em}
 /* measured things are monospace: labels, code, numbers, chart text */
 .tag{display:inline-block;font:600 .8rem/1.4 var(--mono);color:var(--signal);margin-bottom:.2em}
 code,pre,kbd{font-family:var(--mono);font-size:.88em}
-code{background:var(--code);padding:.1em .35em;border-radius:3px}
+code{background:var(--code);padding:.1em .35em;border-radius:3px;overflow-wrap:anywhere}
 pre{background:var(--code);padding:15px 17px;border-radius:var(--r-panel);overflow-x:auto;line-height:1.55;border-left:3px solid var(--line-strong)}
-pre code{background:none;padding:0}
+pre code{background:none;padding:0;overflow-wrap:normal}
 .big{font:700 2.1rem/1.1 var(--mono);font-variant-numeric:tabular-nums}
 .muted{color:var(--muted)}
 .ok{color:var(--good)}.err{color:var(--bad)}
 
 /* tables are readouts, not prose */
-table{border-collapse:collapse;width:100%;margin:16px 0;font:.87rem/1.5 var(--mono);font-variant-numeric:tabular-nums}
+table{border-collapse:collapse;width:100%;margin:16px 0;font:.87rem/1.5 var(--mono);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 /* works for both column-header and row-header tables, so no ragged part-width rules */
 th,td{text-align:left;padding:7px 11px 7px 0;border-bottom:1px solid var(--line);vertical-align:top}
 th{color:var(--signal);font-weight:700}
@@ -95,12 +94,13 @@ button.right,button.wrong{opacity:1;border-color:transparent;color:var(--on-sign
 button.right{background:var(--good)}
 button.wrong{background:var(--bad)}
 button:disabled{opacity:.4;cursor:not-allowed}
-input,select,textarea{background:var(--paper);border:1px solid var(--line-strong);border-radius:var(--r-control);padding:6px 10px;font-family:var(--mono);font-size:.9rem}
+input,select,textarea{background:var(--paper);border:1px solid var(--line-strong);border-radius:var(--r-control);padding:6px 10px;font-family:var(--mono);font-size:.9rem;max-width:100%}
 textarea{width:100%;min-height:72px}
 .row{display:flex;flex-wrap:wrap;gap:11px;align-items:center;margin:10px 0}
-.row label{font:.85rem/1.4 var(--mono);color:var(--muted)}
+.row label{font:.85rem/1.4 var(--mono);color:var(--muted);min-width:0;max-width:100%}
 .pill{display:inline-block;padding:3px 11px;border-radius:99px;background:var(--code);font:.84rem var(--mono);margin:2px}
-.grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;align-items:start}
+.grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:20px;align-items:stretch}
+.grid3>.card{margin:0}
 .card{padding:14px 16px;transition:transform .16s,box-shadow .16s,border-color .16s}
 .card h3{margin-top:.2em}
 /* a card that leads somewhere is worth lifting; a card of plain text is not */
@@ -124,8 +124,8 @@ textarea{width:100%;min-height:72px}
 .opt{display:block;width:100%;text-align:left;background:var(--paper);color:var(--ink);
   border:1px solid var(--line);margin:7px 0;padding:10px 13px;font-weight:400;font-size:1rem}
 .opt:hover:not(:disabled){border-color:var(--signal);background:var(--card)}
-.opt.right{background:var(--good-soft);border-color:var(--good)}
-.opt.wrong{background:var(--bad-soft);border-color:var(--bad)}
+.opt.right{background:var(--good-soft);border-color:var(--good);color:var(--ink)}
+.opt.wrong{background:var(--bad-soft);border-color:var(--bad);color:var(--ink)}
 .opt:disabled{opacity:1;cursor:default}
 .why{margin-top:9px;font-size:.95rem;color:var(--muted)}
 .score{font-size:1.15rem;font-weight:700;margin:14px 0}
@@ -138,14 +138,95 @@ textarea{width:100%;min-height:72px}
 .nav a.next.ready{background:var(--signal);color:var(--on-signal);border-color:var(--signal);font-weight:700}
 
 /* lesson index */
-.lessons{list-style:none;padding:0;display:grid;gap:11px}
+.lessons{list-style:none;padding:0;display:grid;grid-template-columns:minmax(0,1fr);gap:11px}
 .lessons a{display:flex;gap:15px;align-items:center;padding:15px 17px;border:1px solid var(--line);
   border-radius:var(--r-panel);background:var(--card);text-decoration:none;color:var(--ink);
   box-shadow:var(--shadow);transition:transform .16s,box-shadow .16s,border-color .16s}
 .lessons a:hover{border-color:var(--signal);transform:translateY(-2px);box-shadow:var(--shadow-lift)}
+.lessons a>span{min-width:0}
 .lessons .n{width:34px;height:34px;border-radius:50%;background:var(--signal-soft);color:var(--signal);
   display:grid;place-items:center;font:700 .95rem var(--mono);flex:none}
 .lessons .done .n{background:var(--good);color:var(--on-signal)}
+
+.skip-link{position:fixed;top:-100px;left:16px;z-index:100;background:var(--card);padding:10px 18px;border:2px solid var(--signal)}
+.skip-link:focus{top:12px}
+.course-summary{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px;background:var(--note-soft);border:1px solid var(--line);border-radius:var(--r-panel);padding:16px 20px;margin:24px 0}
+.course-outline{max-width:790px;margin:22px auto 0;padding:0 20px;font-size:.88rem}
+.course-outline details{border:1px solid var(--line);border-radius:var(--r-panel);padding:12px 16px;background:var(--card)}
+.course-outline ol{padding-left:22px;margin-bottom:0}
+.course-outline li{padding:4px 0}
+.course-outline a{color:var(--muted);text-decoration:none}
+.course-outline a[aria-current]{color:var(--signal);font-weight:700}
+.storage-notice{margin:12px 20px;color:var(--bad);font-size:.9rem}
+
+/* Catalog */
+.catalog main{max-width:1240px;padding-top:0}
+.site-header{max-width:1240px;margin:auto;padding:26px 30px;display:flex;justify-content:space-between;align-items:center;gap:24px;font-size:.9rem}
+.brand{display:flex;align-items:center;gap:12px;color:var(--ink);font-weight:750;text-decoration:none}
+.brand-mark{background:var(--ink);color:var(--card);border-radius:10px;padding:4px 10px;font:700 1.15rem var(--mono)}
+.site-header nav{display:flex;gap:26px;flex-wrap:wrap}
+.site-header nav a{color:var(--muted);text-decoration:none}
+.hero{display:grid;grid-template-columns:1.25fr 1fr;gap:64px;align-items:center;padding:64px 0 56px}
+.eyebrow{display:block;color:var(--signal);font:600 .72rem/1.6 var(--mono);text-transform:uppercase;letter-spacing:.1em}
+.hero h1{font-size:clamp(2.6rem,4.2vw,4.3rem);margin:22px 0;letter-spacing:-.055em;line-height:1.08}
+.hero h1 em{color:var(--signal);font-style:normal}
+.hero .lead{font-size:1.08rem;max-width:49ch}
+.hero-actions{display:flex;gap:22px;align-items:center;flex-wrap:wrap;margin-top:30px;font-size:.9rem}
+.button-link{display:inline-block;background:var(--signal);color:var(--on-signal);border-radius:var(--r-control);padding:12px 20px;font-weight:700;text-decoration:none}
+.hero-note{font-size:.78rem;color:var(--muted);margin-top:22px}
+.system-map{background:#102a40;color:#e3edf5;padding:28px;border-radius:22px;box-shadow:0 20px 50px #102a4026;background-image:radial-gradient(#ffffff16 1px,transparent 1px);background-size:18px 18px;transform:rotate(1deg)}
+.map-heading{display:flex;align-items:center;gap:8px;color:#a8c0d0;font:500 .66rem var(--mono);letter-spacing:.09em;margin-bottom:26px}
+.status-dot{height:7px;width:7px;background:#67d8c3;border-radius:50%}
+.map-node{display:flex;align-items:center;gap:16px;border:1px solid #375167;background:#17354c;border-radius:10px;padding:16px}
+.map-node>span{font:.8rem var(--mono);color:#92b0c5}
+.map-node strong{display:block;font-size:1rem}
+.map-node small{display:block;color:#b5c8d6;font-size:.75rem}
+.map-node b{margin-left:auto;color:#67d8c3}
+.map-node-accent{border-color:#50bbaa;background:#123d40}
+.map-connector{height:20px;border-left:1px dashed #6a8a9e;margin-left:25px}
+.map-footer{font:.66rem var(--mono);color:#b5c8d6;margin-top:24px;text-align:center}
+.catalog-strip{display:flex;flex-wrap:wrap;justify-content:space-between;gap:18px;border-block:1px solid var(--line);padding:20px 0;color:var(--muted);font-size:.8rem}
+.catalog-strip strong{color:var(--ink);font-size:1.2rem;margin-right:6px}
+.section-heading{display:flex;justify-content:space-between;align-items:end;gap:32px;margin:68px 0 26px}
+.section-heading h2{margin:10px 0 0;font-size:1.9rem;letter-spacing:-.04em}
+.section-heading>p{max-width:40ch;font-size:.9rem;color:var(--muted);margin:0}
+.course-card{display:flex;flex-direction:column;padding:25px;box-shadow:none}
+.card-top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:24px}
+.card-top .tag{font-size:.7rem;white-space:nowrap;color:var(--muted)}
+.course-symbol{display:grid;place-items:center;min-width:50px;height:44px;background:var(--note-soft);border:1px solid var(--line);border-radius:10px;font:700 .85rem var(--mono);color:var(--note)}
+.course-card h3{font-size:1.3rem;letter-spacing:-.03em}
+.course-card h3 a{color:var(--ink);text-decoration:none}
+.course-card p{color:var(--muted);font-size:.92rem;line-height:1.7;margin-bottom:28px}
+.card-bottom{margin-top:auto;border-top:1px solid var(--line);padding-top:16px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;font-size:.75rem}
+.card-bottom>span{color:var(--muted)}
+.card-bottom a{text-decoration:none;font-weight:700}
+.deep-dive{display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;text-decoration:none;border:1px solid var(--line);background:var(--note-soft);padding:20px 24px;border-radius:var(--r-panel);margin-top:20px;font-size:.85rem}
+.deep-dive strong{color:var(--ink)}
+.deep-dive>span:last-child{color:var(--muted)}
+.platform-label{font:600 .65rem var(--mono);letter-spacing:.06em;color:var(--muted)}
+.platform-card{border-top:3px solid var(--signal)}
+.planned{border-style:dashed;background:transparent}
+.roadmap{border-top:1px solid var(--line);margin-top:68px;padding-top:40px}
+.roadmap h2{margin-top:12px;font-size:1.9rem;letter-spacing:-.04em}
+.roadmap p{font-size:.9rem;color:var(--muted)}
+.roadmap .grid3{gap:36px}
+.site-footer{display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-top:64px;border-top:1px solid var(--line);padding-top:26px;font-size:.8rem}
+@media(min-width:1300px){
+  body[data-lesson] main{margin-left:max(280px,calc((100vw - 850px)/2))}
+  .course-outline{position:fixed;top:82px;left:20px;width:245px;max-height:calc(100vh - 110px);overflow-y:auto;margin:0;padding:0}
+}
+@media(max-width:850px){
+  .hero{grid-template-columns:1fr;gap:32px;padding:36px 0}
+  .hero .lead{max-width:65ch}
+  .system-map{max-width:520px;width:100%;transform:none}
+  .section-heading{align-items:start;flex-direction:column;gap:16px}
+  .section-heading>p{max-width:65ch}
+}
+@media print{
+  .top,.course-outline,.skip-link,.nav,.site-header{display:none}
+  body[data-lesson] main{margin:auto;max-width:none}
+  body{background:white;color:black}
+}
 
 /* syntax-tree listing (code analysis course) */
 .asttree{font:.82rem/1.65 var(--mono);margin:14px 0;overflow-x:auto;padding:10px 0}
@@ -171,4 +252,17 @@ svg .line{stroke:var(--muted);stroke-width:1.5;fill:none}
   .top{gap:10px;padding:9px 16px}
   .top a{font-size:.85rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:42%}
   .top .bar{min-width:50px}
+  .top{flex-wrap:wrap}
+  .top .bar{order:1;flex-basis:100%}
+  .top span{white-space:normal}
+  .site-header{padding:18px;align-items:start;flex-direction:column;gap:16px}
+  .site-header nav{gap:22px}
+  .catalog main{padding-inline:18px}
+  .hero h1{font-size:2.7rem}
+  .system-map{padding:20px}
+  .catalog-strip{display:grid;grid-template-columns:1fr 1fr}
+  .section-heading{margin-top:46px}
+  .section-heading h2,.roadmap h2{font-size:1.65rem}
+  .course-card{padding:22px}
+  .card-top{margin-bottom:16px}
 }

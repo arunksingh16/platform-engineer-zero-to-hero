@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>9. Observe, triage, improve · AKS</title>
+<meta name="description" content="AKS service SLIs, managed Prometheus, platform logs, incident triage and a production-readiness checklist.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="9">
+<main>
+  <span class="tag">AKS / Lesson 9</span>
+  <h1>Observe, triage, improve</h1>
+  <p class="lead">The senior operator's advantage is not remembering more commands. It is reducing uncertainty quickly without increasing the blast radius. Start with customer impact, localize the failed boundary and preserve evidence before changing the system.</p>
+  <div class="goal"><h3>By the end you can…</h3>Build a layered signal map, run a bounded incident investigation and challenge a production-readiness claim with evidence.</div>
+  <h2>Observe outcomes and causes separately</h2>
+  <table>
+    <tr><th>Layer</th><th>Signals</th><th>Typical source</th></tr>
+    <tr><td>Customer</td><td>Successful requests, latency, queue age, correct business outcomes</td><td>Application instrumentation and synthetic checks</td></tr>
+    <tr><td>Workload</td><td>Ready replicas, restarts, OOMs, throttling, request saturation</td><td>Prometheus metrics, events, container logs and traces</td></tr>
+    <tr><td>Cluster</td><td>Pending Pods, node pressure, DNS, CSI errors and API failures</td><td>Platform metrics, Kubernetes events and configured control-plane diagnostic logs</td></tr>
+    <tr><td>Azure</td><td>Resource operations, quota errors, network drops, egress and service health</td><td>Activity Log, resource metrics, network diagnostics and service health</td></tr>
+  </table>
+  <p>Azure Monitor managed service for Prometheus, managed Grafana and Container Insights solve related but distinct needs. Prometheus stores time-series metrics; logs and inventory depend on configured collection and workspaces. A Grafana workspace does not itself create scrape coverage. Control-plane diagnostic categories must be enabled and routed to a destination; audit logging is not the same as the Azure Activity Log.</p>
+  <p>Choose retention, cardinality budgets, sampling and access controls before enabling every category. Audit logs and container output can contain sensitive data. Filter deliberately, restrict access and do not put tokens, raw customer payloads or unbounded request IDs into metric labels. Monitor the monitoring pipeline: missing telemetry is not a zero error rate.</p>
+  <h2>A useful first ten minutes</h2>
+  <ol>
+    <li><strong>Establish impact:</strong> affected service, users, regions, error and latency SLIs, onset time and current error-budget burn. Assign incident coordination and a change log.</li>
+    <li><strong>Bound scope:</strong> one namespace, node, pool, zone, cluster or shared external dependency? Compare healthy and failing paths.</li>
+    <li><strong>Correlate changes:</strong> release, pool operation, policy, identity, route, DNS, certificate or quota changes. Correlation is a hypothesis, not proof.</li>
+    <li><strong>Collect narrow evidence:</strong> events, Pod status, controller conditions, Azure operation error and the relevant dependency's signal. Record timestamps and request IDs without secrets.</li>
+    <li><strong>Mitigate with an owner:</strong> roll back the evidenced change, add eligible capacity or shift traffic using a tested procedure. Define an observation window and stop condition.</li>
+    <li><strong>Verify the outcome:</strong> customer SLIs and consistency, not only green Pods. Preserve the timeline for follow-up.</li>
+  </ol>
+  <pre><code>kubectl config current-context
+kubectl get nodes
+kubectl get pods -n payments -o wide
+kubectl get events -n payments --sort-by=.metadata.creationTimestamp
+kubectl describe pod example-pod -n payments
+az aks show -g example-rg -n example-aks \
+  --query '{state:provisioningState,power:powerState}' -o yaml</code></pre>
+  <p>Logs, events and object listings need different permissions and retention. “No events” after the retention window is not proof nothing failed. Capture relevant evidence early and redact it before sharing outside the approved incident channel.</p>
+  <h2>Symptom-driven playbook</h2>
+  <table>
+    <tr><th>Symptom</th><th>First boundary to inspect</th><th>Avoid</th></tr>
+    <tr><td>Pending Pods</td><td>Scheduler event → eligible pool → autoscaler → Azure quota/IP/SKU</td><td>Increasing replicas without capacity</td></tr>
+    <tr><td>ImagePullBackOff</td><td>Exact image/tag → DNS/network → registry permission for the node path</td><td>Giving the application subscription Owner</td></tr>
+    <tr><td>Azure resource access fails</td><td>DNS/TCP → token exchange → resource authorization/error code</td><td>Rotating unrelated credentials blindly</td></tr>
+    <tr><td>Upgrade stuck</td><td>Azure error → surge capacity → PDB allowance → drain/mount event</td><td>Deleting every PDB or forcing data detaches</td></tr>
+    <tr><td>502/503/504</td><td>Frontend/controller → endpoints → readiness → application/dependency latency</td><td>Extending all timeouts and retry counts</td></tr>
+  </table>
+  <h2>Production-readiness review</h2>
+  <ul>
+    <li><strong>Ownership:</strong> named owners for cluster, applications, network, identity and data, with an escalation/support path.</li>
+    <li><strong>Resilience:</strong> measured failure headroom, eligible zone capacity, application placement and dependency failure domains.</li>
+    <li><strong>Identity:</strong> least-privilege roles, tested break-glass, workload federation and approved policy enforcement.</li>
+    <li><strong>Network:</strong> maximum/surge address budget, private DNS path, supported ingress, egress dependencies and connection capacity.</li>
+    <li><strong>Lifecycle:</strong> supported Kubernetes/OS/add-ons, upgrade rehearsal, drain-safe workloads and recovery gates.</li>
+    <li><strong>Recovery:</strong> recent isolated restore drill with measured RPO/RTO, key access and data validation.</li>
+    <li><strong>Operations:</strong> SLO-based alerts, telemetry coverage, cost ownership and runbooks exercised by someone other than their author.</li>
+  </ul>
+  <div class="hand"><h3>Capstone: the burst during maintenance</h3><p>A pool upgrade begins. Queue age rises, HPA grows replicas and new Pods stay Pending. One node is draining; a strict PDB blocks another. The subnet has no room for more surge nodes. Write a mitigation order.</p><details><summary>A defensible response</summary><p>Establish customer impact and processing backlog, record the maintenance operation and pause further rollout through the supported workflow where possible. Do not launch conflicting AKS writes or delete PDBs. Read Pending and drain events; distinguish replica health from address capacity. Reduce incoming work or route it to a tested healthy path if possible. Restore eligible compute/IP headroom through the network and platform owners, or execute the approved alternate-capacity plan. Validate consumers and downstream capacity before increasing concurrency. Resume maintenance only after the pool and queue SLIs recover. Follow up with peak-IP budgeting, maintenance load tests and a reviewed disruption design.</p></details></div>
+  <h2>Sources and continued learning</h2>
+  <ul>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/monitor-aks">AKS monitoring data and collection</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/azure-monitor/containers/kubernetes-monitoring-enable">Azure Monitor Kubernetes monitoring setup</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/architecture/reference-architectures/containers/aks/baseline-aks">AKS baseline architecture</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/well-architected/service-guides/azure-kubernetes-service">Well-Architected AKS service guide</a></li>
+    <li><a href="../../Observability/09-slos.html">SLIs, SLOs and burn-rate alerting</a></li>
+  </ul>
+  <p class="muted">Next: compare this ownership model with <a href="../openshift/index.html">OpenShift's operator-managed platform</a>. The Kubernetes primitives stay familiar; the supported control surfaces and escalation paths change.</p>
+  <div id="quiz"></div>
+  <script type="application/json" id="quiz-data">[
+    {"q":"What is the best initial incident success criterion?","options":["Every node is Ready","The portal is green","Customer-facing SLIs recover and data remains correct"],"answer":2,"why":"Infrastructure health helps explain the service outcome; it is not the outcome itself."},
+    {"q":"Why is a request ID usually a poor Prometheus label?","options":["It creates unbounded high cardinality and may expose sensitive correlation data","Prometheus cannot store strings at all","It reduces the number of time series"],"answer":0,"why":"Keep bounded metric dimensions; use appropriately protected logs or traces for per-request investigation."},
+    {"q":"No events remain for yesterday's incident. What can you conclude?","options":["Nothing failed","The API server was never reachable","Evidence may have expired; check retained telemetry and improve collection"],"answer":2,"why":"Missing evidence after a retention window is not evidence of healthy operation."}
+  ]</script>
+</main>
+<script src="lessons.js"></script><script src="../../course.js"></script>
+</body>
+</html>

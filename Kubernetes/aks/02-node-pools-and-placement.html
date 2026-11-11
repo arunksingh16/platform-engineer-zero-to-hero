@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>2. Node pools and failure domains · AKS</title>
+<meta name="description" content="Design AKS system and user pools with zones, taints, allocatable capacity and upgrade headroom.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="2">
+<main>
+  <span class="tag">AKS / Lesson 2</span>
+  <h1>Node pools and failure domains</h1>
+  <p class="lead">A node pool is a lifecycle and placement boundary. Design it around what must fail, scale and upgrade together, not merely around a VM size.</p>
+  <div class="goal"><h3>By the end you can…</h3>Separate platform capacity from tenant capacity, calculate failure headroom and explain why three replicas can still be one failure away from an outage.</div>
+  <h2>System is a mode, not complete isolation</h2>
+  <p>AKS requires a system pool to host critical platform Pods. User pools host application workloads. A system pool label expresses a platform role, but is not by itself a fence that prevents applications landing there. Where appropriate, use the supported <code>CriticalAddonsOnly=true:NoSchedule</code> taint on dedicated system capacity, and confirm the necessary system Pods tolerate it. Do not spread broad tolerations across tenant charts to silence Pending alerts.</p>
+  <p>Keep platform capacity resilient and appropriately sized; a single fragile system node can make DNS and metrics unreliable even when application nodes are idle. Check current system-pool VM, OS and count constraints in the source documentation rather than assuming any SKU is supported.</p>
+  <h2>Count allocatable, not advertised cores</h2>
+  <p>Kubelet and OS reservations, DaemonSets and eviction thresholds reduce usable capacity. The scheduler accounts for requests and placement constraints; <code>kubectl top</code> reports observed usage and cannot tell you whether another Pod fits. Include DaemonSet overhead on each new node when estimating capacity.</p>
+  <pre><code>az aks nodepool list -g example-rg --cluster-name example-aks -o table
+kubectl get nodes -L agentpool,kubernetes.azure.com/mode,topology.kubernetes.io/zone
+kubectl describe node example-node
+kubectl get pods -A --field-selector spec.nodeName=example-node
+kubectl get pdb -A</code></pre>
+  <h2>Zones do not place application replicas for you</h2>
+  <p>Choose zones and pool topology deliberately, then use topology spread constraints or anti-affinity to distribute replicas. Node diversity is not Pod diversity. A multi-zone pool does not guarantee that the scheduler places every Deployment across zones, nor that replacement capacity will exist in the required zone during an incident.</p>
+  <p>A zonal persistent disk can constrain a Pod to the disk's zone. A hard spread rule can prevent scheduling when a zone has no capacity. Understand both availability goals and degraded-mode behavior: should the service run fewer replicas, relax spread under an approved policy, or fail closed? Test the actual rules, not a diagram.</p>
+  <table>
+    <tr><th>Pool boundary</th><th>Reason</th><th>Trade-off</th></tr>
+    <tr><td>System</td><td>Protect DNS and platform components</td><td>Reserved capacity costs money</td></tr>
+    <tr><td>General application</td><td>Common runtime and lifecycle</td><td>Shared noisy-neighbor risk</td></tr>
+    <tr><td>GPU / high-memory / Windows</td><td>Different hardware or OS requirements</td><td>Scarce SKUs, separate images and maintenance</td></tr>
+    <tr><td>Spot</td><td>Interruptible, retryable work</td><td>Eviction and replacement capacity are not controllable</td></tr>
+  </table>
+  <div class="callout"><h3>Upgrade capacity is production capacity</h3><p>During a drain, requests must fit somewhere else. A toleration only permits placement; it does not select a pool or reserve room. Use affinity/selectors when placement is required, and budget spare capacity in the same eligible failure domain. Too many tiny pools can strand capacity and complicate every upgrade.</p></div>
+  <h2>Do it by hand: can this pool lose a node?</h2>
+  <div class="hand"><p>Four nodes each provide 6 allocatable CPU after reservations. DaemonSets request 1 CPU per node. Applications request 18 CPU in total. Assume memory, Pod slots and placement rules are not limiting. Can all application Pods fit after one node is lost?</p><details><summary>Calculate the headroom</summary><p>No. Four nodes provide 4 × (6 − 1) = 20 CPU for applications. Three provide 15 CPU, less than the requested 18. Low observed CPU does not change scheduler accounting. Reduce justified requests, add capacity or change the availability design before draining. Then repeat the calculation for memory, Pod slots and eligible zones; aggregate CPU alone is not proof of fit.</p></details></div>
+  <h2>Sources</h2>
+  <ul>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/use-system-pools">System pools and dedicated system-node taints</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/availability-zones">AKS availability zones</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/node-resource-reservations">Node resource reservations</a></li>
+    <li><a href="https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/">Pod topology spread semantics</a></li>
+  </ul>
+  <div id="quiz"></div>
+  <script type="application/json" id="quiz-data">[
+    {"q":"A system pool label alone prevents tenant Pods from landing there.","options":["True","False"],"answer":1,"why":"Pool mode is not a complete scheduling fence. Use supported taints and review tenant tolerations."},
+    {"q":"Which quantity determines whether the scheduler can fit another Pod?","options":["Current CPU usage only","VM advertised cores only","Requests, allocatable resources and placement constraints"],"answer":2,"why":"Usage and schedulable capacity are different measurements."},
+    {"q":"A Deployment has three replicas on a multi-zone pool. What still needs verification?","options":["Actual Pod placement and dependency failure domains","Nothing: the replicas must be in separate zones","Only the resource group name"],"answer":0,"why":"The pool supplies possible placement; workload rules and dependencies determine real resilience."}
+  ]</script>
+</main>
+<script src="lessons.js"></script><script src="../../course.js"></script>
+</body>
+</html>

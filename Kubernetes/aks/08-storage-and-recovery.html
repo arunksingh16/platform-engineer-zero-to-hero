@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>8. Storage and tested recovery · AKS</title>
+<meta name="description" content="AKS CSI storage, Azure Disk and Files trade-offs, zone topology, snapshots, backups and measured recovery objectives.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="8">
+<main>
+  <span class="tag">AKS / Lesson 8</span>
+  <h1>Storage and tested recovery</h1>
+  <p class="lead">A Pod can be rescheduled. Its data may be tied to a zone, an attachment, a key or a consistency point. Treat recovery as a data workflow, not a YAML replay.</p>
+  <div class="goal"><h3>By the end you can…</h3>Choose storage from workload semantics, diagnose a topology-bound claim and design a restore test with measurable RPO and RTO.</div>
+  <h2>Choose semantics before a StorageClass</h2>
+  <table>
+    <tr><th>Option</th><th>Typical fit</th><th>Questions to resolve</th></tr>
+    <tr><td>Azure Disk CSI</td><td>Block storage for an appropriate single-writer workload</td><td>SKU, latency/IOPS, node attachment limits, zone and redundancy, filesystem and recovery</td></tr>
+    <tr><td>Azure Files CSI</td><td>Shared filesystem when the application supports its protocol and behavior</td><td>SMB/NFS, throughput, permissions, locking, identity and network reachability</td></tr>
+    <tr><td>Managed database / object service</td><td>External data lifecycle and service-specific capabilities</td><td>Data-plane access, failover semantics, backup contract, latency and cost</td></tr>
+    <tr><td>Ephemeral local/container storage</td><td>Disposable cache or scratch data</td><td>Loss on replacement, eviction thresholds and rebuild cost</td></tr>
+  </table>
+  <p>“ReadWriteOnce” means read-write attachment by a single node, not necessarily a single Pod. Several Pods on that node can still access such a volume. Where supported and required, ReadWriteOncePod provides single-Pod semantics. Neither mode makes the database application safe for concurrent writers. Shared filesystem support is not permission to run an unmodified single-writer database on multiple replicas.</p>
+  <h2>Binding is also scheduling</h2>
+  <p>Inspect <code>volumeBindingMode</code>. With <code>WaitForFirstConsumer</code>, provisioning can account for the selected Pod's topology instead of binding a volume before placement constraints are known. A zonal disk still constrains future placement. Check the disk SKU and region's redundancy capabilities rather than claiming every Azure disk is either always zonal or automatically cross-zone.</p>
+  <pre><code>kubectl get storageclass
+kubectl get pvc -n payments
+kubectl describe pvc checkout-data -n payments
+kubectl describe pod checkout-0 -n payments
+kubectl get pv
+kubectl get volumeattachment
+kubectl get nodes -L topology.kubernetes.io/zone</code></pre>
+  <p>A Pending PVC under delayed binding is not automatically a storage outage. Read the scheduling events. A mount failure may instead be a disk attachment limit, stale attachment, network path for Files or permissions. Do not force-detach a live writer without the storage runbook: two hosts believing they own the same data is worse than a temporarily Pending Pod.</p>
+  <h2>Snapshots are a component, not a recovery strategy</h2>
+  <p>A storage snapshot may be crash-consistent, not application-consistent. Databases can require their own backup and log replay, quiescing or coordination across volumes. Kubernetes object backups must include the objects needed to reconstruct the workload, while data backups must cover the persistent bytes. Secrets, external identity grants, private DNS and encryption keys also affect recoverability.</p>
+  <p>AKS Backup support varies by volume type, region and feature configuration. Check the current support matrix, retention, vault/tier behavior and cross-region capabilities before promising disaster recovery. CSI snapshots do not automatically mean every volume is included. Keep backups protected from the same credentials and failure domain that can destroy production.</p>
+  <h2>A restore drill with an actual pass condition</h2>
+  <ol>
+    <li>Write the <strong>RPO</strong>: maximum tolerated data loss, measured by recoverable transactions or time.</li>
+    <li>Write the <strong>RTO</strong>: maximum time from disruption to verified usable service, including detection, provisioning and DNS.</li>
+    <li>Restore into an isolated approved environment with required network, identity and keys, without letting restored jobs charge customers or send real notifications.</li>
+    <li>Validate schema, integrity, transaction checkpoints and a representative application read/write flow.</li>
+    <li>Measure elapsed recovery and data loss. Document missing dependencies and repeat until the objectives are met.</li>
+  </ol>
+  <div class="callout"><h3>Retention is a separate safety boundary</h3><p>Inspect a StorageClass/PV's reclaim policy before deleting a PVC. A Delete policy can remove the backing storage; Retain preserves it for manual reclamation but does not create a backup. Expansion also depends on class/driver support and filesystem behavior. Do not promise shrinking a persistent disk as an easy rollback.</p></div>
+  <div class="hand"><h3>Do it by hand: a zone outage</h3><p>Application replicas can run in zones 1 and 2, but the database's only persistent disk is zonal in zone 1. Zone 1 is unavailable. Is a healthy zone-2 pool enough?</p><details><summary>Follow the data</summary><p>No. Compute in zone 2 cannot make an unavailable zone-1 disk attach there. Recovery needs an application replication/failover design or a supported data restore into eligible storage, plus tested consistency and network/identity dependencies. Three stateless replicas do not make the entire service zone-resilient.</p></details></div>
+  <h2>Sources</h2>
+  <ul>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/concepts-storage">AKS storage concepts</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/azure-csi-disk-storage-provision">Azure Disk CSI provisioning and topology</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/azure-files-csi">Azure Files CSI</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/backup/azure-kubernetes-service-cluster-backup-support-matrix">AKS Backup support matrix</a></li>
+    <li><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/">Access modes, binding and reclaim policy</a></li>
+  </ul>
+  <div id="quiz"></div>
+  <script type="application/json" id="quiz-data">[
+    {"q":"ReadWriteOnce necessarily means exactly one Pod can mount the volume.","options":["True","False"],"answer":1,"why":"It limits read-write access to one node; single-Pod semantics are a different access mode."},
+    {"q":"What does a successful backup job alone prove?","options":["The complete application meets its RTO","Every external dependency is recoverable","The backup operation completed, not that end-to-end recovery works"],"answer":2,"why":"Only a restore drill can validate the application, dependencies and recovery timing."},
+    {"q":"Why can WaitForFirstConsumer help a zonal workload?","options":["Provisioning can account for Pod placement topology","It removes all zone constraints forever","It turns local ephemeral data into a backup"],"answer":0,"why":"Delayed binding coordinates provisioning with scheduling; it does not eliminate storage failure domains."}
+  ]</script>
+</main>
+<script src="lessons.js"></script><script src="../../course.js"></script>
+</body>
+</html>

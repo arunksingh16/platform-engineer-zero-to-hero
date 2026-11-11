@@ -4,7 +4,7 @@
 const COURSE = {
   key: "kubernetes-openshift",
   title: "OpenShift for senior SREs",
-  up: { href: "../index.html", label: "↖ Kubernetes" },
+  up: { href: "../index.html#platforms", label: "↖ Kubernetes platforms" },
   lessons: [
     { n: 1, file: "01-what-openshift-adds.html", title: "What OpenShift adds to Kubernetes", blurb: "The platform-as-operators design, and the two API families that run it." },
     { n: 2, file: "02-install-and-topologies.html", title: "Installation, topologies and hosted control planes", blurb: "IPI, UPI, agent-based, SNO, compact, HyperShift — and what you cannot change later." },

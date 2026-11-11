@@ -40,26 +40,27 @@
       <p>The layer every lesson above assumed. Why Kubernetes ships no network implementation, how a packet crosses nodes, NetworkPolicy and who actually enforces it, and choosing between Flannel, Calico, Cilium and the cloud CNIs.</p>
       <p><a href="cni/index.html">Start the sub-course</a></p>
     </article>
-    <article class="card">
-      <span class="tag">Available</span>
-      <h3><a href="openshift/index.html">OpenShift for senior SREs</a></h3>
-      <p>Fifteen lessons for engineers who already run Kubernetes: operator-managed architecture, installation and hosted control planes, MachineConfig and updates, OLM, OAuth and SCCs, OVN-Kubernetes and routers, storage, multi-tenancy, etcd and day-two operations, fleet management and an incident playbook.</p>
-      <p><a href="openshift/index.html">Start the sub-course</a></p>
-    </article>
   </div>
 
-  <h2>Platform-specific courses</h2>
-  <p>These build directly on the lessons above and assume you have done them. They are planned, not yet written:</p>
+  <h2 id="platforms">Kubernetes platforms</h2>
+  <p>Learn Kubernetes once, then learn the operational contract of the platform you run. These tracks build on the fundamentals above. OpenShift is a distribution, while AKS and EKS are managed services; they belong together here because each changes ownership, identity, networking and lifecycle decisions.</p>
   <div class="grid3">
+    <article class="card">
+      <span class="tag">Available · 15 lessons</span>
+      <h3><a href="openshift/index.html">OpenShift</a></h3>
+      <p>Operator-managed architecture, MachineConfig, updates, OAuth and SCCs, OVN-Kubernetes, routers, storage, multi-tenancy and incident response for senior SREs.</p>
+      <p><a href="openshift/index.html">Explore OpenShift →</a></p>
+    </article>
+    <article class="card">
+      <span class="tag">Available · 9 lessons</span>
+      <h3><a href="aks/index.html">Azure Kubernetes Service</a></h3>
+      <p>Ownership boundaries, node pools, Entra and workload identity, Azure CNI, egress, scaling, upgrades, CSI storage and production incident response.</p>
+      <p><a href="aks/index.html">Explore AKS →</a></p>
+    </article>
     <article class="card">
       <span class="tag">Planned</span>
       <h3>EKS</h3>
       <p>Managed control plane, IRSA and Pod Identity, VPC CNI and IP exhaustion, EC2NodeClass, load balancer controller.</p>
-    </article>
-    <article class="card">
-      <span class="tag">Planned</span>
-      <h3>AKS</h3>
-      <p>Node pools, workload identity, Azure CNI modes, and the cluster autoscaler profile.</p>
     </article>
   </div>
 

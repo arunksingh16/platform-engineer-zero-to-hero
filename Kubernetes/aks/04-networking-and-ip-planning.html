@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>4. Azure CNI and IP planning · AKS</title>
+<meta name="description" content="AKS Azure CNI Overlay versus flat networking, IP capacity calculations, Cilium and upgrade headroom calculator.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="4">
+<main>
+  <span class="tag">AKS / Lesson 4</span>
+  <h1>Azure CNI and IP planning</h1>
+  <p class="lead">An IP shortage can look like a compute shortage. Adding quota will not fix an exhausted subnet, and adding a larger subnet will not fix a hard placement constraint. Budget each resource independently.</p>
+  <div class="goal"><h3>By the end you can…</h3>Compare overlay and flat address consumption, calculate a bounded capacity model and distinguish IP allocation from policy enforcement.</div>
+  <h2>Three designs with different budgets</h2>
+  <table>
+    <tr><th>Design</th><th>Pod addresses</th><th>Planning consequence</th></tr>
+    <tr><td>Azure CNI Overlay</td><td>Separate Pod CIDR, not VNet Pod addresses</td><td>Node subnet needs node IPs; overlay CIDR allocates a /24 block per node, including surge nodes</td></tr>
+    <tr><td>Azure CNI node-subnet / traditional flat</td><td>From the node subnet</td><td>Budget node plus configured Pod IP allocation for all maximum and surge nodes</td></tr>
+    <tr><td>Azure CNI Pod Subnet</td><td>From a distinct VNet Pod subnet</td><td>Size node and Pod subnets separately; dynamic and static-block allocation have different rules</td></tr>
+  </table>
+  <p>With Overlay, traffic leaving the cluster is translated to node addresses; an external client cannot simply route to an overlay Pod IP as if it were a VNet NIC. Expose a Service through an appropriate frontend. Choose non-overlapping node, Pod, Service, peered and on-premises ranges; address overlap can cause traffic to take the wrong path even if creation succeeds.</p>
+  <p><strong>Cilium is not an address-plan alternative.</strong> Azure CNI powered by Cilium changes the dataplane and policy implementation. Overlay versus flat describes address allocation and connectivity. Inspect both settings. A NetworkPolicy object does nothing without a compatible enforcing implementation, and enforcement details depend on the configured dataplane.</p>
+  <pre><code>az aks show -g example-rg -n example-aks --query networkProfile -o yaml
+az aks nodepool list -g example-rg --cluster-name example-aks \
+  --query '[].{pool:name,maxPods:maxPods,subnet:vnetSubnetId,podSubnet:podSubnetId}' -o yaml
+kubectl get nodes -o wide
+kubectl get networkpolicy -A</code></pre>
+  <h2>Play: peak node count, not today's count</h2>
+  <p>This model assumes <strong>one IPv4 pool</strong> with a surge count expressed as an integer, and a /24 overlay block per node. Enter the planned autoscaler maximum, not merely the current node count. It compares minimum demand before shared infrastructure, Azure-reserved subnet addresses, other pools or allocation slack. It is not a subnet recommendation or a model of Pod Subnet dynamic allocation.</p>
+  <div class="widget">
+    <h3>Upgrade IP budget</h3>
+    <div class="row"><label for="nodes">Maximum regular nodes</label><input id="nodes" type="number" min="1" max="5000" value="20"></div>
+    <div class="row"><label for="surge">Additional surge nodes</label><input id="surge" type="number" min="0" max="5000" value="5"></div>
+    <div class="row"><label for="pods">Configured maxPods per node (flat model)</label><input id="pods" type="number" min="1" max="250" value="30"></div>
+    <p id="ip-result" role="status" aria-live="polite"></p>
+  </div>
+  <pre><code>Peak nodes = maximum regular nodes + additional surge nodes
+Traditional flat demand = peak nodes × (1 + maxPods)
+Overlay node-subnet demand = peak nodes
+Overlay Pod CIDR allocation = peak nodes × 256 addresses</code></pre>
+  <p>For 20 + 5 nodes and maxPods 30, the traditional flat model needs 775 addresses before other consumers. Overlay needs 25 node addresses plus 25 /24 Pod blocks (6,400 Pod-range addresses). Reducing maxPods does not shrink Overlay's per-node /24 allocation. An overlay /20 contains only 16 /24 blocks, so it cannot support that 25-node peak.</p>
+  <div class="callout"><h3>Provisioning is a conjunction</h3><p>A node needs VM-family quota, regional SKU availability, subnet capacity and, for Overlay, a Pod block. Check all of them before changing the pool maximum. Include concurrent pool upgrades and blue/green migration overlap in the real design. Network-mode migrations have documented prerequisites and disruptive steps; they are not an emergency toggle.</p></div>
+  <h2>Do it by hand: failed surge</h2>
+  <div class="hand"><p>A traditional flat pool has 10 nodes, maxPods 30 and maxSurge 3. The shared subnet has 80 free addresses. Ignoring every other consumer, can all three surge nodes be allocated?</p><details><summary>Calculate the extra demand</summary><p>No. Three nodes need 3 × (1 + 30) = 93 additional addresses under this model. Eighty is insufficient before any additional reserve. Lowering surge may reduce peak demand but lengthens maintenance and still requires safe workload eviction. Rework the capacity plan rather than deleting unrelated resources for emergency IPs.</p></details></div>
+  <h2>Sources</h2>
+  <ul>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/concepts-network-azure-cni-overlay">Overlay address allocation and external connectivity</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/concepts-network-ip-address-planning">IP address planning by network mode</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/concepts-network-azure-cni-pod-subnet">Pod Subnet allocation modes</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/azure-cni-powered-by-cilium">Azure CNI powered by Cilium</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/cli/azure/aks#az-aks-show">Azure CLI network profile inspection</a></li>
+  </ul>
+  <div id="quiz"></div>
+  <script type="application/json" id="quiz-data">[
+    {"q":"What does Azure CNI Overlay allocate per node from the Pod CIDR in this IPv4 model?","options":["Exactly the number of currently running Pods","One /24 block","One VNet address for every possible Pod"],"answer":1,"why":"Plan overlay capacity in per-node blocks, including future and surge nodes."},
+    {"q":"Does selecting Cilium remove the need to choose and size an address model?","options":["Yes","No"],"answer":1,"why":"Dataplane and policy implementation do not eliminate overlay or flat address consumption."},
+    {"q":"Twelve regular nodes plus three surge nodes, maxPods 30: what is traditional flat demand before reserves?","options":["450","15","465"],"answer":2,"why":"15 × (1 + 30) = 465. This simplified node-subnet calculation does not apply to Pod Subnet allocation modes."}
+  ]</script>
+</main>
+<script>
+const ipInputs = ["nodes", "surge", "pods"].map((id) => document.getElementById(id));
+function updateBudget() {
+  const result = document.getElementById("ip-result");
+  if (!ipInputs.every((input) => input.value !== "" && input.checkValidity())) {
+    result.textContent = "Enter whole numbers in the shown ranges: nodes 1–5000, surge 0–5000, maxPods 1–250.";
+    return;
+  }
+  const [nodes, surge, pods] = ipInputs.map((input) => Number(input.value));
+  const peak = nodes + surge;
+  result.textContent = `${peak} peak nodes. Traditional flat: ${peak * (1 + pods)} addresses. Overlay: ${peak} node addresses + ${peak} /24 Pod blocks (${peak * 256} Pod-range addresses). Add reserves and other consumers separately.`;
+}
+ipInputs.forEach((input) => input.addEventListener("input", updateBudget));
+updateBudget();
+</script>
+<script src="lessons.js"></script><script src="../../course.js"></script>
+</body>
+</html>

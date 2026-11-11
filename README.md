@@ -1,6 +1,6 @@
 # Platform Engineering: Zero to Hero
 
-A practical, self-guided learning path for platform engineering. The repository is a work in progress: Observability and Code analysis are published, and the other topics below are roadmap items rather than published lessons.
+A practical, self-guided learning path for platform engineering. Six published tracks cover Kubernetes fundamentals, CNI networking, OpenShift, AKS, Observability and Code analysis. Other topics below remain roadmap items rather than published lessons.
 Access github pages - https://arunksingh16.github.io/platform-engineer-zero-to-hero
 
 ## Courses
@@ -11,8 +11,9 @@ Access github pages - https://arunksingh16.github.io/platform-engineer-zero-to-h
 | Code analysis | Available | Pure functions and IO, abstract syntax trees, call graphs, runtime detection, and measuring a detector honestly |
 | Kubernetes | Available | Control loops, Pods and controllers, scheduling, requests and limits, HPA, KEDA, Karpenter, and operators |
 | Kubernetes: Pod networking and the CNI | Available | The network model, the packet path and MTU, NetworkPolicy enforcement, Flannel/Calico/Cilium/cloud CNIs, and eBPF |
-| Kubernetes: OpenShift for senior SREs | Available | Operator-managed architecture, installation, MachineConfig and updates, OLM, OAuth and SCCs, OVN-Kubernetes, routers, storage, multi-tenancy, etcd and operations, fleet management |
-| Kubernetes on EKS / AKS | Planned | Provider specifics layered on the vendor-neutral course, in child directories |
+| Kubernetes platforms: OpenShift for senior SREs | Available | Operator-managed architecture, installation, MachineConfig and updates, OLM, OAuth and SCCs, OVN-Kubernetes, routers, storage, multi-tenancy, etcd and operations, fleet management |
+| Kubernetes platforms: AKS production operations | Available | Ownership, node pools, Entra/workload identity, Azure CNI and IP budgeting, ingress/egress/DNS, autoscaling, upgrades, CSI storage, recovery and incident response |
+| Kubernetes platforms: EKS | Planned | AWS specifics layered on the vendor-neutral course; lessons are not published yet |
 | Infrastructure foundations | Planned | Linux, networking, Git, and containers |
 | Platform systems | Planned | Cloud fundamentals, infrastructure as code, and CI/CD |
 | Reliability and operations | Planned | Site reliability engineering, incident response, and production operations |
@@ -58,8 +59,9 @@ Kubernetes/                Course
   lessons.js
   01-...html to 09-...html Interactive lessons, ending in a references page
   cni/                     Child course: Pod networking and the CNI (5 lessons)
-  openshift/               Child course: OpenShift for senior SREs (15 lessons)
-  eks/ aks/                Planned child courses, each with its own lessons.js
+  openshift/               Platform track: OpenShift for senior SREs (15 lessons)
+  aks/                     Platform track: AKS production operations (9 lessons)
+  eks/                     Planned platform track (directory not yet created)
 ```
 
 Courses nest. A child course is just a course one level deeper: it gets its own
@@ -87,6 +89,24 @@ overwrite each other. Lesson pages load the two scripts in order:
 <script src="lessons.js"></script>
 <script src="../course.js"></script>
 ```
+
+## Site design and navigation
+
+The catalog separates vendor-neutral fundamentals from **Kubernetes platforms**:
+OpenShift and AKS are published peers, while EKS is explicitly marked planned.
+OpenShift keeps its existing `Kubernetes/openshift/` URLs and progress key; this
+is a navigation regrouping, not a breaking directory migration.
+
+The shared navy/teal handbook theme uses system fonts, responsive cards and the
+operating system's light/dark preference. Lesson pages include a collapsible
+course outline (a sidebar on wide screens), a skip link and previous/next
+navigation. Course indexes show completed lessons and link to the first
+unfinished lesson. The header bar measures quiz completion, not the current
+lesson number. Quizzes keep the existing 70% pass threshold and per-course
+browser storage; a visible notice explains unavailable or invalid storage.
+
+No build step, external fonts, analytics or JavaScript framework is required.
+All site links and assets are relative so GitHub Pages project subpaths work.
 
 ## Accuracy and learning standards
 
@@ -122,6 +142,13 @@ Primary references for Kubernetes are listed claim by claim on the course's own
 - [Kubernetes API reference](https://kubernetes.io/docs/reference/kubernetes-api/) — field-level defaults
 - [KEDA documentation](https://keda.sh/docs/latest/)
 - [Karpenter documentation](https://karpenter.sh/docs/)
+
+AKS sources are linked in every lesson, starting with the
+[AKS baseline architecture](https://learn.microsoft.com/en-us/azure/architecture/reference-architectures/containers/aks/baseline-aks).
+The [AKS course](Kubernetes/aks/index.html) uses Standard as its baseline and
+flags Automatic-specific differences. Its IP calculator is a bounded planning
+model, not a subnet recommendation; inspection examples do not create Azure
+resources.
 
 ## License
 

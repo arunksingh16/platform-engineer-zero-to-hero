@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AKS: production operations</title>
+<meta name="description" content="Nine practical AKS lessons: ownership, node pools, Entra workload identity, Azure CNI, ingress and egress, scaling, upgrades, storage and incident response.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-page="index">
+<main>
+  <span class="tag">Kubernetes platforms · 9 lessons</span>
+  <h1>AKS: production operations</h1>
+  <p class="lead">Azure runs the control plane. You still own the outcome. Learn to reason across Kubernetes and Azure when a Pod cannot schedule, an identity cannot authenticate, or an upgrade cannot drain a node.</p>
+  <div class="goal">
+    <h3>The operating mindset</h3>
+    <p>For every design, name the owner, the failure domain, the capacity limit, the evidence you would collect and the recovery path. A green resource in the portal is not proof that a customer request succeeds.</p>
+  </div>
+  <h2>Before you start</h2>
+  <p>Complete <a href="../index.html">Kubernetes fundamentals</a>, especially scheduling, resource requests and autoscaling. The <a href="../cni/index.html">CNI track</a> explains the packet model; <a href="../../Observability/index.html">Observability</a> supplies the language of SLIs and SLOs. This track adds the Azure-specific operational contract rather than teaching Pods again.</p>
+  <h2>Lessons</h2>
+  <ol class="lessons" id="lessons"></ol>
+  <h2>How to use this track</h2>
+  <p>Each lesson pairs a mental model with inspection commands, a failure scenario, a worked exercise and a quiz. Commands use Azure CLI and kubectl, not an interactive Azure subscription connection from this website. Replace example names and check <code>az account show</code> and <code>kubectl config current-context</code> before using them. You need read access to the relevant Azure resources and Kubernetes objects; cluster-wide inspection may require a platform operator.</p>
+  <div class="callout">
+    <h3>No cluster creation required</h3>
+    <p>The written exercises and IP calculator work without Azure. Inspection commands require your own authorized environment; they do not provision resources. The identity YAML is a configuration fragment to review, not a complete deployable application. Never experiment on production without approval.</p>
+    <p>Scope: AKS Standard is the baseline. Automatic, node autoprovisioning, networking migrations and add-ons have different controls and availability. Follow the linked primary documentation for your region, version, OS and service mode. No fixed Kubernetes minor version is assumed.</p>
+  </div>
+  <h2>What “production-ready” means here</h2>
+  <p>You can explain the identity chain, calculate upgrade headroom, predict scheduling constraints, trace a request and restore data against a measured recovery objective. These lessons are a foundation for a platform-specific runbook, not a certification that an arbitrary cluster is safe.</p>
+  <p class="muted">Sources are linked beside each lesson. Progress stays in your browser under a separate AKS key. Compare with <a href="../openshift/index.html">OpenShift</a> to see which operational assumptions change.</p>
+</main>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+</body>
+</html>

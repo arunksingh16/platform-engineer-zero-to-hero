@@ -7,54 +7,89 @@
 <title>Platform Engineering: Zero to Hero</title>
 <link rel="stylesheet" href="style.css">
 </head>
-<body>
-<main>
-  <h1>Platform Engineering: Zero to Hero</h1>
-  <p class="lead">Build the foundations for designing, operating, and improving reliable platforms. Learn one concept at a time through plain-language explanations, hands-on examples, and short knowledge checks.</p>
+<body class="catalog">
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true">pe.</span> The platform handbook</a>
+  <nav aria-label="Main navigation"><a href="#courses">Courses</a><a href="#platforms">Platforms</a><a href="https://github.com/arunksingh16/platform-engineer-zero-to-hero">GitHub ↗</a></nav>
+</header>
+<main id="main">
+  <section class="hero" aria-labelledby="hero-title">
+    <div>
+      <span class="eyebrow">Platform engineering / zero to hero</span>
+      <h1 id="hero-title">Understand the system.<br><em>Own the outcome.</em></h1>
+      <p class="lead">Go beyond the happy path. Build a working mental model of containers, clusters and reliable platforms, one practical lesson at a time.</p>
+      <div class="hero-actions"><a class="button-link" href="#courses">Find your next lesson →</a><a href="Kubernetes/index.html">Start with Kubernetes</a></div>
+      <p class="hero-note">Self-paced. Open to read. No sign-up. Just engineering.</p>
+    </div>
+    <div class="system-map" aria-label="Learning approach: understand, experiment, operate">
+      <div class="map-heading"><span class="status-dot" aria-hidden="true"></span> ENGINEERING / IN PRACTICE</div>
+      <div class="map-node"><span>01</span><div><strong>Understand</strong><small>Build the mental model</small></div><b aria-hidden="true">↗</b></div>
+      <div class="map-connector" aria-hidden="true"></div>
+      <div class="map-node"><span>02</span><div><strong>Experiment</strong><small>Change a variable. Predict the result.</small></div><b aria-hidden="true">↗</b></div>
+      <div class="map-connector" aria-hidden="true"></div>
+      <div class="map-node map-node-accent"><span>03</span><div><strong>Operate</strong><small>Reason through the failure</small></div><b aria-hidden="true">✓</b></div>
+      <div class="map-footer">concept → exercise → knowledge check</div>
+    </div>
+  </section>
 
-  <div class="goal">
-    <h3>Learning path</h3>
-    <p>Start with core infrastructure, move into platform systems, then build operational and reliability skills. The catalog shows what is available today and what is planned; planned topics do not have lessons yet.</p>
-  </div>
+  <div class="catalog-strip"><span><strong>6</strong> published tracks</span><span><strong>52</strong> lessons</span><span><strong>0</strong> runtime dependencies</span><span>Progress stays in your browser</span></div>
 
-  <h2>Courses</h2>
-  <div class="grid3">
-    <article class="card">
-      <span class="tag">Available</span>
-      <h3><a href="Observability/index.html">Observability</a></h3>
-      <p>Learn metrics, time series, logs, traces, OpenTelemetry, and service level objectives in nine interactive lessons.</p>
-      <p><a href="Observability/index.html">Start the course</a></p>
-    </article>
-    <article class="card">
-      <span class="tag">Available</span>
-      <h3><a href="CodeAnalysis/index.html">Code analysis</a></h3>
-      <p>How build caches, sandboxes, and linters work out what code does, in five lessons ending with runnable Python you can point at your own repository.</p>
-      <p><a href="CodeAnalysis/index.html">Start the course</a></p>
-    </article>
-    <article class="card">
-      <span class="tag">Available</span>
-      <h3><a href="Kubernetes/index.html">Kubernetes</a></h3>
-      <p>From the control loop up: Pods, scheduling, requests and limits, HPA, KEDA, Karpenter and operators. Vendor-neutral, with every claim sourced.</p>
-      <p><a href="Kubernetes/index.html">Start the course</a> · <a href="Kubernetes/cni/index.html">Pod networking and the CNI</a> · <a href="Kubernetes/openshift/index.html">OpenShift for senior SREs</a></p>
-    </article>
-    <article class="card">
-      <span class="tag">Planned</span>
-      <h3>Infrastructure foundations</h3>
-      <p>Linux, networking, Git, and containers.</p>
-    </article>
-    <article class="card">
-      <span class="tag">Planned</span>
-      <h3>Platform systems</h3>
-      <p>Kubernetes, cloud fundamentals, infrastructure as code, and CI/CD.</p>
-    </article>
-    <article class="card">
-      <span class="tag">Planned</span>
-      <h3>Reliability and operations</h3>
-      <p>Site reliability engineering, incident response, and production operations.</p>
-    </article>
-  </div>
+  <section id="courses" aria-labelledby="courses-title">
+    <div class="section-heading"><div><span class="eyebrow">01 / Build your foundation</span><h2 id="courses-title">Learn the primitives.</h2></div><p>Understand what is happening before reaching for another tool.</p></div>
+    <div class="grid3 course-grid">
+      <article class="card course-card">
+        <div class="card-top"><span class="course-symbol" aria-hidden="true">K8s</span><span class="tag">09 lessons</span></div>
+        <h3><a href="Kubernetes/index.html">Kubernetes</a></h3>
+        <p>Control loops, scheduling, resource accounting and autoscaling. The vendor-neutral foundation for every platform track.</p>
+        <div class="card-bottom"><span>Core systems</span><a href="Kubernetes/index.html">Start learning →</a></div>
+      </article>
+      <article class="card course-card">
+        <div class="card-top"><span class="course-symbol" aria-hidden="true">O11y</span><span class="tag">09 lessons</span></div>
+        <h3><a href="Observability/index.html">Observability</a></h3>
+        <p>From a metric to a meaningful SLO. Learn time series, logs, traces and OpenTelemetry without losing the signal.</p>
+        <div class="card-bottom"><span>Signals &amp; reliability</span><a href="Observability/index.html">Start learning →</a></div>
+      </article>
+      <article class="card course-card">
+        <div class="card-top"><span class="course-symbol" aria-hidden="true">AST</span><span class="tag">05 lessons</span></div>
+        <h3><a href="CodeAnalysis/index.html">Code analysis</a></h3>
+        <p>What can tooling really know about code? Explore syntax trees, call graphs and IO detection, with runnable Python.</p>
+        <div class="card-bottom"><span>Developer tooling</span><a href="CodeAnalysis/index.html">Start learning →</a></div>
+      </article>
+    </div>
+    <a class="deep-dive" href="Kubernetes/cni/index.html"><span class="eyebrow">Deep dive / 05 lessons</span><strong>Pod networking &amp; the CNI</strong><span>Follow the packet. Understand policy, MTU and eBPF. →</span></a>
+  </section>
 
-  <p class="muted">This learning path is a work in progress. Each course should include practical exercises and references to authoritative documentation.</p>
+  <section id="platforms" aria-labelledby="platforms-title">
+    <div class="section-heading"><div><span class="eyebrow">02 / Know your platform</span><h2 id="platforms-title">Same Kubernetes. Different contract.</h2></div><p>Layer provider and distribution decisions on the fundamentals. Know what you own, what is managed, and where to debug.</p></div>
+    <div class="grid3 course-grid">
+      <article class="card course-card platform-card">
+        <div class="card-top"><span class="platform-label">RED HAT</span><span class="tag">15 lessons</span></div>
+        <h3><a href="Kubernetes/openshift/index.html">OpenShift</a></h3>
+        <p>The operator-managed platform: MachineConfig, SCCs, OVN-Kubernetes, routes, upgrades and day-two operations.</p>
+        <div class="card-bottom"><span>Available</span><a href="Kubernetes/openshift/index.html">Explore track →</a></div>
+      </article>
+      <article class="card course-card platform-card">
+        <div class="card-top"><span class="platform-label">MICROSOFT AZURE</span><span class="tag">09 lessons</span></div>
+        <h3><a href="Kubernetes/aks/index.html">AKS</a></h3>
+        <p>Managed does not mean hands-off. Identity, node pools, networking, safe upgrades, storage and incident playbooks.</p>
+        <div class="card-bottom"><span>Available</span><a href="Kubernetes/aks/index.html">Explore track →</a></div>
+      </article>
+      <article class="card course-card planned">
+        <div class="card-top"><span class="platform-label">AMAZON WEB SERVICES</span><span class="tag">Planned</span></div>
+        <h3>EKS</h3>
+        <p>Pod Identity, VPC CNI, Karpenter and load balancing. A provider-specific track built on the same core concepts.</p>
+        <div class="card-bottom"><span>On the roadmap · not published yet</span></div>
+      </article>
+    </div>
+  </section>
+
+  <section class="roadmap" aria-labelledby="roadmap-title">
+    <span class="eyebrow">03 / What's next</span><h2 id="roadmap-title">A growing engineering toolkit.</h2>
+    <p class="muted">These topics are planned, not published courses. Depth matters more than filling a catalog.</p>
+    <div class="grid3"><div><h3>Infrastructure foundations</h3><p>Linux, networking, Git and containers.</p></div><div><h3>Platform systems</h3><p>Cloud fundamentals, infrastructure as code and CI/CD.</p></div><div><h3>Reliability &amp; operations</h3><p>SRE, incident response and production operations.</p></div></div>
+  </section>
+  <footer class="site-footer"><span>The platform handbook <span class="muted">/ Always learning.</span></span><a href="https://github.com/arunksingh16/platform-engineer-zero-to-hero">Read the source ↗</a></footer>
 </main>
 </body>
 </html>

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>5. Traffic, egress and private DNS · AKS</title>
+<meta name="description" content="Trace AKS ingress and outbound traffic through DNS, load balancers, TLS, private endpoints, routes and SNAT capacity.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="5">
+<main>
+  <span class="tag">AKS / Lesson 5</span>
+  <h1>Traffic, egress and private DNS</h1>
+  <p class="lead">“Networking is broken” is not a hypothesis. Name the source, destination, protocol, port, resolved address and failed hop. Then test the narrowest boundary that can explain the symptom.</p>
+  <div class="goal"><h3>By the end you can…</h3>Trace inbound and outbound traffic, separate private API access from workload exposure and identify a SNAT-capacity incident.</div>
+  <h2>Inbound: follow the actual architecture</h2>
+  <pre><code>Client DNS → chosen frontend / WAF / load balancer
+  → ingress or gateway implementation, if present
+  → Service backend selection → ready endpoint → application
+  → downstream dependency</code></pre>
+  <p>A Kubernetes Service of type LoadBalancer is not automatically an HTTP router, a WAF or a TLS certificate manager. L4 load balancing and L7 ingress/gateway routing have different owners. Application Gateway-based designs may place backends differently from an in-cluster proxy design; inspect your selected controller rather than forcing every packet into this simplified diagram.</p>
+  <p>For each hop, write down who terminates TLS, which hostname the certificate covers, where health probes land and whether traffic is public or internal. If TLS terminates at the frontend, decide whether the backend also needs TLS and how trust is validated. An internal load balancer is not authentication. Choose a currently supported ingress/gateway implementation and check its lifecycle; an old tutorial is not a support statement.</p>
+  <h2>Private control plane is not private everything</h2>
+  <p>A private AKS API changes how operators and deployment agents reach the Kubernetes API. They need a valid network path and DNS resolution for that endpoint. It does not by itself make every application frontend internal, and it does not make outbound traffic private. Keep API exposure, workload ingress and workload egress as three separate decisions.</p>
+  <p>Private endpoints for services such as Key Vault also require the correct private DNS zone links and forwarding paths. From the actual calling environment, inspect the resolved address and compare it with the intended endpoint. A valid token does not route packets. A reachable public address does not prove that the private path works.</p>
+  <h2>Outbound: routing plus translation plus authorization</h2>
+  <p>AKS outbound behavior depends on its configured outbound type: managed load-balancer outbound rules, NAT Gateway or user-defined routing are not interchangeable. In a UDR design, verify the next hop, firewall policy, return path and the documented AKS outbound dependencies. Blocking required management endpoints can affect image pulls, bootstrap and upgrades, not just application HTTP calls.</p>
+  <p>SNAT maps many outbound flows onto a finite set of source ports and public addresses. High connection churn, slow downstreams and poor pooling can exhaust usable translation capacity. More replicas may make this worse. Correlate failure rate with connection counts, outbound metrics and the shared egress device before increasing Pod count. Connection reuse, bounded concurrency and appropriate NAT capacity address different parts of the problem.</p>
+  <pre><code>az aks show -g example-rg -n example-aks --query networkProfile -o yaml
+kubectl get service,ingress -A
+kubectl get endpointslice -n payments
+kubectl describe service checkout -n payments
+kubectl get pods -n payments -o wide
+kubectl get networkpolicy -n payments</code></pre>
+  <p>EndpointSlice readiness narrows a missing-backend fault; it does not prove that network policy allows traffic or that the process is healthy beyond its readiness probe. Use approved diagnostic tooling in the source namespace to check DNS, TCP and TLS separately. Avoid installing privileged debugging containers or weakening policy as the first response.</p>
+  <table>
+    <tr><th>Symptom</th><th>Useful next evidence</th></tr>
+    <tr><td>No healthy backend / 503</td><td>Controller health, Service selector, endpoint readiness and probe configuration</td></tr>
+    <tr><td>Only private dependencies time out</td><td>DNS result, private-zone links, routes, firewall and NSG path</td></tr>
+    <tr><td>Intermittent outbound failures at peak</td><td>Connection churn, SNAT usage, downstream saturation and timeout behavior</td></tr>
+    <tr><td>Works by IP, fails by hostname</td><td>DNS, SNI/Host routing and certificate identity; bypassing TLS verification is not a fix</td></tr>
+  </table>
+  <div class="hand"><h3>Do it by hand: 504 after a database slowdown</h3><p>The frontend returns 504 after exactly its configured timeout. The application is Ready, and database latency rose first. Should you just double the frontend timeout?</p><details><summary>Trace the budget</summary><p>No. A longer timeout can accumulate more in-flight work and deepen saturation. Compare request traces, database latency, pool wait time and connection limits. Mitigate the slow dependency or shed load safely; align application and proxy timeout/retry budgets. Readiness is not a guarantee of fast dependencies. Confirm improvement with end-to-end latency and error SLIs, not only disappearance of the 504 code.</p></details></div>
+  <h2>Sources</h2>
+  <ul>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/concepts-network">AKS networking concepts and frontends</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/private-clusters">Private cluster access and DNS</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/egress-outboundtype">Outbound types and routing contracts</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/aks/limit-egress-traffic">Required outbound network dependencies</a></li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/load-balancer/troubleshoot-outbound-connection">Outbound connection and SNAT troubleshooting</a></li>
+  </ul>
+  <div id="quiz"></div>
+  <script type="application/json" id="quiz-data">[
+    {"q":"Does a private AKS API guarantee private application ingress and egress?","options":["Yes","No"],"answer":1,"why":"Control-plane access, application ingress and outbound connectivity are separate design surfaces."},
+    {"q":"Outbound failures rise with new-connection churn. What deserves investigation?","options":["Only the number of Deployments","SNAT capacity and connection reuse","The lesson progress key"],"answer":1,"why":"Finite outbound translation capacity can be consumed by connection-heavy workloads."},
+    {"q":"A Service has ready endpoints. What has NOT been proved?","options":["That the Service has discovered ready backends","That every network and application hop succeeds","That endpoint discovery is functioning"],"answer":1,"why":"Discovery is one boundary. Policy, routing, TLS and application behavior still require evidence."}
+  ]</script>
+</main>
+<script src="lessons.js"></script><script src="../../course.js"></script>
+</body>
+</html>
