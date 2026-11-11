@@ -11,12 +11,17 @@
 <main>
   <span class="tag">Lesson 3</span>
   <h1>Gateway API: the successor to Ingress</h1>
-  <p class="lead">Gateway API is the Kubernetes project's answer to every complaint in the last lesson. It splits one overloaded object into three, each owned by a different role, and turns the features that were annotations into typed fields.</p>
+  <p class="lead">Ingress gave Kubernetes a shared way to describe HTTP routing. Gateway API builds on that idea: richer routing rules and clearer boundaries between the people who run shared infrastructure and the people who deploy applications.</p>
 
   <div class="goal">
     <h3>By the end you can…</h3>
     Name the three core resources and who owns each, write a Gateway and HTTPRoute, express a weighted canary without annotations, and say when to move from Ingress.
   </div>
+
+  <h2>Why another API when Kubernetes already has Ingress?</h2>
+  <p>Imagine one team running a shop. An Ingress says “send shop.example.com to the web Service.” That is enough. Now ten teams share the entry point. The platform team owns certificates; each app team wants to change its own routes; one team wants a 90/10 release split. Ingress implementations can support many of these needs, but advanced settings often live in controller-specific annotations, and ownership is awkward to express in one resource.</p>
+  <p>Gateway API makes those needs explicit. The platform team manages the shared listener; app teams attach routes within its boundaries; weighted backends are structured fields rather than a vendor-specific annotation. Kubernetes RBAC must still enforce who may edit each object: role-oriented design does not grant or restrict permissions by itself.</p>
+  <p><strong>What it does not do:</strong> installing the API does not create a working traffic proxy by itself. You still need a compatible implementation. <a href="04-kong-and-api-gateways.html#pilot-scenario">The next lesson follows this same team and explains where Kong fits.</a></p>
 
   <h2>Three objects, three owners</h2>
   <table>

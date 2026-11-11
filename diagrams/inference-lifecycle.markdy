@@ -1,0 +1,26 @@
+scene "One serving engine coordinates model execution" theme=paper type=architecture
+layout TB
+
+service App "Coding assistant app"
+runtime Engine "SGLang OR vLLM"
+cache KV "Reusable prefix KV state"
+process Prefill "Prefill: process input"
+process Decode "Decode: generate tokens"
+
+group serving "Inside the chosen serving runtime": Engine KV Prefill Decode
+
+beat reveal "Logical stages, not separate deployed services":
+  show $nodes stagger=50ms
+
+beat schedule "The engine schedules incoming requests":
+  App -> Engine "prompt + generation settings"
+  Engine -> KV "look up matching prefix"
+  Engine <- KV "cached state, or miss"
+
+beat execute "Reuse cached work; compute the remaining input":
+  Engine -> Prefill "uncached input tokens"
+  Prefill -> Decode "context ready"
+
+beat response "Generate a fresh answer even when the prefix was cached":
+  Engine <- Decode "new output tokens"
+  App <- Engine "stream the answer"

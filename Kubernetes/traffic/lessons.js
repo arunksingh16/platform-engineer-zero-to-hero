@@ -10,6 +10,6 @@ const COURSE = {
     { n: 2, file: "02-ingress.html", title: "Ingress and ingress controllers", blurb: "What the resource is, what the controller does, and why annotations hurt." },
     { n: 3, file: "03-gateway-api.html", title: "Gateway API: the successor to Ingress", blurb: "Role-oriented routing, and who owns which object." },
     { n: 4, file: "04-kong-and-api-gateways.html", title: "Kong and API gateways", blurb: "Auth, rate limits and plugins at the edge, versus plain routing." },
-    { n: 5, file: "05-istio-and-service-mesh.html", title: "Istio and service meshes, plus how to choose", blurb: "Sidecars, ambient, mTLS, and the alternatives — plus every source." },
+    { n: 5, file: "05-istio-and-service-mesh.html", title: "Istio and service meshes, plus how to choose", blurb: "Why Istio? A production scenario, simpler alternatives, sidecars, ambient and mTLS." },
   ],
 };

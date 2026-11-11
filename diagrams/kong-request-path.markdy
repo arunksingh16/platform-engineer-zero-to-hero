@@ -1,0 +1,25 @@
+scene "The request goes through the proxy, not KIC" theme=paper type=architecture
+layout TB
+
+browser Partner "Partner client"
+load_balancer Entry "External load balancer"
+gateway Kong "Kong Gateway"
+cache Redis "Shared counters (Redis)"
+pod Orders "Orders Pod"
+
+beat reveal "One possible partner API deployment":
+  show $nodes stagger=50ms
+
+beat arrival "The configured proxy receives the API request":
+  Partner -> Entry "HTTPS /orders"
+  Entry -> Kong "forward request"
+
+beat policy "Authenticate and enforce the configured rate limit":
+  Kong -> Redis "check / update allowance"
+  Kong <- Redis "within limit"
+
+beat backend "Allowed requests reach a discovered backend":
+  Kong -> Orders "route to Service endpoint"
+  Kong <- Orders "API response"
+  Entry <- Kong "API response"
+  Partner <- Entry "API response"

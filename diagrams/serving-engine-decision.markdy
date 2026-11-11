@@ -1,0 +1,25 @@
+scene "A serving-engine migration must earn its cost" theme=paper type=flowchart
+layout TB
+
+start Need "Define workload + targets"
+decision Support "Required features work?"
+decision Targets "Meets targets under load?"
+decision Benefit "Benefit justifies migration?"
+step Canary "Canary with rollback"
+end Stop "Reject this configuration"
+end Keep "Keep working baseline"
+
+beat reveal "Evaluate a candidate against the current deployment":
+  show $nodes stagger=50ms
+
+beat evaluate "Compatibility first, then realistic measurements":
+  Need -> Support "model, hardware, API, quality"
+  Support -> Targets "yes: replay real traffic"
+  Support -> Stop "no"
+  Targets -> Benefit "yes: compare useful capacity"
+  Targets -> Stop "no"
+
+beat decide "Operational costs are part of the decision":
+  Benefit -> Canary "yes"
+  Benefit -> Keep "no"
+  glow Canary color=#08766d

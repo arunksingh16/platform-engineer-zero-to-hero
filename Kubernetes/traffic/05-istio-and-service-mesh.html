@@ -11,11 +11,57 @@
 <main>
   <span class="tag">Lesson 5</span>
   <h1>Istio and service meshes, plus how to choose</h1>
-  <p class="lead">A service mesh moves cross-cutting network behaviour — mutual TLS, retries, timeouts, traffic splitting, per-request metrics — out of every application and into the platform. Istio is the most featureful mesh and the one with the most to operate. Whether you need one is a question about east-west traffic, not about the edge.</p>
+  <p class="lead">A service mesh provides a platform layer for cross-cutting network behaviour — mutual TLS, retries, timeouts, traffic splitting and per-request metrics. Istio is one implementation. The reason to adopt it is a concrete service-to-service problem, not simply having microservices.</p>
 
   <div class="goal">
     <h3>By the end you can…</h3>
-    Explain what a mesh does, the difference between sidecar and ambient mode, write a basic Istio policy, name the alternatives, and use a decision table to choose among all four layers in this course.
+    Explain why a team might need Istio using a production scenario, distinguish it from a load balancer or gateway, compare sidecar and ambient mode, and choose a simpler alternative when appropriate.
+  </div>
+
+  <h2 id="why-istio">If someone asks: "Why do we need Istio?"</h2>
+  <div class="callout">
+    <h3>A short answer you can explain</h3>
+    <p>"We do not need Istio just because we run Kubernetes. We need consistent identity, access policy and traffic controls between services, and maintaining those separately in every application has become unreliable. Istio can provide a shared enforcement layer. We should adopt it only if those benefits justify running and debugging another critical platform component."</p>
+  </div>
+  <h2>A scenario: Play works, but the platform is hard to operate</h2>
+  <p>Imagine a fictional music platform with 40 services owned by several teams using Java, Go and Python. This is a teaching example, not Spotify's architecture. A public gateway already routes listeners to the playback API:</p>
+  <pre><code>Listener -> public gateway -> playback API -> entitlement service
+                                         -> catalog service
+Background importer ---------------------> entitlement service?</code></pre>
+  <p>The edge works. The problems are now <strong>inside</strong> the platform:</p>
+  <ol>
+    <li>Teams implement internal TLS and certificate rotation differently. Some internal calls are still plaintext.</li>
+    <li>The entitlement service should accept only approved caller workloads, but shared network reachability is being mistaken for permission.</li>
+    <li>One SDK retries three times while another retries five times. A slow dependency causes a retry storm.</li>
+    <li>A new entitlement version needs a small, measurable share of internal requests before wider rollout.</li>
+    <li>Incidents cross language and team boundaries, but service-pair request metrics are inconsistent.</li>
+  </ol>
+  <h3>Explain each requirement, then the mechanism</h3>
+  <table>
+    <caption>What changes with a deliberately configured mesh</caption>
+    <tr><th scope="col">Requirement</th><th scope="col">Istio mechanism</th><th scope="col">What you still own</th></tr>
+    <tr><td>Encrypt and authenticate participating workloads</td><td>Workload identity, managed certificate rotation and mTLS on captured mesh paths</td><td>Enrollment, trust boundaries, bypass prevention and enforcing the intended policy; installation alone is not enforcement.</td></tr>
+    <tr><td>Allow playback, not the importer, to call entitlements</td><td>AuthorizationPolicy using authenticated workload principals</td><td>Distinct service accounts, least-privilege policy and negative tests. mTLS alone does not grant or deny business permissions.</td></tr>
+    <tr><td>Keep slow calls from consuming every resource</td><td>Configured timeouts, bounded retries and connection/outlier controls where supported</td><td>End-to-end deadlines, load shedding, idempotency and avoiding retries at multiple layers. A mesh does not create dependency capacity.</td></tr>
+    <tr><td>Send a small share to entitlement v2</td><td>Configured HTTP weighted routing to versioned destinations</td><td>Healthy endpoints, version selection, compatibility, SLO checks and rollback. A percentage is not a guarantee of exact counts in a small sample.</td></tr>
+    <tr><td>See which service pair is failing</td><td>Consistent proxy HTTP metrics and tracing integration</td><td>Telemetry backends, sampling, retention and application propagation of trace context across calls.</td></tr>
+  </table>
+  <p>In sidecar mode, Envoy handles the supported captured traffic next to the application. In ambient mode, ztunnel provides the secure L4 layer; HTTP routing, request metrics and L7 authorization require appropriate <strong>waypoints</strong>. Do not promise all these outcomes from ztunnel alone.</p>
+  <h3>Why not just use the existing components?</h3>
+  <ul>
+    <li><strong>LoadBalancer Service:</strong> exposes and distributes connections; it does not by itself provide authenticated workload identity and uniform internal HTTP policy.</li>
+    <li><strong>Ingress or an edge API gateway:</strong> controls traffic traversing that gateway. Direct playback-to-entitlement calls do not automatically pass through it. A deliberately designed internal gateway may meet a narrower requirement without a full mesh.</li>
+    <li><strong>NetworkPolicy:</strong> remains useful for network segmentation, but the standard API does not provide certificate-based caller identity or HTTP traffic splitting. Use it alongside, not as a synonym for, mesh policy.</li>
+    <li><strong>Application libraries and certificate automation:</strong> can meet the requirements without a mesh if teams can reliably maintain them. Certificate issuance alone does not wire application mTLS, authorization or safe retries.</li>
+  </ul>
+  <h3>When "no Istio" is the better answer</h3>
+  <p>A small catalog application with an edge gateway, working application TLS, consistent client libraries and no unmet internal traffic-policy requirement may gain little from Istio. Service count is context, not a threshold: even many services do not automatically require a mesh, and a few services can have strong identity requirements. Compare the smallest solution that closes the actual gap.</p>
+  <h3>Prove the reason before rolling it out</h3>
+  <p>Pilot one non-critical caller/destination pair. Record the baseline latency, error rate and resource use; define acceptable overhead before testing. Verify that an allowed identity succeeds, a disallowed identity fails, certificates rotate, and a rollback works. If HTTP features are required, test them on the chosen data plane. Test dependency timeouts without duplicated retries, then expand only after the platform team can operate upgrades, policy changes and proxy incidents.</p>
+  <div class="hand">
+    <h3>Practise the explanation</h3>
+    <p>A colleague says: "We already have an ALB or Application Gateway. Why add Istio?" Answer in four parts: the failing scenario, the missing capability, the mechanism and the trade-off.</p>
+    <details><summary>Show a sample answer</summary><p>"Our edge gateway already gets traffic into the platform. The unresolved problem is playback calling entitlements internally: callers need workload identity, explicit authorization and consistent traffic controls across our language stacks. Istio can enforce those on participating service-to-service paths; ambient HTTP features need a waypoint. It adds proxies, resource cost and operational complexity, so we will pilot that path and compare it with application TLS/policy or a narrower internal gateway before adopting it broadly."</p></details>
   </div>
 
   <h2>What a mesh does</h2>
@@ -28,7 +74,7 @@
   </ul>
 
   <h2>How Istio is built</h2>
-  <p>A control plane, <strong>istiod</strong>, distributes configuration and certificates. The data plane is Envoy proxies, deployed in one of two ways:</p>
+  <p>A control plane, <strong>istiod</strong>, distributes configuration and certificates. Sidecar and waypoint proxies use Envoy; ambient's L4 ztunnel is a separate purpose-built proxy, not Envoy. The two deployment models are:</p>
   <table>
     <tr><th></th><th>Sidecar mode</th><th>Ambient mode</th></tr>
     <tr><td>Proxy placement</td><td>An Envoy container injected into every Pod.</td><td>A per-node <strong>ztunnel</strong> for L4 and mTLS, and optional <strong>waypoint</strong> proxies per namespace or service for L7.</td></tr>
@@ -63,7 +109,7 @@ spec:
   - route:
     - {destination: {host: web, subset: v1}, weight: 90}
     - {destination: {host: web, subset: v2}, weight: 10}</code></pre>
-  <p>Enable gradually: label a namespace for the mesh, start with <code>PERMISSIVE</code> mTLS (which accepts both), watch the telemetry, then move to <code>STRICT</code>.</p>
+  <p>These policy fragments illustrate a sidecar-mode deployment, not a complete installation. The version split also needs a Service, healthy endpoints and a <code>DestinationRule</code> defining v1/v2 subsets. In sidecar mode, migrate gradually using <code>PERMISSIVE</code> (plaintext and mTLS), observe clients, then enforce <code>STRICT</code>. Ambient uses mTLS for traffic between enrolled workloads; PERMISSIVE is not the same migration switch there. Review ambient-specific enrollment, policy attachment and protection against out-of-mesh plaintext paths.</p>
 
   <h2>What it costs</h2>
   <ul>
@@ -108,8 +154,8 @@ spec:
       <li>A mesh is already installed. Do you still need an ingress controller or gateway?</li>
     </ol>
     <details><summary>Show answer</summary>
-      <p>1) Linkerd or Istio ambient, or Cilium mTLS if you already run Cilium. Avoid sidecar Istio with its full feature surface unless you need it.</p>
-      <p>2) The out-of-mesh client cannot speak mTLS. Start in PERMISSIVE, find who is not meshed from telemetry, then move to STRICT.</p>
+      <p>1) First assess whether application TLS and certificate automation already meet the requirement. If not, compare a focused mesh such as Linkerd with Istio's appropriate data plane; validate the actual encryption, identity and policy guarantees rather than treating every CNI authentication feature as equivalent to application-traffic encryption.</p>
+      <p>2) In sidecar mode, STRICT rejects clients without the required mesh mTLS. Use a staged PERMISSIVE migration, identify exceptions and then enforce STRICT. Ambient requires its own enrollment and plaintext-path policy review.</p>
       <p>3) Move to ambient mode (no per-Pod proxy), or switch to a lighter mesh; also trim proxy resource requests and scope what each sidecar must know.</p>
       <p>4) Yes. A mesh handles east-west; you still need an edge for external traffic, though the mesh's own gateway can serve as that edge.</p>
     </details>
@@ -130,6 +176,8 @@ spec:
     <tr><td>Traefik, HAProxy, Contour, APISIX</td><td><a href="https://doc.traefik.io/traefik/">Traefik</a>, <a href="https://www.haproxy.com/documentation/kubernetes-ingress/">HAProxy Ingress</a>, <a href="https://projectcontour.io/docs/">Contour</a>, <a href="https://apisix.apache.org/docs/">APISIX</a></td></tr>
     <tr><td>Istio architecture, istiod, PeerAuthentication, AuthorizationPolicy, VirtualService, ingress gateway</td><td><a href="https://istio.io/latest/docs/">Istio documentation</a></td></tr>
     <tr><td>Ambient mode: ztunnel and waypoint proxies</td><td><a href="https://istio.io/latest/docs/ambient/overview/">Ambient overview</a></td></tr>
+    <tr><td>Scenario: workload identity, authentication versus authorization</td><td><a href="https://istio.io/latest/docs/concepts/security/">Istio security concepts</a></td></tr>
+    <tr><td>Scenario: ambient HTTP routing, metrics and L7 authorization need a waypoint</td><td><a href="https://istio.io/latest/docs/ambient/usage/waypoint/">Waypoint requirements</a></td></tr>
     <tr><td>Linkerd</td><td><a href="https://linkerd.io/2/overview/">Linkerd overview</a></td></tr>
     <tr><td>Cilium Service Mesh</td><td><a href="https://docs.cilium.io/en/stable/network/servicemesh/">Cilium service mesh</a></td></tr>
     <tr><td>Consul, Kuma</td><td><a href="https://developer.hashicorp.com/consul/docs">Consul</a>, <a href="https://kuma.io/docs/">Kuma</a></td></tr>
@@ -138,11 +186,14 @@ spec:
 </main>
 <script type="application/json" id="quiz-data">
 [
- {"q":"What does Istio's istiod do?","options":["Proxies all traffic","Distributes configuration and certificates to the proxies","Replaces the CNI","Stores container images"],"answer":1,"why":"istiod is the control plane; Envoy proxies are the data plane."},
+ {"q":"What does Istio's istiod do?","options":["Proxies all traffic","Distributes configuration and certificates to the proxies","Replaces the CNI","Stores container images"],"answer":1,"why":"istiod is the control plane. Envoy handles sidecar/waypoint traffic; ambient ztunnel handles its L4 layer."},
  {"q":"What is the main difference between Istio sidecar and ambient modes?","options":["Ambient has no mTLS","Ambient uses per-node ztunnel and optional waypoints instead of a proxy per Pod","Sidecar mode uses no Envoy","Ambient needs a separate cluster"],"answer":1,"why":"Ambient moves proxying out of the Pods, cutting baseline overhead."},
- {"q":"Safest way to roll out strict mTLS?","options":["Set STRICT cluster-wide immediately","Start PERMISSIVE, observe who is not meshed, then move to STRICT","Disable the mesh at night","Use NodePort Services"],"answer":1,"why":"PERMISSIVE accepts both plaintext and mTLS while you find exceptions."},
+ {"q":"In sidecar mode, what is a staged approach to strict mTLS?","options":["Set STRICT cluster-wide immediately","Start PERMISSIVE, observe who is not meshed, then move to STRICT","Disable the mesh at night","Use NodePort Services"],"answer":1,"why":"Sidecar PERMISSIVE accepts plaintext and mTLS during migration. Ambient has different enrollment and enforcement considerations."},
  {"q":"Which is the lightweight alternative focused on simplicity?","options":["Linkerd","Kong","Contour","Traefik"],"answer":0,"why":"Linkerd trades features for a smaller footprint and simpler operation."},
- {"q":"You only need host routing and TLS for external web apps. What is the right amount of tooling?","options":["Istio with sidecars","A Gateway API implementation or ingress controller","Kong plus Istio","Linkerd"],"answer":1,"why":"Mesh and gateway features you do not use are cost without benefit."}
+ {"q":"You only need host routing and TLS for external web apps. What is the right amount of tooling?","options":["Istio with sidecars","A Gateway API implementation or ingress controller","Kong plus Istio","Linkerd"],"answer":1,"why":"Mesh and gateway features you do not use are cost without benefit."},
+ {"q":"Playback and an importer both have valid mesh identities. Does mTLS alone restrict entitlements to playback?","options":["Yes, encryption is authorization","No; configure an authorization policy for the allowed identity","Only if there are 40 services"],"answer":1,"why":"mTLS authenticates the peer. Authorization decides whether that peer may perform an operation."},
+ {"q":"Ambient ztunnel alone gives the entitlement team internal HTTP weighted routing and request metrics.","options":["True","False; those L7 capabilities require a configured waypoint","True if an edge load balancer exists"],"answer":1,"why":"Ztunnel handles L4. Ambient HTTP processing requires the appropriate waypoint and policies."},
+ {"q":"Which is the strongest reason to pilot Istio?","options":["All microservices must use it","We want another dashboard","An unmet cross-service identity/policy requirement, with measurable benefits and an operational owner"],"answer":2,"why":"Start from a concrete gap, compare simpler options, and validate cost and failure behavior before broad adoption."}
 ]
 </script>
 <script src="lessons.js"></script>
@@ -159,8 +210,7 @@ spec:
     if(edge||canary) out.push("<strong>Gateway API implementation</strong> (Envoy Gateway, Cilium, Traefik, NGINX Gateway Fabric, or your cloud's) — "+(canary?"weighted and header routing are standard fields.":"host/path routing and TLS."));
     if(api) out.push("<strong>An API gateway</strong> (Kong, APISIX, or a managed one) — per-consumer auth and quotas are gateway features.");
     if(mtls||authz||resil){
-      const heavy=authz&&resil;
-      out.push("<strong>A service mesh</strong> — "+(heavy?"Istio (ambient first) if you need L7 authorization and rich traffic policy; ":"Linkerd, Cilium or Istio ambient fit a mTLS-first need; ")+"start in permissive mode.");
+      out.push("<strong>Evaluate internal traffic controls</strong> — compare application TLS/policy and client libraries with a service mesh such as Istio or Linkerd. Choose from the actual identity, protocol and operating requirements, not this checklist alone. Istio ambient needs waypoints for HTTP policy and telemetry; sidecar and ambient mTLS migrations differ.");
     }
     if(!(mtls||authz||resil)) out.push("<strong>No mesh.</strong> Nothing you ticked needs one.");
     $("rec").innerHTML="<ul><li>"+out.join("</li><li>")+"</li></ul>";

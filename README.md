@@ -124,6 +124,7 @@ All site links and assets are relative so GitHub Pages project subpaths work.
 - Distinguish rules of thumb from guarantees; resource use depends on configuration, workload, retention, and implementation.
 - Avoid putting secrets or raw personal data into telemetry. Use identifiers only when justified, approved, and protected by suitable access and retention controls.
 - Keep examples reproducible, check calculations, and revise links when upstream documentation changes.
+- Explain technology choices through scenarios: the problem before the tool, the missing capability, how the tool addresses it, its costs and limits, simpler alternatives, when not to use it, and measurable evidence that it helped. See ["Why do we need Istio?"](Kubernetes/traffic/05-istio-and-service-mesh.html#why-istio) for a worked example.
 
 The [Networking fundamentals track](Networking/index.html) starts before Kubernetes
 and maps design requirements to AWS, Azure and self-managed Linux VMs. Its fictional

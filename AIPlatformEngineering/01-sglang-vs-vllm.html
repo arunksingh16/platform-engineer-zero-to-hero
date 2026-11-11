@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SGLang or vLLM: make the serving decision · AI platform engineering</title>
+<meta name="description" content="Why inference engines exist, how SGLang and vLLM relate, and how to choose using realistic traffic, latency targets and operating costs.">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-lesson="1">
+<main>
+  <span class="tag">Pilot lesson / Engineering decisions</span>
+  <h1>SGLang or vLLM: how would you choose?</h1>
+  <p class="lead">Your model answers correctly on a laptop demo. With many users, requests wait and GPU costs rise. The next question is not “which engine is famous?” It is “where does our serving time go, and which engine meets our users' needs on our hardware?”</p>
+  <div class="goal"><h3>By the end you can…</h3><p>Explain why a serving engine exists, describe the overlap between SGLang and vLLM, and defend a choice using workload evidence rather than a leaderboard.</p></div>
+
+  <h2>1. Start with the simplest working system</h2>
+  <p>You are building an internal coding assistant. Your application formats a prompt, loads model weights using a model library, and calls a generation function. <strong>Weights</strong> are the learned numbers that define the model. <strong>Inference</strong> means using those weights to produce an answer; you are not training a new model.</p>
+  <p>For a low-traffic experiment this can be enough. A hosted model API may also meet your needs without operating GPUs. This lesson assumes you have a reason to self-host: for example, a specific model or deployment requirement.</p>
+  <p>Now many developers ask questions at once. A naive one-request-at-a-time loop makes everyone queue. Simply starting more model processes can duplicate weights and exhaust GPU memory. You need to share GPU capacity efficiently while keeping interactive replies responsive.</p>
+
+  <h2>2. What a serving engine actually does</h2>
+  <p><strong>SGLang and vLLM are alternative inference frameworks with serving runtimes.</strong> They sit between your application's requests and model execution on accelerators. They manage work scheduling, memory and optimized execution. They are not different language models, and switching between them is not retraining.</p>
+  <pre><code>User → your application → SGLang OR vLLM → model execution on GPUs
+       prompt, tools,      queues, batches,   weights + computation
+       business logic      cache, execution</code></pre>
+  <p>An OpenAI-compatible endpoint can simplify connecting your application, but compatibility is not proof that every parameter, tool-call format or model behavior is identical. Test your actual client requests.</p>
+  <h3>First, understand the two phases of a reply</h3>
+  <ul>
+    <li><strong>Prefill:</strong> process the input tokens, the pieces of text the model reads. A long source file or conversation makes this substantial work.</li>
+    <li><strong>Decode:</strong> generate new tokens step by step. Long answers can spend most of their time here.</li>
+  </ul>
+  <p>The model stores intermediate attention information in a <strong>KV cache</strong> (key/value cache) so it does not recompute all previous attention state at each step. Think of this as working notes, not a stored final answer. The notes take memory; more active requests and longer contexts compete for that memory.</p>
+  <p><strong>Continuous batching</strong> lets the engine update the active group of requests as others finish, rather than waiting for a whole fixed batch. Both projects support this general approach. Their implementations, kernels (optimized GPU routines), memory strategies and supported configurations affect the results.</p>
+
+  <figure class="card">
+    <a href="../diagrams/inference-lifecycle.svg" aria-label="Open the inference-lifecycle diagram at full size"><img src="../diagrams/inference-lifecycle.svg" style="display:block;width:100%;height:auto;background:white" alt="The application sends a prompt to either SGLang or vLLM. The chosen engine looks for reusable prefix state, processes uncached input in prefill, runs decode to generate new tokens, and streams the answer back." loading="lazy"></a>
+    <figcaption><strong>3. Follow one request inside the chosen engine.</strong> These are logical stages, not separate deployed services. A cache hit can skip work for the matching prefix; a miss requires processing that input. Decode still produces a fresh answer. Prefill and decode execute the model on the allocated accelerators.
+      <p><a href="../diagrams/inference-lifecycle.svg">Full-size diagram</a> · <a href="../diagrams/inference-lifecycle.markdy">Markdy source</a></p>
+    </figcaption>
+  </figure>
+
+  <h2>3. Why SGLang gets discussed alongside vLLM</h2>
+  <table>
+    <tr><th>Idea</th><th>What it means</th><th>What it does not prove</th></tr>
+    <tr><td>vLLM and PagedAttention</td><td>vLLM is known for organizing attention-cache memory into blocks, avoiding the need to reserve one large contiguous region per request.</td><td>Memory efficiency alone does not tell you response latency on your workload.</td></tr>
+    <tr><td>SGLang and RadixAttention</td><td>SGLang is known for organizing reusable token prefixes in a tree so requests that share a beginning can reuse cached attention state.</td><td>SGLang is not the only engine that can reuse prefixes.</td></tr>
+    <tr><td>Prefix caching in both</td><td>Both can reuse attention state for matching prompt prefixes, reducing repeated prefill work when the cache is available.</td><td>Similar meaning is not enough: the reusable prefix must match the engine's token and cache-identity requirements.</td></tr>
+    <tr><td>Modern serving stacks</td><td>Both offer broad serving optimizations and model support, with details changing by release and hardware.</td><td>A historical signature feature is not an up-to-date feature matrix or a universal winner.</td></tr>
+  </table>
+  <div class="callout"><h3>These optimizations answer different questions</h3><p>“How do we store attention state efficiently?” and “Can we reuse work from an earlier request?” are related, but different. PagedAttention versus RadixAttention is not a simple either/or contest. Compare the whole serving configuration.</p></div>
+  <h3>A concrete cache example</h3>
+  <pre><code>Request A: [shared instructions][same source file][explain function A]
+Request B: [shared instructions][same source file][explain function B]
+            └──────── reusable prefix ─────────┘</code></pre>
+  <p>If the prefix remains cached, B may skip recomputing that shared portion. The engine still generates a fresh answer. Put a unique timestamp at the beginning of every prompt and the common prefix may disappear. Send B to a different replica without that cache and reuse may disappear too. Cache eviction under memory pressure also matters.</p>
+  <p>Prefix caching mainly helps prefill; it does not eliminate the work of generating a long answer. That is why “our prompts repeat” is a useful hypothesis, not enough evidence to choose SGLang over vLLM.</p>
+
+  <h2>4. The senior engineer starts with a workload</h2>
+  <p><strong>This is a fictional engineering exercise, not a report about any company's internal stack.</strong> Imagine an engineer responsible for the coding assistant. The team already operates vLLM and wants to evaluate SGLang.</p>
+  <ul>
+    <li><strong>Model:</strong> the same instruction-tuned model revision, tokenizer and chat template on both engines. Confirm support before running performance tests.</li>
+    <li><strong>Hardware:</strong> the same GPU type and count per replica, memory limits and deployment environment.</li>
+    <li><strong>Traffic:</strong> a representative mix of short questions, long source-file prompts and follow-up conversations. Include both shared-prefix requests and unique inputs.</li>
+    <li><strong>Example service targets:</strong> at an offered load of four requests per second per replica, p95 time to first token below 1.5 seconds, p95 per-request mean time per output token below 50 ms, and request errors below 0.5%.</li>
+  </ul>
+  <p><strong>p95</strong> means 95% of measured requests are at or below that value. <strong>Time to first token (TTFT)</strong> includes waiting before the first output arrives. <strong>Time per output token (TPOT)</strong> describes generation pace after that first token; here we calculate a mean per request and take its p95. These definitions matter when comparing benchmark tools. Also record end-to-end completion time and streaming stalls so an average does not hide a poor experience.</p>
+
+  <h2>5. Run a comparison that could change your mind</h2>
+  <ol>
+    <li><strong>Pass the compatibility gate.</strong> Verify model loading, context limits, precision, required tool calls or structured outputs, and representative answer-quality checks. A fast endpoint that breaks the app fails.</li>
+    <li><strong>Fix the comparison contract.</strong> Record engine/container versions, GPU and driver versions, model revision, parallelism, precision, prompt format, sampling parameters and output-length distribution. Give each engine a comparable tuning budget.</li>
+    <li><strong>Replay representative traffic.</strong> Use the same arrival schedule for both. Sweep from light load to saturation. A fixed-concurrency client that waits for replies can hide how much a queue grows when real arrivals continue.</li>
+    <li><strong>Separate cold and warm cache runs.</strong> First measure without reusable state, then with realistic reuse. Test unique prompts, bursts, cancellations, restarts and multiple replicas. Do not warm one engine and compare it with the other's cold start.</li>
+    <li><strong>Measure useful capacity.</strong> Record completed requests and output tokens per second, TTFT, TPOT, completion time, errors, memory use and cache reuse. Find the highest sustained load that still meets the latency and error targets.</li>
+    <li><strong>Repeat and operate it.</strong> Repeat runs to check variation, then use a longer soak test to expose memory growth or failures. Check metrics, upgrade and rollback procedures, and whether the on-call team can diagnose a stuck request.</li>
+  </ol>
+  <p>A practical cost measure is <strong>GPU cost per successful request meeting the service targets</strong>, on the same input/output mix. Raw tokens per second can reward a configuration that makes users wait too long. Include the engineering cost of migration as well.</p>
+
+  <h2>6. What would justify choosing SGLang?</h2>
+  <figure class="card">
+    <a href="../diagrams/serving-engine-decision.svg" aria-label="Open the serving-engine decision diagram at full size"><img src="../diagrams/serving-engine-decision.svg" style="display:block;width:100%;height:auto;background:white" alt="Define workload and service targets. Reject a candidate configuration if required features fail or targets are missed under load. If it passes, compare the benefit with migration cost. Canary with rollback when justified; otherwise keep the working baseline." loading="lazy"></a>
+    <figcaption><strong>4. The candidate earns a canary, not an automatic migration.</strong> Apply this decision process to either engine. “Reject” means this tested configuration failed the gate; tuning or a different supported configuration may justify another test. Keeping the baseline assumes it already meets your requirements.
+      <p><a href="../diagrams/serving-engine-decision.svg">Full-size diagram</a> · <a href="../diagrams/serving-engine-decision.markdy">Markdy source</a></p>
+    </figcaption>
+  </figure>
+  <p><strong>Invented numbers for reasoning only — these are not measured product benchmarks.</strong> Suppose repeated warm-cache tests of the workload above produced the following results at the same four requests per second. Assume both passed the compatibility and quality checks.</p>
+  <table>
+    <tr><th>Measurement</th><th>Existing vLLM configuration</th><th>Candidate SGLang configuration</th></tr>
+    <tr><td>p95 TTFT (target &lt; 1.5 s)</td><td>1.8 s</td><td>1.2 s</td></tr>
+    <tr><td>p95 per-request mean TPOT (target &lt; 50 ms)</td><td>38 ms</td><td>40 ms</td></tr>
+    <tr><td>Request errors (target &lt; 0.5%)</td><td>0.1%</td><td>0.1%</td></tr>
+  </table>
+  <p>Here SGLang is a promising choice because it meets all three stated targets while the current vLLM configuration misses first-token latency. It is not faster on every metric: vLLM has slightly better TPOT in this example. The conclusion concerns these configurations and this traffic, not every deployment of either engine.</p>
+  <p>The engineer investigates the cause rather than attributing the difference to RadixAttention automatically. Queueing, cache hit rate, scheduling and kernels could all contribute. They check whether tuning vLLM closes the gap, and whether SGLang's advantage survives cold caches, load variation and replica routing.</p>
+  <div class="goal"><h3>A defensible decision</h3><p>“If this advantage persists under production-like conditions, canary SGLang for the coding-assistant pool. It meets our latency target on the allocated GPUs. Keep the old pool available for rollback, and expand only if real traffic meets the same quality, latency and reliability gates.”</p></div>
+  <h3>When would the same engineer keep vLLM?</h3>
+  <p>If both engines meet the targets at similar cost, the team's working vLLM dashboards, deployment pipeline and debugging experience may outweigh a small speed difference. Keep vLLM if SGLang lacks a required supported configuration or needs more operational work than the benefit warrants. Likewise, an existing healthy SGLang deployment should not migrate to vLLM just because a different benchmark favors it.</p>
+  <p><strong>When neither is necessary:</strong> a hosted endpoint may fit your requirements and economics; a simple generation script may suffice for a small offline experiment. Self-hosted serving infrastructure should solve a demonstrated need.</p>
+
+  <div class="hand">
+    <h3>Make the decision yourself</h3>
+    <p>A teammate says, “Our prompts reuse documents, so choose SGLang. Its benchmark has more tokens per second.” What three questions would you ask?</p>
+    <details><summary>Walk through an answer</summary><ol><li>Do requests share an exact reusable prefix, and will it remain available on the replica receiving the request? vLLM also supports prefix caching.</li><li>Was the benchmark run on our model, hardware, traffic mix and required latency? Higher throughput can come with worse waiting time.</li><li>Does the candidate improve service-target-compliant capacity or cost enough to justify migration, while preserving required features, quality and reliability?</li></ol></details>
+  </div>
+  <h2>Sources and deeper reading</h2>
+  <p>Use the documentation for the versions you deploy. Architecture explains what to investigate; measurements decide the winner for your workload.</p>
+  <ul>
+    <li><a href="https://docs.sglang.ai/">SGLang documentation</a> — serving runtime, RadixAttention and supported deployments.</li>
+    <li><a href="https://docs.vllm.ai/en/stable/">vLLM documentation</a> — serving configuration, model support and optimization.</li>
+    <li><a href="https://docs.vllm.ai/en/stable/features/automatic_prefix_caching/">vLLM automatic prefix caching</a> — reuse of shared prefixes and the distinction between prefill and decode benefits.</li>
+    <li><a href="index.html#resources-title">Continue with the curated SGLang and vLLM learning paths.</a></li>
+  </ul>
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+  {"q":"Why introduce a serving engine instead of starting one model process per user?","options":["To retrain the model for every request","To coordinate scheduling, batching and GPU memory across requests","To remove the need for model weights","To guarantee correct answers"],"answer":1,"why":"A serving engine manages shared inference resources. It does not train the model or guarantee answer correctness."},
+  {"q":"Your workload has repeated prompt prefixes. What follows?","options":["SGLang must win","vLLM cannot reuse them","Evaluate cache reuse in both engines on representative traffic","Decode work disappears"],"answer":2,"why":"Both support prefix reuse. The gain depends on matching prefixes, cache availability and how much time is spent in prefill."},
+  {"q":"Engine A produces more tokens per second but fails the required p95 TTFT. What should decide the choice?","options":["Peak throughput alone","Which project is newer","Capacity and cost while meeting quality, latency and reliability targets","The shortest installation command"],"answer":2,"why":"Throughput that violates the user experience target is not sufficient evidence for an interactive service."},
+  {"q":"Both engines meet your targets at similar cost. Your team already operates vLLM reliably. What is reasonable?","options":["Keep vLLM unless a concrete benefit justifies migration","Always switch to SGLang","Install both in series for every request","Choose using a benchmark on unrelated hardware"],"answer":0,"why":"Operational familiarity and migration cost matter when performance and features already meet requirements."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+</body>
+</html>

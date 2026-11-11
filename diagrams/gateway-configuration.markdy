@@ -1,0 +1,20 @@
+scene "Gateway API describes; Kong implements" theme=paper type=architecture
+layout TB
+
+user Platform "Platform team"
+user App "Application team"
+api Kubernetes "Kubernetes API"
+controller KIC "Kong Ingress Controller"
+gateway Kong "Kong Gateway"
+
+beat reveal "Configuration path, not customer traffic":
+  show $nodes stagger=50ms
+
+beat declare "Teams declare desired routing within their permissions":
+  Platform -> Kubernetes "GatewayClass + Gateway"
+  App -> Kubernetes "HTTPRoute + Kong policies"
+
+beat reconcile "KIC watches resources and configures the proxy":
+  Kubernetes ~> KIC "resource updates"
+  KIC -> Kong "translated configuration"
+  glow Kong color=#08766d

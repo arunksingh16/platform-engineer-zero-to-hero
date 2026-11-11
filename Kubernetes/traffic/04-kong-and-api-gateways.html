@@ -11,22 +11,50 @@
 <main>
   <span class="tag">Lesson 4</span>
   <h1>Kong and API gateways</h1>
-  <p class="lead">An ingress controller answers "which backend gets this request?". An API gateway also answers "is this caller allowed, how much may they send, and what should the request look like when it arrives?". Kong is the best-known open source gateway on Kubernetes; the concept matters more than the product.</p>
+  <p class="lead">“We already have Gateway API. Why would we need Kong?” Because an API describes the routing you want; an implementation makes it happen. Whether Kong is the right implementation depends on the policies your APIs need and what your team can operate.</p>
 
   <div class="goal">
     <h3>By the end you can…</h3>
-    Say what an API gateway adds, install and configure Kong with Gateway API and plugins, and choose between Kong and its alternatives.
+    Explain why Services, Ingress, Gateway API and Kong exist, trace configuration separately from requests, and justify a gateway choice for a real workload.
   </div>
 
-  <h2>What a gateway adds</h2>
+  <h2 id="pilot-scenario">Pilot scenario: a shop becomes a partner platform</h2>
+  <p><strong>A fictional team, with realistic requirements.</strong> You run a shop on Kubernetes. Customers browse products and submit orders. Later, partners will call the orders API directly. Follow the requirements as they grow: each new tool should earn its place.</p>
+  <h3>Day one: get customers to the shop</h3>
+  <p>Pods come and go, so a <strong>Service</strong> gives the application a stable address and a way to reach its ready backends. A Service of type <code>LoadBalancer</code> can request an external entry point when your environment provides a load-balancer integration. For one application, that might be enough.</p>
+  <p>Now you want one HTTPS entry point, with <code>/products</code> and <code>/orders</code> going to different Services. A basic Service does not express these HTTP path rules. <strong>Ingress</strong> describes host/path routing and TLS configuration, and an <strong>Ingress controller</strong> configures a proxy or load balancer to carry it out. The object is the instruction; the implementation does the work.</p>
+  <h3>Month three: teams need independent control</h3>
+  <p>Ten teams share the entry point. Platform engineers must own certificates, while application teams need to update routes and send 10% of requests to a new version. Ingress implementations may support this, but advanced routing often needs their own annotations. <strong>Gateway API</strong> gives these concerns a richer, role-oriented model: <code>GatewayClass</code> selects the implementation, <code>Gateway</code> defines listeners and route attachment boundaries, and <code>HTTPRoute</code> defines application routing.</p>
+  <p>This is why Kubernetes gained another routing API: not because Ingress could never route traffic, but because shared infrastructure and richer routing needed a better configuration contract. Services still identify application backends. Gateway API CRDs and a compatible implementation must be installed or supplied by your platform.</p>
+  <h3>Month six: partners need identities and quotas</h3>
+  <p>Partners now need API credentials, different request allowances and usage visibility. Routing <code>/orders</code> to the right Service does not, by itself, define a customer subscription or enforce a quota. You need an implementation and policy configuration that can do that. <strong>Kong Gateway</strong> is one candidate, with plugins and consumer identities. Other implementations can also provide authentication and rate limiting; check the exact features rather than the product category.</p>
+
+  <div class="callout">
+    <h3>Gateway API is not an API gateway product</h3>
+    <p>Think of Gateway API as a standard order form, KIC as the person translating that form into operating instructions, and Kong Gateway as the machinery doing the work. Installing blank forms does not install the machinery. You need <em>an</em> implementation, not necessarily Kong.</p>
+  </div>
+  <h2>Two paths: configuration and customer traffic</h2>
+  <figure class="card">
+    <a href="../../diagrams/gateway-configuration.svg" aria-label="Open the configuration-path diagram at full size"><img src="../../diagrams/gateway-configuration.svg" style="display:block;width:100%;height:auto;background:white" alt="Platform and application teams submit Gateway API resources to the Kubernetes API. KIC watches updates and translates them into Kong Gateway configuration." loading="lazy"></a>
+    <figcaption><strong>1. Configuration path: describe, then reconcile.</strong> In this example the platform team manages the GatewayClass and Gateway, and app teams manage permitted routes and policies. Kubernetes stores the objects; KIC translates them. No customer request travels along this path. RBAC and route-attachment rules enforce ownership.
+      <p><a href="../../diagrams/gateway-configuration.svg">Full-size diagram</a> · <a href="../../diagrams/gateway-configuration.markdy">Markdy source</a></p>
+    </figcaption>
+  </figure>
+  <figure class="card">
+    <a href="../../diagrams/kong-request-path.svg" aria-label="Open the customer-request diagram at full size"><img src="../../diagrams/kong-request-path.svg" style="display:block;width:100%;height:auto;background:white" alt="A partner request travels through an external load balancer to Kong. Kong checks shared Redis counters when configured, then forwards an allowed request to an Orders Pod discovered through its Service. Responses return through Kong and the load balancer." loading="lazy"></a>
+    <figcaption><strong>2. Request path: use the already-configured proxy.</strong> Kong handles routing and configured policies. Redis appears only for a shared-counter strategy that uses it; the local rate-limit example below does not. Rejected requests do not reach the application. The Orders Service identifies backends rather than necessarily adding another proxy hop.
+      <p><a href="../../diagrams/kong-request-path.svg">Full-size diagram</a> · <a href="../../diagrams/kong-request-path.markdy">Markdy source</a></p>
+    </figcaption>
+  </figure>
+  <p>KIC watches configuration; it is not an extra hop for each customer request. Kong can route directly to discovered Pod endpoints, so the Service is not necessarily a separate proxy hop. Kong can also be the proxy implementing your Gateway API routes: you do not automatically need an existing gateway proxy followed by a second Kong proxy.</p>
+
+  <h2>What are you actually choosing?</h2>
   <table>
-    <tr><th>Concern</th><th>Ingress controller</th><th>API gateway</th></tr>
-    <tr><td>Host/path routing, TLS</td><td>Yes</td><td>Yes</td></tr>
-    <tr><td>Authentication (API keys, JWT, OIDC, mTLS)</td><td>Limited, via annotations</td><td>First-class plugins</td></tr>
-    <tr><td>Rate limiting and quotas per consumer</td><td>Basic, per IP</td><td>Per consumer, per route, with shared counters</td></tr>
-    <tr><td>Request/response transformation</td><td>Rewrites</td><td>Header, body and format transforms</td></tr>
-    <tr><td>Consumers, API products, developer portal</td><td>No</td><td>Often, in the commercial tier</td></tr>
-    <tr><td>Observability per API</td><td>Basic metrics</td><td>Per-route metrics, logging and tracing plugins</td></tr>
+    <tr><th>Decision</th><th>Question to ask</th><th>In our shop</th></tr>
+    <tr><td>Configuration API</td><td>How do teams declare routing and ownership?</td><td>Gateway API for shared listeners and team-owned routes.</td></tr>
+    <tr><td>Implementation</td><td>What actually routes requests and supports the required features?</td><td>Evaluate Kong, Envoy Gateway or an existing platform implementation.</td></tr>
+    <tr><td>API policies</td><td>How do we identify consumers, enforce limits and expose usage?</td><td>Plugins or extension policies; verify edition, support and operational dependencies.</td></tr>
+    <tr><td>Application authorization</td><td>May this customer read this particular order?</td><td>The application still enforces business-level access, even if the gateway validates credentials.</td></tr>
   </table>
 
   <h2>Kong on Kubernetes</h2>
@@ -57,7 +85,22 @@ spec:
   rules:
   - matches: [{path: {type: PathPrefix, value: /orders}}]
     backendRefs: [{name: orders, port: 80}]</code></pre>
-  <p>Kong is also usable without a database ("DB-less"), with all configuration coming from Kubernetes objects — the normal mode for Kubernetes.</p>
+  <p>This fragment assumes a Kong-managed Gateway named <code>kong</code> and an <code>orders</code> Service already exist in <code>prod</code>, along with the required CRDs and controller. It demonstrates attaching a policy, not a full installation.</p>
+  <p><strong>Important for the partner scenario:</strong> <code>policy: local</code> uses each Kong instance's own counters. Three replicas do not automatically share one 100-request allowance. This example also does not configure consumer authentication or paid tiers. For shared per-customer quotas, configure identity, select a supported shared-counter strategy (such as Redis), and test behavior during dependency failure. A simple local rate limit is not a billing-grade quota.</p>
+  <p>Kong can run without a database ("DB-less"), with KIC translating Kubernetes resources into gateway configuration. Other deployment topologies exist; plugin compatibility and supporting services depend on your chosen topology.</p>
+
+  <h2>The senior engineer's decision</h2>
+  <p>The engineer does not begin with “Kong has more features.” They ask what the existing gateway cannot do, how precisely quotas must behave, who will operate policy dependencies, and whether the required plugins are available in the intended edition.</p>
+  <ol>
+    <li><strong>Try the existing implementation first.</strong> If its supported policies meet partner authentication, limits and usage requirements, reuse it. Gateway API adoption alone is not a reason to replace it.</li>
+    <li><strong>Evaluate Kong if there is a concrete gap.</strong> Suppose the team already operates Kong elsewhere and has tested consumer-management and plugin workflows. Reusing that experience can make Kong a sensible choice for the partner edge.</li>
+    <li><strong>Prove the behavior.</strong> Send requests from two consumers through multiple replicas. Check independent limits, credential revocation, policy updates, latency under load and the agreed behavior if the counter store is unavailable.</li>
+    <li><strong>Include migration costs.</strong> Test route and TLS parity, capacity, upgrades and rollback. Gateway API makes supported routing configuration more portable; Kong-specific policies still need translation when moving vendors.</li>
+  </ol>
+  <div class="goal">
+    <h3>A defensible decision for this scenario</h3>
+    <p>“Use Gateway API for routing ownership. Choose Kong for the partner entry point if its tested consumer-policy workflow fills our current gap and fits our operating model. Reuse our existing implementation if it meets the same requirements. For the original shop with only host/path routing, a migration solely to add Kong has no demonstrated benefit.”</p>
+  </div>
 
   <h2>When to use a gateway</h2>
   <ul>
@@ -65,7 +108,7 @@ spec:
     <li>Authentication and rate limiting must be consistent across many services without each team re-implementing them.</li>
     <li>You need to front non-Kubernetes backends too, with one policy layer.</li>
   </ul>
-  <p><strong>Skip it when</strong> you only route hosts and paths to your own web apps. A plain Gateway API implementation does that with less to run, and a gateway adds a component that every request depends on.</p>
+  <p><strong>When you do not need a new product:</strong> if your existing supported implementation handles your host/path routing and TLS, keep it. Kong can do simple routing too, but replacing a working proxy has a cost. Adding a second proxy creates another request-path dependency.</p>
 
   <h2>The alternatives</h2>
   <table>
@@ -91,18 +134,29 @@ spec:
     </ol>
     <details><summary>Show answer</summary>
       <p>1) A gateway: per-consumer limits need consumer identity and shared counters.</p>
-      <p>2) No. A Gateway API implementation or Ingress controller is enough; Kong would add an operational dependency without a feature you use.</p>
+      <p>2) You need a routing implementation, but not specifically Kong. Keep an existing supported implementation if it meets the requirements.</p>
       <p>3) From Kubernetes resources — Ingress or Gateway API objects and Kong CRDs — translated by the Kong Ingress Controller.</p>
     </details>
   </div>
 
+  <div class="hand">
+    <h3>Decision exercise: challenge the proposal</h3>
+    <p>A colleague proposes “install Gateway API, then put Kong behind our existing proxy so the API will work.” What would you clarify before approving it?</p>
+    <details><summary>Walk through the reasoning</summary><p>Ask which implementation will reconcile the Gateway resources and which proxy will handle traffic. Gateway API objects do not process requests. Kong could implement the routes itself, so two proxies need an explicit justification. Then ask which missing policy requires Kong, and test whether the existing implementation already supports it.</p></details>
+  </div>
+  <h2>Sources and next steps</h2>
+  <ul>
+    <li><a href="https://gateway-api.sigs.k8s.io/docs/">Gateway API introduction</a> — design goals and the distinction between Gateway API and API gateways.</li>
+    <li><a href="https://developer.konghq.com/kubernetes-ingress-controller/">Kong Ingress Controller documentation</a> — configuration flow, deployment models and support.</li>
+    <li><a href="https://developer.konghq.com/plugins/rate-limiting/">Kong rate-limiting plugin</a> — counter policies and compatibility.</li>
+  </ul>
   <section id="quiz"></section>
 </main>
 <script type="application/json" id="quiz-data">
 [
- {"q":"What does an API gateway add over an ingress controller?","options":["Pod scheduling","Per-consumer auth, quotas, and transformations","Pod networking","Node autoscaling"],"answer":1,"why":"Routing is shared; gateways add API-management policy."},
+  {"q":"Gateway API resources exist, but no compatible controller or data plane is installed. What is missing?","options":["Another HTTPRoute","An implementation to configure and handle traffic","A Kong subscription in every case","A second Service for each route"],"answer":1,"why":"Gateway API describes desired behavior. Kong is one possible implementation, not a mandatory companion."},
  {"q":"What is the Kong Ingress Controller?","options":["The proxy that handles traffic","A controller that translates Kubernetes resources into Kong configuration","A CNI plugin","A database"],"answer":1,"why":"KIC is the control plane; Kong Gateway is the data plane."},
- {"q":"When is Kong probably overkill?","options":["Publishing partner APIs with quotas","Only host and path routing for your own web apps","Centralised JWT validation","Per-consumer rate limits"],"answer":1,"why":"A plain Gateway API implementation does simple routing with less to operate."},
+  {"q":"When is migrating to Kong least justified?","options":["It fills a verified policy gap","Your existing supported proxy already meets all requirements","Its tested plugins simplify needed consumer workflows","The team has validated a specific operational benefit"],"answer":1,"why":"Choose from requirements and migration cost, not the assumption that Gateway API requires Kong."},
  {"q":"Which is a managed gateway outside the cluster?","options":["Envoy Gateway","Traefik","Azure API Management","Contour"],"answer":2,"why":"APIM, AWS API Gateway and Apigee are hosted services."}
 ]
 </script>
