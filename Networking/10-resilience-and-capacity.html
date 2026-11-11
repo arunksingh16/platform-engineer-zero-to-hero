@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>10. Capacity and failure design | Networking fundamentals</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-lesson="10">
+<main>
+  <span class="tag">Lesson 10</span>
+  <h1>Capacity and failure design</h1>
+  <p class="lead">Do the capacity calculation after removing a failure domain. "We have three zones" says nothing about whether the survivors can carry traffic.</p>
+  <div class="goal"><h3>By the end you can...</h3>Budget surviving capacity, in-flight work, retries and network cost.</div>
+  <h2>Start with measured safe capacity</h2>
+  <p>Measure per-instance throughput at the latency/error SLO using a representative request mix. Peak benchmark throughput is not safe operating capacity. Six VMs across three zones, each safe at 500 requests/s, provide 3,000 requests/s normally and 2,000 after losing a two-VM zone. A 2,400 requests/s peak does not fit after that loss.</p>
+  <div class="widget">
+    <h3>Remove one zone</h3>
+    <p>Three zones, two VMs each, 500 requests/s safe capacity per VM. No spare startup capacity is assumed.</p>
+    <label for="demand">Peak requests/s</label>
+    <input id="demand" type="range" min="500" max="3500" step="100" value="2400">
+    <p id="capacity" role="status"></p>
+  </div>
+  <h2>Requests are not the only budget</h2>
+  <p>Little's Law gives average in-flight work <code>L = arrival rate x average time in system</code> in a stable system. At 2,000 requests/s and 0.2 s average time, that is 400 requests in flight. If latency rises to 2 s at the same admitted rate, it becomes 4,000. These are averages, not p99 limits or a prediction of an unstable queue.</p>
+  <p>Budget sockets, file descriptors, conntrack entries, SNAT ports, TLS handshakes, packets/s and bandwidth separately. Autoscaling cannot instantly replace lost capacity: detection, VM startup, registration and warm-up take time. Cloud LB scaling and quotas also need review for sudden events.</p>
+  <h2>Retries amplify incidents</h2>
+  <p>If each of three nested call layers makes up to three attempts, one original operation can produce up to <code>3 x 3 x 3 = 27</code> calls to the deepest service. Retry only suitable failures within an end-to-end deadline, use exponential backoff and jitter, and enforce a retry budget. Writes may need idempotency keys; a timeout does not prove the write never happened.</p>
+  <p>Use admission control, bounded queues, circuit breaking and deliberate load shedding. A degraded catalog response can be better than exhausting every thread. For persistent clients, stagger reconnects and test a proxy/zone loss with realistic connection counts.</p>
+  <h2>The network bill follows the path</h2>
+  <p>Compare LB processing/capacity charges, NAT data processing, inter-zone/inter-region transfer, internet egress, CDN delivery and logs. Cross-zone balancing may help availability while changing traffic paths and cost; provider and service charging rules differ. Trace bytes across each hop rather than assuming a free private path.</p>
+  <div class="hand"><h3>Do it by hand</h3><p>How many 500 requests/s VMs per zone, evenly spread across three zones, are needed to sustain 2,400 requests/s after any one zone fails?</p><details><summary>Show answer</summary><p>Two surviving zones x n VMs x 500 must be at least 2,400. n must be at least 2.4, so use at least 3 VMs per zone, 9 total, before additional safety margin. At 2,400 requests/s, surviving utilization is 80% of the stated safe capacity.</p></details></div>
+  <p>Primary reading: <a href="https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/">AWS Builders' Library: timeouts, retries and jitter</a>, <a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/bulkhead">bulkhead isolation</a>.</p>
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"Six 500 requests/s VMs lose a zone containing two VMs. Remaining safe capacity?","options":["3,000 requests/s","2,000 requests/s","1,000 requests/s"],"answer":1,"why":"Four surviving VMs x 500 = 2,000 requests/s."},
+ {"q":"2,000 requests/s x 0.2 seconds average time gives...","options":["400 average in-flight requests","10,000 TCP sockets exactly","400 requests/s"],"answer":0,"why":"Little's Law estimates average concurrency, not exact socket usage."},
+ {"q":"Why add jitter to retries?","options":["To guarantee success","To avoid all clients retrying in synchronized bursts","To make writes inherently idempotent"],"answer":1,"why":"Jitter spreads retry load; it does not replace deadlines, budgets or idempotency."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+<script>
+(function(){
+  const input = document.getElementById("demand");
+  function update() {
+    const demand = Number(input.value);
+    const fits = demand <= 2000;
+    const output = document.getElementById("capacity");
+    output.textContent = demand + " requests/s: " + (fits ? "fits" : "exceeds") +
+      " the 2,000 requests/s surviving capacity (" + Math.round(demand / 2000 * 100) +
+      "%). " + (fits ? "Check additional headroom and other bottlenecks." : "Add ready capacity or shed load before a zone fails.");
+    output.className = fits ? "ok" : "err";
+  }
+  input.addEventListener("input", update);
+  update();
+})();
+</script>
+</body>
+</html>

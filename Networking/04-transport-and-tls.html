@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>4. TCP, UDP, HTTP and TLS | Networking fundamentals</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-lesson="4">
+<main>
+  <span class="tag">Lesson 4</span>
+  <h1>TCP, UDP, HTTP and TLS</h1>
+  <p class="lead">An open port is not a working application. Transport, encryption and application protocol each have their own handshake and failure modes.</p>
+  <div class="goal"><h3>By the end you can...</h3>Choose a transport-aware path and reason about TLS boundaries, connection reuse and latency.</div>
+  <h2>Connections versus requests</h2>
+  <p>TCP provides an ordered reliable byte stream, with retransmission, flow control and congestion control. A connection is commonly identified by source/destination IP and port plus protocol: the five-tuple. UDP carries datagrams without built-in ordered reliable delivery; applications may add those properties.</p>
+  <p>HTTP/1.1 can reuse connections; HTTP/2 multiplexes streams on one TCP connection. Packet loss can still stall that TCP stream. HTTP/3 uses QUIC over UDP, with TLS integrated into QUIC. "UDP" does not automatically mean unencrypted or unreliable at the application layer. gRPC commonly uses HTTP/2; verify support on <em>both</em> legs of a proxy.</p>
+  <h2>Where does TLS end?</h2>
+  <ul>
+    <li><strong>Pass-through:</strong> encrypted bytes reach the backend. A transport balancer cannot route on the encrypted URL path.</li>
+    <li><strong>Termination:</strong> the proxy presents the certificate and decrypts requests. It can inspect HTTP and apply L7 rules.</li>
+    <li><strong>Re-encryption:</strong> a second TLS connection protects proxy-to-backend traffic. Configure certificate trust and hostname validation on that leg.</li>
+    <li><strong>mTLS:</strong> both sides authenticate with certificates. Decide which hop authenticates the original client and how verified identity reaches the application.</li>
+  </ul>
+  <p>SNI communicates the intended TLS server name; ALPN negotiates protocols such as HTTP/2. Neither is the HTTP URL path. Certificate expiry, incomplete chains, wrong names and untrusted issuers can break an otherwise reachable service. Do not "fix" this by disabling verification.</p>
+  <h2>The latency budget</h2>
+  <p>In a simplified new TCP + TLS 1.3 connection, TCP costs about one round trip and a full TLS handshake another before ordinary application traffic. At 80 ms RTT that is roughly 160 ms, excluding DNS, processing and transfer. Resumption, QUIC, reuse and network conditions change the result. A connection pool can save more than tuning a tiny handler.</p>
+  <p>MTU is the largest packet a link carries without fragmentation at that layer. Tunnels reduce effective payload size; broken Path MTU Discovery can make small requests succeed while large responses stall. Allow required ICMP/ICMPv6 signaling according to policy rather than blocking all of it blindly.</p>
+  <div class="hand"><h3>Do it by hand</h3><p>Your proxy has a 30-second idle timeout; the backend emits a stream update every 45 seconds. Why do clients disconnect? Would raising the total request deadline alone fix it?</p><details><summary>Show answer</summary><p>The quiet interval exceeds the proxy's idle timeout. Align idle settings across the path or use supported protocol heartbeats with margin. A total deadline is a different timer. Verify whether heartbeats actually reset each component's idle timer; behavior is product-specific.</p></details></div>
+  <p>Primary reading: <a href="https://www.rfc-editor.org/rfc/rfc8446">TLS 1.3</a>, <a href="https://www.rfc-editor.org/rfc/rfc9114">HTTP/3</a>, <a href="https://www.rfc-editor.org/rfc/rfc8201">IPv6 Path MTU Discovery</a>.</p>
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"Which transport does HTTP/3 use?","options":["QUIC over UDP","Only TCP","DNS"],"answer":0,"why":"QUIC provides secure transport over UDP for HTTP/3."},
+ {"q":"Can a TLS pass-through balancer inspect an encrypted URL path?","options":["Yes, via SNI","No","Yes, via the TCP port"],"answer":1,"why":"SNI is a server name, not the URL. HTTP path inspection requires decryption."},
+ {"q":"What must re-encryption include?","options":["Disabling certificate checks","A public backend IP","An explicit backend trust and hostname-validation policy"],"answer":2,"why":"Encryption without authenticating the intended backend leaves an important trust gap."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+</body>
+</html>

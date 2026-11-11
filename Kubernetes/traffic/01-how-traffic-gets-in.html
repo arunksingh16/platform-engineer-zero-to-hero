@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>1. How traffic gets in · Ingress, gateways and service mesh</title>
+<meta name="description" content="North-south versus east-west traffic, L4 versus L7, and what Services already give you before you add anything.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="1">
+<main>
+  <span class="tag">Lesson 1</span>
+  <h1>How traffic gets in, and the layers involved</h1>
+  <p class="lead">Before choosing Ingress, Kong or Istio, you need a map of where requests travel and what each stop can do. Two distinctions carry almost everything: <em>which direction</em> the traffic goes, and <em>which protocol layer</em> a component understands.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Label traffic as north-south or east-west, say what Service types do and do not do, and place Ingress, an API gateway and a mesh on the map.
+  </div>
+
+  <h2>Two directions</h2>
+  <table>
+    <tr><th>Direction</th><th>Meaning</th><th>Typical tool</th></tr>
+    <tr><td><strong>North-south</strong></td><td>Between the outside world and the cluster.</td><td>Load balancer, Ingress controller, Gateway API, API gateway.</td></tr>
+    <tr><td><strong>East-west</strong></td><td>Between workloads inside the cluster.</td><td>Services and kube-proxy or the CNI; optionally a service mesh.</td></tr>
+  </table>
+  <p>The "which tool" question usually has a different answer for each direction, and mixing them up is the most common source of over-engineering — for example installing a mesh to solve what is purely an edge routing problem.</p>
+
+  <h2>Two layers</h2>
+  <p><strong>L4</strong> components see connections: IP, port, TCP or UDP. They can balance and forward but cannot look inside. <strong>L7</strong> components parse the protocol — usually HTTP or gRPC — so they can route by host, path or header, terminate TLS, retry, rewrite and authenticate.</p>
+  <p>A Kubernetes <code>Service</code> is L4. That is the baseline everything else is measured against.</p>
+
+  <h2>What Services give you</h2>
+  <table>
+    <tr><th>Type</th><th>What it does</th><th>Limit</th></tr>
+    <tr><td><code>ClusterIP</code></td><td>Stable virtual IP and DNS name inside the cluster.</td><td>Not reachable from outside.</td></tr>
+    <tr><td><code>NodePort</code></td><td>Opens a port on every node.</td><td>High port numbers, you provide the front door.</td></tr>
+    <tr><td><code>LoadBalancer</code></td><td>Asks the cloud for an external L4 load balancer.</td><td>One per Service: cost adds up, and no host or path routing.</td></tr>
+  </table>
+  <p>Exposing twenty HTTP services as twenty LoadBalancers means twenty public IPs, twenty bills and twenty TLS setups. That is the problem L7 routing at the edge solves: <strong>one</strong> entry point, many backends chosen by host and path.</p>
+
+  <h2>The map</h2>
+  <table>
+    <tr><th>Component</th><th>Direction</th><th>Layer</th><th>What it adds</th></tr>
+    <tr><td>Ingress controller</td><td>North-south</td><td>L7</td><td>Host/path routing, TLS termination.</td></tr>
+    <tr><td>Gateway API implementation</td><td>North-south (and optionally mesh)</td><td>L4 and L7</td><td>The same, with a cleaner role model and more route types.</td></tr>
+    <tr><td>API gateway (Kong, others)</td><td>North-south</td><td>L7</td><td>Authentication, rate limits, transformations, API lifecycle.</td></tr>
+    <tr><td>Service mesh (Istio, Linkerd, Cilium)</td><td>East-west (and edge)</td><td>L4 and L7</td><td>mTLS, retries, traffic splitting, per-request telemetry between services.</td></tr>
+  </table>
+  <div class="callout">
+    <h3>These overlap on purpose</h3>
+    <p>Istio can run an ingress gateway; Kong can implement Gateway API; Cilium can be a CNI, a mesh and a Gateway API implementation. The categories describe jobs, not products. Pick the job first.</p>
+  </div>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <p>Classify each need as north-south or east-west, and L4 or L7.</p>
+    <ol>
+      <li>Route <code>api.example.com/orders</code> to one Deployment and <code>/users</code> to another.</li>
+      <li>Encrypt all traffic between the checkout and payments services.</li>
+      <li>Expose a PostgreSQL port to a partner network.</li>
+      <li>Return 429 to clients who exceed 100 requests per minute.</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) North-south, L7 — host and path routing: Ingress or Gateway API.</p>
+      <p>2) East-west, L4 identity with L7 optional — a mesh feature (mTLS).</p>
+      <p>3) North-south, L4 — a LoadBalancer Service or a Gateway API TCPRoute, not an HTTP ingress.</p>
+      <p>4) North-south, L7 — rate limiting is gateway territory; a basic ingress controller may offer it through annotations, a gateway offers it as a first-class plugin.</p>
+    </details>
+  </div>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"What problem does an L7 entry point mainly solve compared with one LoadBalancer Service per app?","options":["It makes Pods faster","One public entry point routes to many backends by host and path","It removes the need for Services","It encrypts Pod-to-Pod traffic"],"answer":1,"why":"LoadBalancer Services are L4 and one-per-Service. L7 routing consolidates them behind one address."},
+ {"q":"Which traffic direction is east-west?","options":["Internet to cluster","Workload to workload inside the cluster","Cluster to the internet only","Node to control plane"],"answer":1,"why":"East-west is internal service-to-service traffic."},
+ {"q":"A Kubernetes Service operates at which layer?","options":["L2","L4","L7","L3 only"],"answer":1,"why":"Services balance connections by IP and port; they do not parse HTTP."},
+ {"q":"Which need most clearly points at a service mesh rather than an ingress?","options":["TLS on the public hostname","Mutual TLS between internal services","Path-based routing at the edge","Redirecting HTTP to HTTPS"],"answer":1,"why":"Ingress handles the edge. Encrypting and authenticating internal calls is a mesh job."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+</body>
+</html>

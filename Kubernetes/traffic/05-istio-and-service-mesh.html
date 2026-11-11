@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>5. Istio and service meshes · Ingress, gateways and service mesh</title>
+<meta name="description" content="What a service mesh is, how Istio works in sidecar and ambient modes, what it costs, the alternatives, and a way to choose. Includes sources.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="5">
+<main>
+  <span class="tag">Lesson 5</span>
+  <h1>Istio and service meshes, plus how to choose</h1>
+  <p class="lead">A service mesh moves cross-cutting network behaviour — mutual TLS, retries, timeouts, traffic splitting, per-request metrics — out of every application and into the platform. Istio is the most featureful mesh and the one with the most to operate. Whether you need one is a question about east-west traffic, not about the edge.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Explain what a mesh does, the difference between sidecar and ambient mode, write a basic Istio policy, name the alternatives, and use a decision table to choose among all four layers in this course.
+  </div>
+
+  <h2>What a mesh does</h2>
+  <ul>
+    <li><strong>Identity and mTLS:</strong> every workload gets a certificate tied to its service account; connections are encrypted and mutually authenticated without application changes.</li>
+    <li><strong>Authorization:</strong> "only the checkout service may call payments" as policy, enforced on identity rather than IP.</li>
+    <li><strong>Resilience:</strong> retries, timeouts, circuit breaking and outlier detection set centrally.</li>
+    <li><strong>Traffic shaping:</strong> weighted routing, mirroring, fault injection.</li>
+    <li><strong>Telemetry:</strong> request rate, errors and latency per service pair, plus tracing hooks, uniform across languages.</li>
+  </ul>
+
+  <h2>How Istio is built</h2>
+  <p>A control plane, <strong>istiod</strong>, distributes configuration and certificates. The data plane is Envoy proxies, deployed in one of two ways:</p>
+  <table>
+    <tr><th></th><th>Sidecar mode</th><th>Ambient mode</th></tr>
+    <tr><td>Proxy placement</td><td>An Envoy container injected into every Pod.</td><td>A per-node <strong>ztunnel</strong> for L4 and mTLS, and optional <strong>waypoint</strong> proxies per namespace or service for L7.</td></tr>
+    <tr><td>Cost</td><td>CPU and memory per Pod; Pods restart to adopt or upgrade.</td><td>Much lower baseline; L7 cost only where you add a waypoint.</td></tr>
+    <tr><td>Maturity</td><td>Long established.</td><td>Newer; now supported for production use, but check feature parity for your needs.</td></tr>
+  </table>
+  <p>Istio's ingress is an <strong>ingress gateway</strong>: an Envoy deployment configured with Gateway API resources, or with Istio's own <code>Gateway</code> and <code>VirtualService</code>. Istio's native APIs are more expressive; Gateway API is the direction of travel.</p>
+  <pre><code># require mTLS for everything in the namespace
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata: {name: default, namespace: prod}
+spec:
+  mtls: {mode: STRICT}
+---
+# only checkout may call payments
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata: {name: payments-from-checkout, namespace: prod}
+spec:
+  selector: {matchLabels: {app: payments}}
+  action: ALLOW
+  rules:
+  - from:
+    - source: {principals: ["cluster.local/ns/prod/sa/checkout"]}</code></pre>
+  <pre><code># 90/10 split between versions
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata: {name: web}
+spec:
+  hosts: [web]
+  http:
+  - route:
+    - {destination: {host: web, subset: v1}, weight: 90}
+    - {destination: {host: web, subset: v2}, weight: 10}</code></pre>
+  <p>Enable gradually: label a namespace for the mesh, start with <code>PERMISSIVE</code> mTLS (which accepts both), watch the telemetry, then move to <code>STRICT</code>.</p>
+
+  <h2>What it costs</h2>
+  <ul>
+    <li><strong>Resources:</strong> sidecars add CPU, memory and a little latency to every hop.</li>
+    <li><strong>Complexity:</strong> a large API surface, and a new failure mode — "is it the app or the proxy?".</li>
+    <li><strong>Upgrades:</strong> control plane and data plane versions must be managed together; sidecars need Pod restarts.</li>
+    <li><strong>Skills:</strong> debugging Envoy configuration is a specialty.</li>
+  </ul>
+
+  <h2>The alternatives</h2>
+  <table>
+    <tr><th>Option</th><th>Character</th></tr>
+    <tr><td><strong>Linkerd</strong></td><td>Lightweight Rust micro-proxy, simple and focused on mTLS, retries and metrics. Fewer features, much less to run.</td></tr>
+    <tr><td><strong>Cilium Service Mesh</strong></td><td>eBPF and per-node Envoy, no sidecars; natural if Cilium is already your CNI (<a href="../cni/05-ebpf-and-cilium.html">see CNI lesson 5</a>).</td></tr>
+    <tr><td><strong>Consul</strong></td><td>Mesh across Kubernetes and VMs, tied into HashiCorp tooling.</td></tr>
+    <tr><td><strong>Kuma / Kong Mesh</strong></td><td>Envoy-based, multi-zone and VM friendly.</td></tr>
+    <tr><td><strong>Managed meshes</strong></td><td>Istio-based add-ons from cloud providers (for example AKS) or Cloud Service Mesh; the provider handles upgrades.</td></tr>
+    <tr><td><strong>No mesh</strong></td><td>Library-level retries and TLS, plus NetworkPolicy, plus cert-manager. Perfectly valid at moderate scale.</td></tr>
+  </table>
+
+  <h2>Which layer do you need?</h2>
+  <p>Tick what you actually need today, not what you might want in two years.</p>
+  <div class="widget">
+    <h3>Traffic stack chooser</h3>
+    <div class="row" style="flex-direction:column;align-items:flex-start;gap:6px">
+      <label><input type="checkbox" id="c1"> Host/path routing and TLS for external HTTP traffic</label>
+      <label><input type="checkbox" id="c2"> Canary or header-based routing at the edge</label>
+      <label><input type="checkbox" id="c3"> Per-consumer API keys, quotas or OIDC for external callers</label>
+      <label><input type="checkbox" id="c4"> Encrypted, authenticated service-to-service traffic</label>
+      <label><input type="checkbox" id="c5"> Identity-based authorization between internal services</label>
+      <label><input type="checkbox" id="c6"> Uniform retries, timeouts and per-hop telemetry across languages</label>
+    </div>
+    <div id="rec" style="margin-top:10px"></div>
+  </div>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <ol>
+      <li>A team with 12 services wants encrypted internal traffic and little operational burden. What would you try first?</li>
+      <li>You enable STRICT mTLS and a legacy service outside the mesh starts failing. Why, and what was the safer rollout?</li>
+      <li>Sidecars are using more memory than your applications. Name two ways out.</li>
+      <li>A mesh is already installed. Do you still need an ingress controller or gateway?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) Linkerd or Istio ambient, or Cilium mTLS if you already run Cilium. Avoid sidecar Istio with its full feature surface unless you need it.</p>
+      <p>2) The out-of-mesh client cannot speak mTLS. Start in PERMISSIVE, find who is not meshed from telemetry, then move to STRICT.</p>
+      <p>3) Move to ambient mode (no per-Pod proxy), or switch to a lighter mesh; also trim proxy resource requests and scope what each sidecar must know.</p>
+      <p>4) Yes. A mesh handles east-west; you still need an edge for external traffic, though the mesh's own gateway can serve as that edge.</p>
+    </details>
+  </div>
+
+  <section id="quiz"></section>
+
+  <h2 id="references">References</h2>
+  <p>Written against documentation current in <strong>November 2026</strong>. Features and support status move; confirm them in your own version.</p>
+  <table>
+    <tr><th>Claim</th><th>Source</th></tr>
+    <tr><td>Service types, Services are L4</td><td><a href="https://kubernetes.io/docs/concepts/services-networking/service/">Service</a></td></tr>
+    <tr><td>Ingress, IngressClass, backends in the same namespace, TLS, and that the API is frozen in favour of Gateway API</td><td><a href="https://kubernetes.io/docs/concepts/services-networking/ingress/">Ingress</a>, <a href="https://kubernetes.io/docs/concepts/services-networking/ingress-controllers/">Ingress controllers</a></td></tr>
+    <tr><td>ingress-nginx retirement announcement</td><td><a href="https://kubernetes.io/blog/">Kubernetes blog</a> (search "Ingress NGINX retirement")</td></tr>
+    <tr><td>Gateway API resources, role model, ReferenceGrant, route types, conformance, GAMMA</td><td><a href="https://gateway-api.sigs.k8s.io/">Gateway API</a>, <a href="https://gateway-api.sigs.k8s.io/implementations/">Implementations</a>, <a href="https://gateway-api.sigs.k8s.io/mesh/">Gateway API for mesh</a></td></tr>
+    <tr><td>Kong Ingress Controller, KongPlugin, KongConsumer, DB-less mode, Gateway API support</td><td><a href="https://docs.konghq.com/kubernetes-ingress-controller/latest/">Kong Ingress Controller</a></td></tr>
+    <tr><td>Envoy Gateway</td><td><a href="https://gateway.envoyproxy.io/">Envoy Gateway</a></td></tr>
+    <tr><td>Traefik, HAProxy, Contour, APISIX</td><td><a href="https://doc.traefik.io/traefik/">Traefik</a>, <a href="https://www.haproxy.com/documentation/kubernetes-ingress/">HAProxy Ingress</a>, <a href="https://projectcontour.io/docs/">Contour</a>, <a href="https://apisix.apache.org/docs/">APISIX</a></td></tr>
+    <tr><td>Istio architecture, istiod, PeerAuthentication, AuthorizationPolicy, VirtualService, ingress gateway</td><td><a href="https://istio.io/latest/docs/">Istio documentation</a></td></tr>
+    <tr><td>Ambient mode: ztunnel and waypoint proxies</td><td><a href="https://istio.io/latest/docs/ambient/overview/">Ambient overview</a></td></tr>
+    <tr><td>Linkerd</td><td><a href="https://linkerd.io/2/overview/">Linkerd overview</a></td></tr>
+    <tr><td>Cilium Service Mesh</td><td><a href="https://docs.cilium.io/en/stable/network/servicemesh/">Cilium service mesh</a></td></tr>
+    <tr><td>Consul, Kuma</td><td><a href="https://developer.hashicorp.com/consul/docs">Consul</a>, <a href="https://kuma.io/docs/">Kuma</a></td></tr>
+    <tr><td>cert-manager, external-dns</td><td><a href="https://cert-manager.io/docs/">cert-manager</a>, <a href="https://kubernetes-sigs.github.io/external-dns/">external-dns</a></td></tr>
+  </table>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"What does Istio's istiod do?","options":["Proxies all traffic","Distributes configuration and certificates to the proxies","Replaces the CNI","Stores container images"],"answer":1,"why":"istiod is the control plane; Envoy proxies are the data plane."},
+ {"q":"What is the main difference between Istio sidecar and ambient modes?","options":["Ambient has no mTLS","Ambient uses per-node ztunnel and optional waypoints instead of a proxy per Pod","Sidecar mode uses no Envoy","Ambient needs a separate cluster"],"answer":1,"why":"Ambient moves proxying out of the Pods, cutting baseline overhead."},
+ {"q":"Safest way to roll out strict mTLS?","options":["Set STRICT cluster-wide immediately","Start PERMISSIVE, observe who is not meshed, then move to STRICT","Disable the mesh at night","Use NodePort Services"],"answer":1,"why":"PERMISSIVE accepts both plaintext and mTLS while you find exceptions."},
+ {"q":"Which is the lightweight alternative focused on simplicity?","options":["Linkerd","Kong","Contour","Traefik"],"answer":0,"why":"Linkerd trades features for a smaller footprint and simpler operation."},
+ {"q":"You only need host routing and TLS for external web apps. What is the right amount of tooling?","options":["Istio with sidecars","A Gateway API implementation or ingress controller","Kong plus Istio","Linkerd"],"answer":1,"why":"Mesh and gateway features you do not use are cost without benefit."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  const ids=["c1","c2","c3","c4","c5","c6"];
+  function render(){
+    const on=ids.map(i=>$(i).checked);
+    const [edge,canary,api,mtls,authz,resil]=on;
+    const out=[];
+    if(!on.some(Boolean)){ $("rec").innerHTML="<p class='muted'>Tick the needs you have today.</p>"; return; }
+    if(edge||canary) out.push("<strong>Gateway API implementation</strong> (Envoy Gateway, Cilium, Traefik, NGINX Gateway Fabric, or your cloud's) — "+(canary?"weighted and header routing are standard fields.":"host/path routing and TLS."));
+    if(api) out.push("<strong>An API gateway</strong> (Kong, APISIX, or a managed one) — per-consumer auth and quotas are gateway features.");
+    if(mtls||authz||resil){
+      const heavy=authz&&resil;
+      out.push("<strong>A service mesh</strong> — "+(heavy?"Istio (ambient first) if you need L7 authorization and rich traffic policy; ":"Linkerd, Cilium or Istio ambient fit a mTLS-first need; ")+"start in permissive mode.");
+    }
+    if(!(mtls||authz||resil)) out.push("<strong>No mesh.</strong> Nothing you ticked needs one.");
+    $("rec").innerHTML="<ul><li>"+out.join("</li><li>")+"</li></ul>";
+  }
+  ids.forEach(i=>$(i).addEventListener("change",render));
+  render();
+})();
+</script>
+</body>
+</html>

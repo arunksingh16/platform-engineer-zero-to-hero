@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>2. Ingress and ingress controllers · Ingress, gateways and service mesh</title>
+<meta name="description" content="What the Ingress resource is, what an ingress controller does, how to write one, which controllers exist, and where Ingress runs out of road.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="2">
+<main>
+  <span class="tag">Lesson 2</span>
+  <h1>Ingress and ingress controllers</h1>
+  <p class="lead">Ingress is two things people constantly conflate: a small API object that says "route this host and path to that Service", and a controller you install that actually does the routing. Create the object without the controller and nothing happens — the same trap as NetworkPolicy without an enforcing CNI.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Write an Ingress with TLS, explain the role of the controller and IngressClass, pick between the common controllers, and say why the annotation approach became the reason people moved to Gateway API.
+  </div>
+
+  <h2>What it is</h2>
+  <p><strong>Ingress</strong> (<code>networking.k8s.io/v1</code>) describes HTTP and HTTPS routing: hosts, paths, backends and TLS secrets. An <strong>ingress controller</strong> watches those objects and configures a real proxy — NGINX, Envoy, HAProxy, Traefik — to match. The controller itself is exposed to the world once, usually through a single <code>LoadBalancer</code> Service.</p>
+  <pre><code>apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: shop
+  namespace: prod
+spec:
+  ingressClassName: nginx        # which controller owns this
+  tls:
+  - hosts: [shop.example.com]
+    secretName: shop-tls         # certificate + key
+  rules:
+  - host: shop.example.com
+    http:
+      paths:
+      - path: /orders
+        pathType: Prefix
+        backend:
+          service: {name: orders, port: {number: 80}}
+      - path: /
+        pathType: Prefix
+        backend:
+          service: {name: web, port: {number: 80}}</code></pre>
+
+  <h2>How to use it</h2>
+  <ol>
+    <li><strong>Install a controller</strong> (usually with Helm) and note its <code>IngressClass</code> name.</li>
+    <li><strong>Point DNS</strong> at the controller's load balancer address; tools like external-dns automate this.</li>
+    <li><strong>Get certificates</strong> — commonly cert-manager, which issues and renews them into the TLS secret.</li>
+    <li><strong>Write Ingress objects</strong> in each application namespace. Backends must be Services in the same namespace.</li>
+  </ol>
+
+  <h2>The options</h2>
+  <table>
+    <tr><th>Controller</th><th>Proxy</th><th>Notes</th></tr>
+    <tr><td><strong>ingress-nginx</strong> (Kubernetes project)</td><td>NGINX</td><td>Long the default, very widely deployed. The project has announced retirement; plan a migration rather than starting new on it.</td></tr>
+    <tr><td><strong>NGINX Ingress Controller</strong> (F5/NGINX Inc.)</td><td>NGINX</td><td>A different, vendor-maintained project with the same name root. Do not confuse the two.</td></tr>
+    <tr><td><strong>Traefik</strong></td><td>Traefik</td><td>Dynamic config, good developer experience, ships with k3s.</td></tr>
+    <tr><td><strong>HAProxy Ingress</strong></td><td>HAProxy</td><td>Strong performance and tuning for people who know HAProxy.</td></tr>
+    <tr><td><strong>Contour</strong></td><td>Envoy</td><td>Envoy with its own HTTPProxy CRD; also supports Gateway API.</td></tr>
+    <tr><td><strong>Cloud controllers</strong></td><td>ALB, Application Gateway, GCLB</td><td>Provider load balancers configured from Ingress. Less to run, but features and limits follow the provider.</td></tr>
+    <tr><td><strong>Istio, Kong, Cilium</strong></td><td>Envoy / NGINX / Envoy</td><td>Can act as ingress controllers; usually chosen for their other features.</td></tr>
+  </table>
+
+  <h2>Where Ingress runs out of road</h2>
+  <ul>
+    <li><strong>HTTP only.</strong> No first-class TCP, UDP or gRPC-specific routing.</li>
+    <li><strong>Annotations carry the real features.</strong> Rewrites, timeouts, rate limits, auth and canaries are controller-specific annotations, so Ingress objects are not portable between controllers despite the shared API.</li>
+    <li><strong>One object, many owners.</strong> The platform team owns the load balancer and TLS; app teams own routes — but both live in the same Ingress resource, with no way to split permissions.</li>
+    <li><strong>No standard for traffic splitting</strong> or header matching.</li>
+  </ul>
+  <p>The Ingress API is frozen: it is stable and supported, but new capabilities go to Gateway API instead. That is the next lesson.</p>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <ol>
+      <li>You applied an Ingress, but <code>kubectl get ingress</code> shows no ADDRESS and nothing is reachable. First two things to check?</li>
+      <li>Two controllers are installed. How does an Ingress pick one?</li>
+      <li>Your team needs a canary sending 10% of traffic to v2 on one controller, via annotation. What is the portability cost?</li>
+      <li>A route needs to point at a Service in another namespace. Does Ingress allow it?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) Is a controller installed and running, and does <code>ingressClassName</code> match its IngressClass? An Ingress nobody claims stays inert.</p>
+      <p>2) By <code>spec.ingressClassName</code> matching an IngressClass resource each controller registers.</p>
+      <p>3) The annotation is specific to that controller. Moving controllers means rewriting every such Ingress.</p>
+      <p>4) No. Backends must be in the Ingress's own namespace; cross-namespace routing is one of the things Gateway API adds, with explicit permission.</p>
+    </details>
+  </div>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"What happens if you create an Ingress but have no ingress controller?","options":["Kubernetes routes it with kube-proxy","Nothing — the object is inert until a controller implements it","The API server rejects it","A default controller is installed"],"answer":1,"why":"Ingress is only a declaration. The controller does the work."},
+ {"q":"What selects which controller handles an Ingress?","options":["The namespace","ingressClassName matching an IngressClass","The Service type","The pod label"],"answer":1,"why":"IngressClass names the controller; the Ingress refers to it."},
+ {"q":"Why are Ingress objects not truly portable across controllers?","options":["Different API versions","Advanced features live in controller-specific annotations","They use different YAML syntax","Only one controller supports TLS"],"answer":1,"why":"The core spec covers host, path and TLS; everything else is annotations."},
+ {"q":"Which of these is not something core Ingress can do?","options":["Host-based routing","Path-based routing","TLS termination","Routing raw TCP/UDP"],"answer":3,"why":"Ingress is HTTP/HTTPS. TCP and UDP need a Service or Gateway API route types."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+</body>
+</html>

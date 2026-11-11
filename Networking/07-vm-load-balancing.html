@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>7. Load balancing a fleet of VMs | Networking fundamentals</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-lesson="7">
+<main>
+  <span class="tag">Lesson 7</span>
+  <h1>Load balancing a fleet of VMs</h1>
+  <p class="lead">Three application VMs behind one proxy still have a single point of failure. You must make the entry point resilient too.</p>
+  <div class="goal"><h3>By the end you can...</h3>Choose a proxy, distinguish a lab from production, and explain how clients reach a surviving proxy.</div>
+  <h2>Which software?</h2>
+  <table>
+    <caption>Self-managed options: verify edition and version capabilities</caption>
+    <tr><th scope="col">Option</th><th scope="col">Good starting use</th><th scope="col">Operational consideration</th></tr>
+    <tr><td>HAProxy</td><td>TCP and HTTP balancing, active probes, connection controls</td><td>Own config validation, safe reloads, certificates and runtime metrics.</td></tr>
+    <tr><td>NGINX</td><td>HTTP reverse proxy, static serving; stream module for TCP/UDP</td><td>Module availability varies; active upstream checks and dynamic features differ between open-source and commercial editions.</td></tr>
+    <tr><td>Envoy</td><td>HTTP/2, gRPC, L4/L7 proxying and dynamic discovery</td><td>Powerful but more control-plane/configuration complexity; choose it for a concrete requirement.</td></tr>
+    <tr><td>Linux IPVS</td><td>Kernel transport balancing</td><td>No HTTP path routing or TLS termination; own health automation and network design.</td></tr>
+  </table>
+  <h2>A minimal lab is not an HA design</h2>
+  <p>This HAProxy fragment assumes three reachable lab backends on port 8080 exposing a readiness path. It intentionally omits public TLS, authentication and production hardening. Do not expose it directly to the internet.</p>
+  <pre><code>frontend lab_http
+    bind 127.0.0.1:8080
+    mode http
+    default_backend api_vms
+
+backend api_vms
+    mode http
+    balance roundrobin
+    option httpchk GET /ready
+    http-check expect status 200
+    server api1 10.20.1.11:8080 check
+    server api2 10.20.1.12:8080 check
+    server api3 10.20.1.13:8080 check</code></pre>
+  <p>The loopback bind limits the frontend to local clients. Merge this into a version-appropriate HAProxy configuration with global/default timeout settings; validate with <code>haproxy -c -f /path/to/haproxy.cfg</code> before reload. This is a configuration illustration, not a runnable standalone deployment.</p>
+  <h2>How does the frontend survive?</h2>
+  <ul>
+    <li><strong>Cloud VMs:</strong> prefer a managed LB directly to application VMs when it meets the requirements. If custom proxies are necessary, a managed LB can front multiple proxy VMs across failure domains.</li>
+    <li><strong>Controlled on-premises network:</strong> two proxies may share a floating VIP with Keepalived/VRRP where the network supports it. Prevent split-brain and test failover. Existing connection state does not automatically transfer.</li>
+    <li><strong>Routed infrastructure:</strong> multiple entry points with BGP/ECMP or anycast require routing expertise, health withdrawal and careful flow symmetry. This is not a beginner shortcut.</li>
+    <li><strong>DNS failover:</strong> possible, but bounded by resolution caches, detection and client reconnect behavior.</li>
+  </ul>
+  <div class="callout"><h3>Cloud networking is not a shared Ethernet segment</h3>Do not assume gratuitous ARP or moving a VIP with VRRP works in a VPC/VNet. Use provider-supported frontend, IP movement or routing mechanisms with explicit failure handling.</div>
+  <div class="hand"><h3>Do it by hand</h3><p>You have two proxies but DNS points only at proxy A. A dies. What is missing? What else must survive?</p><details><summary>Show answer</summary><p>A tested mechanism to steer new connections to B: managed frontend, supported VIP/routing failover, or health-aware DNS with accepted delays. B also needs capacity, current configuration, certificates and reachable backends. Test a host failure, not just stopping one backend process.</p></details></div>
+  <p>Primary reading: <a href="https://www.haproxy.org/#docs">HAProxy manuals</a>, <a href="https://nginx.org/en/docs/http/load_balancing.html">NGINX HTTP balancing</a>, <a href="https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/load_balancing/overview">Envoy balancing</a>, <a href="https://www.keepalived.org/manpage.html">Keepalived manual</a>.</p>
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"Two proxies automatically provide HA if...","options":["They have identical binaries","They use round-robin upstreams","They do not; client steering and failure handling must also work"],"answer":2,"why":"A spare proxy is useless if clients still reach only the failed entry point."},
+ {"q":"When is VRRP a reasonable option?","options":["In every cloud subnet without changes","On a network that explicitly supports the VIP and failover mechanism","Only for HTTP/3"],"answer":1,"why":"VRRP depends on network behavior; cloud virtual networks need supported mechanisms."},
+ {"q":"What is a cost of self-managed proxies?","options":["Owning patching, certificates, capacity, reloads and failover","Never needing health checks","Guaranteed state transfer"],"answer":0,"why":"Software cost is only one part of total operational ownership."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+</body>
+</html>

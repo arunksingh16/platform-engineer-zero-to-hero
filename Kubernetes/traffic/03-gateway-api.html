@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>3. Gateway API · Ingress, gateways and service mesh</title>
+<meta name="description" content="Gateway API: GatewayClass, Gateway and HTTPRoute, how it splits responsibilities between platform and app teams, and how it replaces Ingress annotations.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="3">
+<main>
+  <span class="tag">Lesson 3</span>
+  <h1>Gateway API: the successor to Ingress</h1>
+  <p class="lead">Gateway API is the Kubernetes project's answer to every complaint in the last lesson. It splits one overloaded object into three, each owned by a different role, and turns the features that were annotations into typed fields.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Name the three core resources and who owns each, write a Gateway and HTTPRoute, express a weighted canary without annotations, and say when to move from Ingress.
+  </div>
+
+  <h2>Three objects, three owners</h2>
+  <table>
+    <tr><th>Resource</th><th>Owned by</th><th>Meaning</th></tr>
+    <tr><td><code>GatewayClass</code></td><td>Infrastructure provider</td><td>Which implementation handles Gateways of this class (like StorageClass).</td></tr>
+    <tr><td><code>Gateway</code></td><td>Platform / cluster operator</td><td>A listener: ports, protocols, hostnames, TLS. Says which namespaces may attach routes.</td></tr>
+    <tr><td><code>HTTPRoute</code> (and GRPCRoute, TLSRoute, TCPRoute, UDPRoute)</td><td>Application developer</td><td>Matches and backends, attached to a Gateway.</td></tr>
+  </table>
+  <pre><code>apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata: {name: public, namespace: infra}
+spec:
+  gatewayClassName: envoy
+  listeners:
+  - name: https
+    port: 443
+    protocol: HTTPS
+    hostname: "*.example.com"
+    tls:
+      certificateRefs: [{name: wildcard-tls}]
+    allowedRoutes:
+      namespaces: {from: Selector, selector: {matchLabels: {gateway-access: "true"}}}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: shop, namespace: prod}
+spec:
+  parentRefs: [{name: public, namespace: infra}]
+  hostnames: [shop.example.com]
+  rules:
+  - matches: [{path: {type: PathPrefix, value: /}}]
+    backendRefs:
+    - {name: web-v1, port: 80, weight: 90}
+    - {name: web-v2, port: 80, weight: 10}</code></pre>
+  <p>The weights are the 10% canary that needed a controller-specific annotation under Ingress. Header matching, redirects, rewrites and request mirroring are likewise standard fields.</p>
+
+  <h2>What it fixes</h2>
+  <ul>
+    <li><strong>Role separation:</strong> the platform team controls listeners and certificates; app teams only create routes in namespaces the Gateway admits.</li>
+    <li><strong>Portability:</strong> advanced behaviour is in the spec, with conformance tests, rather than annotations.</li>
+    <li><strong>More than HTTP:</strong> gRPC, TLS passthrough, TCP and UDP route types.</li>
+    <li><strong>Cross-namespace references</strong> are possible but must be allowed explicitly by a <code>ReferenceGrant</code> in the target namespace.</li>
+  </ul>
+
+  <h2>Who implements it</h2>
+  <p>Envoy Gateway, Istio, Cilium, Kong, NGINX Gateway Fabric, Traefik, Contour, HAProxy and the major cloud load balancers all have implementations at varying conformance levels. Gateway API is also being used for mesh traffic (the GAMMA initiative), so the same route types can configure east-west behaviour.</p>
+
+  <h2>Should you move?</h2>
+  <table>
+    <tr><th>Situation</th><th>Advice</th></tr>
+    <tr><td>New cluster</td><td>Start with Gateway API.</td></tr>
+    <tr><td>Simple Ingress, no annotations</td><td>Works fine; migrate when convenient. The ingress2gateway tool helps convert.</td></tr>
+    <tr><td>Heavy annotation use, multi-team clusters, canaries</td><td>Migration pays off — you are already paying for the lack of structure.</td></tr>
+    <tr><td>Your controller is being retired</td><td>Migrate to a controller with Gateway API support, not to another Ingress implementation by default.</td></tr>
+  </table>
+  <div class="callout">
+    <h3>CRDs are not built in</h3>
+    <p>Unlike Ingress, Gateway API resources are CRDs you install separately, and the version of the CRDs must be supported by your implementation. Check this first when something does not work.</p>
+  </div>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <ol>
+      <li>Who should be able to change the TLS certificate on port 443: platform or app team? Which object holds it?</li>
+      <li>An HTTPRoute in <code>prod</code> is not being picked up by the Gateway in <code>infra</code>. Name two causes.</li>
+      <li>An HTTPRoute backend is a Service in another namespace. What must exist?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) Platform; the <code>Gateway</code> listener holds the certificate reference.</p>
+      <p>2) The Gateway's <code>allowedRoutes</code> does not admit the namespace, or <code>parentRefs</code> or hostnames do not match the listener. Check the route's status conditions.</p>
+      <p>3) A <code>ReferenceGrant</code> in the Service's namespace permitting the reference.</p>
+    </details>
+  </div>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"Which object do application developers normally own in Gateway API?","options":["GatewayClass","Gateway","HTTPRoute","IngressClass"],"answer":2,"why":"Routes are the app-team layer; Gateways belong to platform and GatewayClasses to the provider."},
+ {"q":"How do you send 10% of traffic to a canary with Gateway API?","options":["A controller-specific annotation","Weights on backendRefs","A NetworkPolicy","A second GatewayClass"],"answer":1,"why":"Weighted backendRefs are part of the spec."},
+ {"q":"What allows an HTTPRoute to reference a Service in another namespace?","options":["Nothing, it is automatic","A ReferenceGrant in the target namespace","A ClusterRole","An annotation on the Gateway"],"answer":1,"why":"Cross-namespace references need explicit consent from the target namespace."},
+ {"q":"Which is true about Gateway API installation?","options":["It is built into the API server","Its CRDs are installed separately and must match your implementation","It requires Istio","It replaces Services"],"answer":1,"why":"The resources are CRDs, versioned independently of Kubernetes."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+</body>
+</html>

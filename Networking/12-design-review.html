@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>12. Design a streaming platform | Networking fundamentals</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-lesson="12">
+<main>
+  <span class="tag">Lesson 12</span>
+  <h1>Design a streaming platform</h1>
+  <p class="lead">Turn the vocabulary into a reviewable design. The goal is not the most boxes: it is a path whose capacity, trust boundaries and failure behavior you can explain.</p>
+  <div class="goal"><h3>Your design brief</h3>Serve 100,000 concurrent 160 kbit/s listeners, 2,400 API requests/s at peak and private playlists. Survive one zone failure without waiting for new VMs. Prepare for a second region, but do not claim regional recovery until data replication and failover are tested.</div>
+  <h2>Separate delivery and control</h2>
+  <pre><code>Media: listener -> HTTP edge/cache -> protected media origin
+APIs:  listener -> regional HTTP entry -> private API VMs -> private data
+Ops:   trusted admin path -> management endpoints (not public SSH)
+DNS:   public names + private zones/forwarding for internal dependencies</code></pre>
+  <p>State assumptions: media is cacheable only under its access policy; private playlist responses bypass shared caches. API VMs are stateless or reconstruct state safely. Use TLS to clients and authenticated TLS to backends where required. Probes verify readiness without making one shared dependency eject every instance.</p>
+  <h2>Three implementations of the same intent</h2>
+  <table>
+    <caption>A worked starting architecture, not production provisioning instructions</caption>
+    <tr><th scope="col">Concern</th><th scope="col">AWS</th><th scope="col">Azure</th><th scope="col">Self-managed VMs</th></tr>
+    <tr><td>Media</td><td>CloudFront, private S3 origin with supported origin access controls</td><td>Front Door; supported Storage origin protection/private connectivity design</td><td>Protected object/media origin; choose a delivery network or own distributed cache operations explicitly</td></tr>
+    <tr><td>Regional APIs</td><td>Public ALB, private EC2 targets across zones; WAF if required</td><td>Public Application Gateway v2, private VM/VMSS targets across zones; WAF if required</td><td>Redundant HAProxy/NGINX/Envoy instances plus a supported HA frontend mechanism</td></tr>
+    <tr><td>Private dependencies</td><td>VPC routing, security groups, private DNS and endpoints where supported</td><td>VNet routing, NSGs, Private DNS and private endpoints where supported</td><td>Routed segments, internal DNS, firewalls and service authentication</td></tr>
+    <tr><td>Explicit egress</td><td>NAT Gateway routes or private service endpoints</td><td>NAT Gateway or other approved explicit outbound path</td><td>Redundant egress gateway/proxy with monitored translation capacity</td></tr>
+    <tr><td>Second region</td><td>Choose Route 53 policy, CloudFront behavior or Global Accelerator only when its traffic contract fits</td><td>Choose Front Door for global HTTP or Traffic Manager for DNS steering as appropriate</td><td>Health-aware DNS/routed entry, with documented reconnect and recovery behavior</td></tr>
+  </table>
+  <p>VMs in AWS/Azure can use the managed services directly: Kubernetes is not required. For private APIs used only from corporate networks, replace the public regional entry with an internal one and provide private client connectivity. Do not add NLB in front of ALB, or Front Door in front of Application Gateway, without a specific requirement justifying each hop.</p>
+  <h2>Numbers that must survive review</h2>
+  <ul>
+    <li><strong>Media:</strong> 16 Gbit/s payload; at 95% byte hits, approximately 0.8 Gbit/s origin payload in steady state. Test cold-cache and popular-release bursts.</li>
+    <li><strong>API:</strong> at 500 requests/s measured safe capacity per VM, at least three VMs per zone across three zones give 3,000 requests/s after losing one zone. Add margin for actual bottlenecks.</li>
+    <li><strong>Recovery:</strong> include probe detection, steering, reconnect and data recovery in the recovery-time objective. Define acceptable data loss as a separate recovery-point objective.</li>
+    <li><strong>Cost:</strong> estimate CDN delivery, misses, LB processing, NAT, transfer and telemetry using measured byte and connection volumes.</li>
+  </ul>
+  <div class="hand"><h3>Run the design review</h3><p>Write down the owner and evidence for each: DNS failover, certificate rotation, origin bypass protection, zone capacity, draining a long-lived stream, egress exhaustion and regional data recovery. Then choose one failure to inject in a safe test environment.</p><details><summary>Show a sample acceptance test</summary><p>At representative peak API load, remove all targets in one test zone. Confirm the surviving fleet meets the declared latency/error SLO, no new traffic reaches drained targets after the expected window, and client retries remain within budget. Separately test a proxy failure and a cold-cache burst. Record detection time and interruption duration; a healthy dashboard without client measurements is insufficient.</p></details></div>
+  <h2>Primary reference shelf</h2>
+  <p>Each earlier lesson links its specific claims. Start here for current features and limits; verify SKU, region, protocol and pricing before deploying.</p>
+  <ul>
+    <li><a href="https://docs.aws.amazon.com/elasticloadbalancing/latest/userguide/what-is-load-balancing.html">AWS load balancer families</a> and <a href="https://docs.aws.amazon.com/elasticloadbalancing/latest/network/introduction.html">NLB</a>.</li>
+    <li><a href="https://learn.microsoft.com/en-us/azure/architecture/guide/technology-choices/load-balancing-overview">Azure service selection</a> and <a href="https://learn.microsoft.com/en-us/azure/load-balancer/cross-region-overview">cross-region Load Balancer</a>.</li>
+    <li><a href="https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/private-content-restricting-access-to-s3.html">CloudFront S3 origin access</a> and <a href="https://learn.microsoft.com/en-us/azure/frontdoor/private-link">Front Door private origin connectivity</a>.</li>
+    <li><a href="https://docs.aws.amazon.com/vpc/latest/userguide/what-is-amazon-vpc.html">AWS VPC</a> and <a href="https://learn.microsoft.com/en-us/azure/virtual-network/virtual-networks-overview">Azure VNet</a>.</li>
+    <li><a href="https://www.haproxy.org/#docs">HAProxy documentation</a>, <a href="https://nginx.org/en/docs/">NGINX documentation</a> and <a href="https://www.envoyproxy.io/docs/envoy/latest/">Envoy documentation</a>.</li>
+  </ul>
+  <h2>Next steps</h2>
+  <p>Follow the <a href="../Kubernetes/cni/index.html">same packet into Kubernetes</a>, study <a href="../Kubernetes/aks/05-ingress-egress-and-dns.html">AKS ingress, egress and DNS</a>, then define client-facing <a href="../Observability/09-slos.html">SLIs and SLOs</a>. A platform engineer should be able to defend each boundary, not just name each service.</p>
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"Do managed AWS/Azure load balancers require Kubernetes backends?","options":["Yes","Only for internal traffic","No; VM backends are supported"],"answer":2,"why":"EC2 instances and Azure VMs can be balanced directly using the appropriate managed service."},
+ {"q":"Which completes a credible regional failover design?","options":["DNS policy alone","Traffic steering plus tested application/data recovery and client behavior","An extra region name in a diagram"],"answer":1,"why":"A reachable secondary region is not useful if its data or application cannot safely serve traffic."},
+ {"q":"Which proves the one-zone capacity requirement most directly?","options":["Representative peak-load client measurements while a zone's targets are unavailable","Counting regions in the account","Checking CPU at idle"],"answer":0,"why":"Verify the actual failure outcome at the declared SLO, not a proxy such as the number of deployed boxes."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+</body>
+</html>

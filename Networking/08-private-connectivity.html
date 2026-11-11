@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>8. Private connectivity and egress | Networking fundamentals</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-lesson="8">
+<main>
+  <span class="tag">Lesson 8</span>
+  <h1>Private connectivity and egress</h1>
+  <p class="lead">"Private subnet" does not mean isolated, encrypted or authorized. Define who may initiate each connection, which route it takes, and how replies return.</p>
+  <div class="goal"><h3>By the end you can...</h3>Separate routing, packet filtering, address translation and identity.</div>
+  <h2>Four different controls</h2>
+  <ol>
+    <li><strong>Routing:</strong> a destination has a usable path.</li>
+    <li><strong>Filtering:</strong> policy allows the required protocol, source, destination and port.</li>
+    <li><strong>Translation:</strong> SNAT changes source addresses for egress; DNAT maps a frontend destination to a backend. NAT is not authorization.</li>
+    <li><strong>Identity:</strong> the application or service verifies who is calling and what they may do.</li>
+  </ol>
+  <p>AWS security groups are stateful, while network ACLs are stateless and require appropriate return rules, including ephemeral ports. Azure NSGs are stateful; do not treat them as AWS NACL equivalents. Host firewalls and network appliances can add more enforcement points.</p>
+  <h2>Map connectivity requirements</h2>
+  <table>
+    <caption>Choose a connection model, not just a product</caption>
+    <tr><th scope="col">Need</th><th scope="col">AWS</th><th scope="col">Azure</th></tr>
+    <tr><td>Connect private networks</td><td>VPC peering; Transit Gateway for hub connectivity</td><td>VNet peering; hub/spoke or Virtual WAN for transit</td></tr>
+    <tr><td>Reach a supported service privately</td><td>PrivateLink interface endpoints; gateway endpoints for supported S3/DynamoDB use cases</td><td>Private Link/private endpoints for supported services</td></tr>
+    <tr><td>Outbound IPv4 internet access</td><td>NAT Gateway plus correct subnet routes</td><td>Explicit outbound design such as NAT Gateway with subnet association</td></tr>
+    <tr><td>Hybrid connectivity</td><td>Site-to-Site VPN or Direct Connect</td><td>VPN Gateway or ExpressRoute</td></tr>
+  </table>
+  <p>Peering is not automatically transitive: A-to-B and B-to-C do not imply A-to-C. Private endpoints expose a service rather than merging whole networks. DNS, endpoint policy, security rules and service authorization remain necessary. Creating a private endpoint does not universally disable the public endpoint; explicitly configure and test public-access restrictions.</p>
+  <p>Dedicated connectivity is not synonymous with end-to-end encryption. Choose IPsec, supported link encryption, and/or application TLS according to the threat model. Build diverse redundant paths and exercise failover; two tunnels sharing one upstream failure domain may not satisfy the requirement.</p>
+  <h2>Egress needs a budget</h2>
+  <p>SNAT uses a finite pool of source addresses and ports. Many short connections to the same destination can exhaust mappings before CPU saturates. Pool connections where appropriate, monitor allocation/drop signals, and size using the actual provider's destination and timeout rules. A NAT gateway provides egress, not an inbound application frontend.</p>
+  <div class="hand"><h3>Do it by hand</h3><p>A playlist service resolves a database private name correctly but cannot connect. List five checks before changing DNS.</p><details><summary>Show answer</summary><p>Check forward and return routes, effective security rules, endpoint approval/service exposure, listener port and health, and application identity/authorization. Determine first whether the failure is a network timeout, refused connection, TLS error or authenticated denial; they point to different layers.</p></details></div>
+  <p>Primary reading: <a href="https://docs.aws.amazon.com/vpc/latest/userguide/vpc-security-groups.html">AWS security groups</a>, <a href="https://docs.aws.amazon.com/vpc/latest/privatelink/what-is-privatelink.html">AWS PrivateLink</a>, <a href="https://learn.microsoft.com/en-us/azure/private-link/private-endpoint-overview">Azure private endpoints</a>, <a href="https://learn.microsoft.com/en-us/azure/nat-gateway/nat-overview">Azure NAT Gateway</a>.</p>
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"Which comparison is correct?","options":["AWS NACLs and Azure NSGs are both stateless","AWS security groups and Azure NSGs are stateful","NAT authenticates application users"],"answer":1,"why":"NSGs resemble security groups in statefulness, not stateless NACLs."},
+ {"q":"A private endpoint always disables public service access.","options":["True","True only for HTTPS","False; configure and verify the service's public-access policy"],"answer":2,"why":"Private reachability and public-access restrictions are separate controls."},
+ {"q":"A-to-B and B-to-C peering imply...","options":["No automatic A-to-C transit","Automatic full mesh","Automatic encryption"],"answer":0,"why":"Use an explicit supported transit design where transit is needed."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+</body>
+</html>

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>2. Addresses, subnets and routes | Networking fundamentals</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-lesson="2">
+<main>
+  <span class="tag">Lesson 2</span>
+  <h1>Addresses, subnets and routes</h1>
+  <p class="lead">An IP plan is a capacity plan and a future connectivity contract. Two networks using the same address range are easy to create and painful to connect.</p>
+  <div class="goal"><h3>By the end you can...</h3>Size a subnet, apply longest-prefix matching and explain why a public address alone is insufficient.</div>
+  <h2>CIDR without mystery</h2>
+  <p>IPv4 has 32 bits. A <code>/24</code> fixes 24 network bits, leaving 8 address bits: <code>2^(32 - 24) = 256</code> total addresses. <code>10.20.4.0/24</code> spans <code>10.20.4.0</code> through <code>10.20.4.255</code>. A <code>/26</code> has 64, not 26, addresses.</p>
+  <p>For ordinary IPv4 subnets, AWS and Azure each reserve five addresses; a /26 therefore has 59 assignable addresses before workload-specific consumption. Account separately for load balancers, private endpoints, node growth, Pod addressing modes and upgrade surge. Special subnet types and services have additional rules.</p>
+  <h2>The most specific matching route wins</h2>
+  <table>
+    <caption>An illustrative route table</caption>
+    <tr><th scope="col">Destination</th><th scope="col">Next hop</th></tr>
+    <tr><td>10.20.0.0/16</td><td>Local virtual network</td></tr>
+    <tr><td>10.30.0.0/16</td><td>Peering connection</td></tr>
+    <tr><td>10.30.8.0/24</td><td>Inspection appliance</td></tr>
+    <tr><td>0.0.0.0/0</td><td>Default egress path</td></tr>
+  </table>
+  <p>A packet to <code>10.30.8.7</code> follows /24, not /16 or /0. Equal-prefix selection has provider-specific precedence rules. An appliance needs forwarding enabled, correct policies and a compatible return path. Stateful inspection can drop asymmetric traffic.</p>
+  <h2>Private, public and dual-stack</h2>
+  <p>RFC 1918 ranges are <code>10.0.0.0/8</code>, <code>172.16.0.0/12</code> and <code>192.168.0.0/16</code>. They are not globally routable and are not security controls. A public endpoint still needs a working route, listener and firewall rules. A "public subnet" label does not make every VM reachable.</p>
+  <p>IPv6 uses 128-bit addresses; dual-stack means verifying DNS AAAA records, IPv6 routes and policies as well as IPv4. Do not assume IPv4 NAT rules protect IPv6. Plan non-overlapping ranges across regions, accounts/subscriptions, offices and future acquisitions.</p>
+  <div class="hand"><h3>Do it by hand</h3><p>A /26 must support 45 VM addresses and 16 surge addresses. Does it fit in an ordinary AWS or Azure subnet? Where does traffic to 10.30.8.7 go above?</p><details><summary>Show answer</summary><p>No: 45 + 16 = 61, but only 64 - 5 = 59 are assignable, even before other consumers. Choose a larger or additional subnet. The /24 route sends the packet to the inspection appliance; inspect the return route too.</p></details></div>
+  <p>Primary reading: <a href="https://docs.aws.amazon.com/vpc/latest/userguide/subnet-sizing.html">AWS subnet sizing</a>, <a href="https://learn.microsoft.com/en-us/azure/virtual-network/virtual-networks-faq">Azure VNet address reservations</a>, <a href="https://learn.microsoft.com/en-us/azure/virtual-network/virtual-networks-udr-overview">Azure routing</a>.</p>
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"How many total IPv4 addresses are in a /26?","options":["26","64","256"],"answer":1,"why":"There are 6 host bits: 2^6 = 64 total addresses."},
+ {"q":"Both /16 and /24 match a destination. Which normally wins?","options":["The /16","The first displayed route","The /24"],"answer":2,"why":"Longest-prefix matching selects the more specific route."},
+ {"q":"Why avoid overlapping private ranges?","options":["Peering and hybrid routing become ambiguous or unsupported","Private addresses must be globally unique","It removes the need for TLS"],"answer":0,"why":"Connected networks need unambiguous routing; renumbering or translation adds complexity."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+</body>
+</html>

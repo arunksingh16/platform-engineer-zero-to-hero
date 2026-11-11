@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>3. DNS and service discovery | Networking fundamentals</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-lesson="3">
+<main>
+  <span class="tag">Lesson 3</span>
+  <h1>DNS and service discovery</h1>
+  <p class="lead">You changed the record. Some listeners still reach the old region. That is not necessarily a broken load balancer.</p>
+  <div class="goal"><h3>By the end you can...</h3>Distinguish authoritative answers from cached answers and explain DNS-based failover's limits.</div>
+  <h2>Who answers?</h2>
+  <p>An application asks a stub resolver; a recursive resolver finds and caches answers from authoritative DNS servers. A/AAAA records supply IPv4/IPv6 addresses; CNAME points to another name. Provider alias records are provider-specific conveniences, not a universal DNS record type.</p>
+  <p>The TTL tells caches how long an answer may be retained. NXDOMAIN and other negative answers can also be cached. OS, runtime and application caches add behavior; some clients retain addresses longer than expected. Existing connections do not move when a record changes.</p>
+  <pre><code>api.music.example -> regional endpoint name -> changing provider IPs
+private data name -> private IP (inside the intended DNS view)</code></pre>
+  <p>Use documented endpoint names rather than pinning a managed proxy's observed IP. Choose an explicitly supported static-IP service when an allowlist requires it. DNS rotation is not per-request balancing: one client can reuse one connection for thousands of requests.</p>
+  <h2>Map the concept</h2>
+  <table>
+    <caption>Names and discovery across environments</caption>
+    <tr><th scope="col">Need</th><th scope="col">AWS</th><th scope="col">Azure</th><th scope="col">VM fleet</th></tr>
+    <tr><td>Public DNS and policy routing</td><td>Route 53 hosted zones and routing policies</td><td>Azure DNS hosting; Traffic Manager for DNS-based traffic steering</td><td>Authoritative DNS plus health-aware automation</td></tr>
+    <tr><td>Private names</td><td>Route 53 private hosted zones, Resolver</td><td>Private DNS zones, DNS Private Resolver</td><td>Internal DNS with conditional forwarding</td></tr>
+  </table>
+  <p>Split-horizon DNS gives different answers inside and outside a network. Hybrid clients need forwarding rules and reachability to the intended resolver. A private endpoint without working private DNS often leaves clients trying the public path.</p>
+  <div class="callout"><h3>Discovery is not reachability</h3>DNS or a service registry tells you where to try. Routes, policy, listener health and application authorization determine whether that attempt works. DNS health checks also need an appropriate vantage point; public probes cannot automatically test arbitrary private addresses.</div>
+  <div class="hand"><h3>Do it by hand</h3><p>A resolver cached region A at t=0 with TTL 60 seconds. A fails at t=10 and the authoritative answer changes immediately. When can this cached answer expire? What about a connection established at t=5?</p><details><summary>Show answer</summary><p>At t=60: up to 50 seconds after the failure in this simplified compliant-cache example. Health detection would add delay in reality. The existing connection is independent of DNS TTL; it needs to fail, close or be re-established. TTL is not an end-to-end recovery guarantee.</p></details></div>
+  <p>Primary reading: <a href="https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/routing-policy.html">Route 53 routing policies</a>, <a href="https://learn.microsoft.com/en-us/azure/traffic-manager/traffic-manager-overview">Traffic Manager</a>, <a href="https://www.rfc-editor.org/rfc/rfc2308">negative caching</a>.</p>
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"Does DNS failover migrate an established TCP connection?","options":["Yes, at TTL expiry","No","Only with a CNAME"],"answer":1,"why":"DNS affects future resolution, not already established connections."},
+ {"q":"Azure DNS and Traffic Manager have which distinction?","options":["Both proxy every HTTP request","DNS hosts zones; Traffic Manager adds DNS-based traffic steering","Traffic Manager is a regional HTTP proxy"],"answer":1,"why":"Traffic Manager answers DNS queries according to policy and endpoint health; it is not in the application data path."},
+ {"q":"A private name resolves correctly, but the connection times out. What next?","options":["Assume DNS proves connectivity","Disable TLS","Check routes, policies and the listener from that client network"],"answer":2,"why":"A correct address alone does not establish a working data path."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+</body>
+</html>

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>5. When and how to load balance | Networking fundamentals</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-lesson="5">
+<main>
+  <span class="tag">Lesson 5</span>
+  <h1>When and how to load balance</h1>
+  <p class="lead">Use a load balancer when clients need a stable service entry point while instances scale, fail or drain. It distributes work; it does not create backend capacity or replicate application state.</p>
+  <div class="goal"><h3>By the end you can...</h3>Choose L4 or L7 and specify the health, distribution and lifecycle contract.</div>
+  <h2>Pick the behavior, not the product logo</h2>
+  <table>
+    <caption>Load-balancing decisions</caption>
+    <tr><th scope="col">Dimension</th><th scope="col">Choice and consequence</th></tr>
+    <tr><td>L4 transport</td><td>Distribute TCP connections or UDP flows. Suitable for non-HTTP protocols and TLS pass-through; no encrypted HTTP path inspection.</td></tr>
+    <tr><td>L7 application</td><td>Understand HTTP hosts, paths and headers; terminate TLS, route APIs and integrate WAF where supported.</td></tr>
+    <tr><td>Public versus internal</td><td>Choose who can reach the entry point; still enforce network policy and application authorization.</td></tr>
+    <tr><td>Regional versus global</td><td>Balance instances inside a region versus select a healthy regional deployment.</td></tr>
+  </table>
+  <p>Not every service needs another proxy: a single disposable development VM may not justify one, and some clients perform discovery and client-side balancing already. A load balancer in front of one production instance gives a stable endpoint, but not backend redundancy.</p>
+  <h2>Why equal connections can mean unequal work</h2>
+  <p>Round-robin distributes turns; weighted policies reflect capacity or rollout intent. Least-connections tracks active connections, not necessarily CPU work. Flow hashing keeps packets of a flow together. One HTTP/2 connection can carry many active requests; one streaming connection can last hours. Confirm which algorithms your chosen product actually supports.</p>
+  <p>Sticky sessions can hide local session state, but skew traffic and complicate failover. Prefer external or reconstructible state where appropriate. Consistent hashing can help cache locality, but changing membership still moves keys.</p>
+  <h2>Health and lifecycle are part of the design</h2>
+  <ol>
+    <li>Register a target and wait until it is genuinely ready, including warm-up.</li>
+    <li>Probe a cheap endpoint that reflects ability to serve; a TCP accept alone may miss application failure.</li>
+    <li>Stop new work before shutdown, deregister/drain, then allow bounded in-flight work to finish.</li>
+    <li>Design reconnect and resume behavior for streams that exceed the drain window.</li>
+  </ol>
+  <div class="callout"><h3>Know the all-unhealthy behavior</h3>Do not assume every balancer stops traffic when every probe fails. AWS ALB can fail open to all registered targets when all are unhealthy. Avoid probes that eject the entire fleet for one shared dependency failure; test your product's failure semantics.</div>
+  <div class="hand"><h3>Do it by hand</h3><p>Three VMs each handle 400 requests/s at your latency SLO. Traffic is 900 requests/s. Is adding an LB enough for single-VM failure tolerance?</p><details><summary>Show answer</summary><p>No. Normal capacity is 1,200 requests/s; after one failure it is 800, below 900. Add capacity, reduce demand, or provide intentional degradation. Balanced overload is still overload.</p></details></div>
+  <p>Primary reading: <a href="https://docs.aws.amazon.com/elasticloadbalancing/latest/application/target-group-health-checks.html">ALB health checks and fail-open behavior</a>, <a href="https://learn.microsoft.com/en-us/azure/load-balancer/load-balancer-custom-probe-overview">Azure health probes</a>.</p>
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"You need routing by HTTP path. Start with...","options":["DNS round-robin","An L7 HTTP proxy","A transport-only flow hash"],"answer":1,"why":"The component must understand the HTTP request to route by its path."},
+ {"q":"Why might equal TCP connection counts still overload one backend?","options":["Connections can carry very different amounts of work","Every connection carries exactly one request","TCP ignores ports"],"answer":0,"why":"Multiplexed HTTP/2 and long-lived streams break the assumption that one connection equals one unit of work."},
+ {"q":"Before stopping a VM, normally...","options":["Kill it and wait for probes","Change its DNS name only","Stop new assignments and drain with a bounded shutdown plan"],"answer":2,"why":"Draining reduces interrupted work, while a deadline prevents indefinite shutdown."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+</body>
+</html>

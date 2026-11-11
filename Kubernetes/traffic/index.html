@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ingress, gateways and service mesh</title>
+<meta name="description" content="What Ingress, Gateway API, Kong and Istio are, when to use each, how to configure them, and what the alternatives are.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-page="index">
+<main>
+  <span class="tag">5 lessons, about 25 minutes each</span>
+  <h1>Ingress, gateways and service mesh</h1>
+  <p class="lead">Kubernetes Services get traffic to Pods. They do not do host-based routing, TLS termination, authentication, rate limiting, retries or mutual TLS. Ingress, Gateway API, API gateways like Kong and service meshes like Istio each add a slice of that, at different places in the path, with different costs. Most "which one?" arguments are really "which slice do I need?" arguments.</p>
+
+  <div class="goal">
+    <h3>How each lesson works</h3>
+    <ol>
+      <li><strong>Idea</strong> in plain words with a tiny example.</li>
+      <li><strong>Play</strong> with a widget where there is one.</li>
+      <li><strong>Do it by hand</strong> — a short exercise with a hidden answer.</li>
+      <li><strong>Quiz</strong> — pass it to complete the lesson.</li>
+    </ol>
+  </div>
+
+  <h2>Lessons</h2>
+  <ol class="lessons" id="lessons"></ol>
+
+  <div class="callout">
+    <h3>Why this is a side course</h3>
+    <p>It sits on top of <a href="../cni/index.html">Pod networking</a>: everything here assumes Pods can already reach each other. Read it after the CNI course, or after lesson 2 of the <a href="../index.html">main course</a> if you only need the edge.</p>
+  </div>
+
+  <h2>What you will be able to do</h2>
+  <p>Say which layer a request is handled at and which component owns that layer. Write an Ingress and its Gateway API equivalent. Decide whether you need an API gateway at all, and what Kong adds over a plain controller. Explain what a mesh gives you that an ingress cannot, what it costs, and when "no mesh" is the right answer.</p>
+
+  <p class="muted">Every claim is sourced at the end of <a href="05-istio-and-service-mesh.html#references">lesson 5</a>. Progress is stored only in your browser. No tracking, no dependencies.</p>
+</main>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+</body>
+</html>

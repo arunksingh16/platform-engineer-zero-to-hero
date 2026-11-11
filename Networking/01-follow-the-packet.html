@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>1. Follow the packet | Networking fundamentals</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-lesson="1">
+<main>
+  <span class="tag">Lesson 1</span>
+  <h1>Follow the packet</h1>
+  <p class="lead">A listener taps Play. "The network is slow" is not a diagnosis. Draw the path and identify the first boundary that stops behaving as expected.</p>
+  <div class="goal"><h3>By the end you can...</h3>Separate links, routes, connections and application requests, and assign an owner to each hop.</div>
+  <h2>A useful layer model</h2>
+  <table>
+    <caption>Different layers answer different questions</caption>
+    <tr><th scope="col">Layer</th><th scope="col">Question</th><th scope="col">Example</th></tr>
+    <tr><td>L2: local link</td><td>How do I reach the next device on this link?</td><td>Ethernet, MAC addresses, ARP; IPv6 uses Neighbor Discovery.</td></tr>
+    <tr><td>L3: network</td><td>Which next hop reaches this destination IP?</td><td>IP, routes, gateways.</td></tr>
+    <tr><td>L4: transport</td><td>Which process and conversation?</td><td>TCP/UDP ports and connection state.</td></tr>
+    <tr><td>L7: application</td><td>What operation is requested?</td><td>HTTP method, hostname, path and status.</td></tr>
+  </table>
+  <p>A switch forwards frames within a link; a router forwards packets between networks. A host uses its route table to choose a next hop, resolving that hop's link address where needed. Cloud virtual networks abstract much of the physical fabric, not the need for correct routes and policy.</p>
+  <h2>There is more than one path</h2>
+  <pre><code>Name lookup: device -> recursive DNS resolver -> DNS answer
+API request: device -> edge proxy -> regional LB -> API VM -> data service
+Media fetch: device -> CDN cache -> origin (only on a cache miss)</code></pre>
+  <p>The resolver usually does not carry the API traffic. An HTTP reverse proxy accepts a client connection and opens a separate backend connection. Routing, filtering, TLS and timeouts must work on both legs. A return route is just as important as a forward route.</p>
+  <div class="callout"><h3>Control plane versus data plane</h3>A cloud API updates a listener or route: control plane. An established connection carrying audio bytes: data plane. A successful configuration update does not prove that the data path works.</div>
+  <h2>Map the responsibility</h2>
+  <p>In AWS, a VPC, subnet route table and security group shape the path to EC2. In Azure, a VNet, effective routes and NSG shape the path to a VM. On your own VMs, inspect the host route table, host firewall and upstream router. A managed load balancer does not own your application's readiness or capacity.</p>
+  <div class="hand"><h3>Do it by hand</h3><p>DNS succeeds. The edge returns an HTTP 502. Which boundaries have you proved, and what should you inspect next?</p><details><summary>Show answer</summary><p>You obtained a DNS answer and reached an HTTP-speaking component that returned 502. That does not prove the edge reached a healthy origin. Identify who generated the status, then inspect its backend connection, TLS handshake, target health and upstream logs. Do not start by changing DNS.</p></details></div>
+  <p>Next: put addresses and routes on this drawing. Primary reading: <a href="https://www.rfc-editor.org/rfc/rfc1122">RFC 1122: Internet host communication layers</a>.</p>
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"What does an L3 route primarily select?","options":["An HTTP path","A next hop for a destination IP","A TLS certificate"],"answer":1,"why":"Routing forwards packets toward destination networks; it does not select URL paths."},
+ {"q":"Does a successful DNS lookup prove the API is reachable?","options":["Yes","Only for HTTPS","No"],"answer":2,"why":"Name resolution and the API data path are separate operations."},
+ {"q":"A reverse proxy usually creates...","options":["Separate client-side and backend connections","One DNS record per packet","No backend connection"],"answer":0,"why":"A terminating proxy is a client of the backend as well as a server to the original client."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+</body>
+</html>

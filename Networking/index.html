@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Networking for platform engineers: packets, DNS, TLS, load balancers, AWS, Azure, self-managed VMs, private connectivity and production troubleshooting.">
+<title>Networking fundamentals</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-page="index">
+<main>
+  <span class="tag">12 lessons, about 15-25 minutes each</span>
+  <h1>Networking fundamentals</h1>
+  <p class="lead">Before choosing a load balancer, understand the packet. Learn to design, secure and debug the paths connecting users, services and data, then map those decisions to AWS, Azure or a fleet of VMs.</p>
+  <div class="goal">
+    <h3>Think like a production network engineer</h3>
+    <p>For every hop ask: who resolves the name, who opens the connection, where does TLS end, what changes the address, and what happens when this hop fails?</p>
+    <ol>
+      <li>Build a mental model with a small worked example.</li>
+      <li>Predict a failure or make a design decision.</li>
+      <li>Reveal the exercise answer, then pass the quiz.</li>
+    </ol>
+  </div>
+  <p>No cloud account or paid resources required. Basic familiarity with processes and client/server applications helps; Kubernetes is not a prerequisite.</p>
+  <h2>Lessons</h2>
+  <ol class="lessons" id="lessons"></ol>
+  <h2>One running example</h2>
+  <p>A fictional music-streaming platform serves catalog searches, private playlists, media segments and persistent client connections. These are large-scale engineering scenarios, <strong>not a description of Spotify's internal architecture</strong>. Cloud mappings are limited to AWS and Azure; self-managed examples use Linux VMs.</p>
+  <h2>Continue into the platform</h2>
+  <p>After the fundamentals, follow the <a href="../Kubernetes/cni/index.html">Pod networking and CNI track</a>, apply them to <a href="../Kubernetes/aks/04-networking-and-ip-planning.html">AKS networking and IP planning</a>, and connect network symptoms to <a href="../Observability/index.html">observability and SLOs</a>.</p>
+  <p class="muted">Progress stays in your browser under this course's own storage key. No tracking, dependencies or cloud provisioning.</p>
+</main>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+</body>
+</html>

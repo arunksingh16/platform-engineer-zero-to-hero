@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>6. Choose an AWS or Azure service | Networking fundamentals</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-lesson="6">
+<main>
+  <span class="tag">Lesson 6</span>
+  <h1>Choose an AWS or Azure service</h1>
+  <p class="lead">The same design question can lead to different product combinations. These are capability mappings, not claims that two services are identical.</p>
+  <div class="goal"><h3>By the end you can...</h3>Separate protocol, exposure, scope and delivery requirements before picking a service.</div>
+  <h2>A practical decision table</h2>
+  <table>
+    <caption>Starting points, subject to current SKU, protocol and regional support</caption>
+    <tr><th scope="col">Requirement</th><th scope="col">AWS</th><th scope="col">Azure</th></tr>
+    <tr><td>Regional HTTP APIs, host/path rules, TLS termination</td><td>Application Load Balancer (ALB); AWS WAF when needed</td><td>Application Gateway v2; WAF_v2 when needed</td></tr>
+    <tr><td>Regional TCP/UDP flows or TLS pass-through</td><td>Network Load Balancer (NLB); static per-zone addresses, TLS listener option</td><td>Standard Load Balancer; public/internal frontends, no TLS termination</td></tr>
+    <tr><td>Global HTTP delivery, cache and edge WAF</td><td>CloudFront with configured origins and AWS WAF</td><td>Front Door Standard/Premium; private origin connectivity requires supported Premium configuration</td></tr>
+    <tr><td>Global DNS-based endpoint selection</td><td>Route 53 routing policies and health checks</td><td>Traffic Manager; Azure DNS can host the zone</td></tr>
+    <tr><td>Global static-IP TCP/UDP acceleration</td><td>Global Accelerator standard accelerator to supported regional endpoints</td><td>Evaluate cross-region Load Balancer for supported public regional LB topologies; not a drop-in Global Accelerator equivalent</td></tr>
+    <tr><td>Transparent network appliance insertion</td><td>Gateway Load Balancer</td><td>Gateway Load Balancer with supported service chaining</td></tr>
+  </table>
+  <p>Gateway Load Balancer is for appliances such as firewalls, <strong>not</strong> an HTTP API gateway. API Gateway (AWS) and API Management (Azure) add API policies, authentication integration, quotas and lifecycle features; they are not merely alternate names for generic load balancers.</p>
+  <p>Azure Application Gateway also offers TCP/TLS proxy capabilities; inspect current feature, SKU and deployment constraints if you need a terminating transport proxy. Do not infer that it supports UDP or that Standard Load Balancer terminates TLS. Azure Load Balancer also has a cross-region topology: "all Azure load balancers are regional" is too broad.</p>
+  <h2>Try a first-pass selection</h2>
+  <div class="widget">
+    <label for="need">Primary requirement</label>
+    <select id="need">
+      <option value="http">Regional HTTP host/path routing</option>
+      <option value="flow">Regional TCP/UDP or TLS pass-through</option>
+      <option value="edge">Global HTTP and caching</option>
+      <option value="dns">DNS-based regional steering</option>
+    </select>
+    <p id="selection" role="status"></p>
+    <p class="muted">This is a teaching aid, not a complete architecture recommendation. Exposure, private-origin support, protocol versions and failure behavior still need review.</p>
+  </div>
+  <h2>Write the contract before deployment</h2>
+  <p>Record public/internal exposure, IP family, protocols on both legs, TLS ownership, client-IP forwarding, probes, idle limits, drain behavior, zone support, quotas and pricing dimensions. Static IP requirements can change the choice. Never trust arbitrary client-supplied forwarding headers; accept them only through your known proxy chain.</p>
+  <div class="hand"><h3>Do it by hand</h3><p>You have private VM APIs needing /catalog and /playlist routing, plus cacheable global media. Which components belong where?</p><details><summary>Show answer</summary><p>AWS: an ALB for the APIs; CloudFront for media from a suitably protected origin. Azure: Application Gateway for regional APIs, Front Door for global media delivery. Public client access and private backend addresses are compatible through a public proxy; a truly private-only service needs an internal entry point and private client connectivity. Do not chain every product by default.</p></details></div>
+  <p>Primary reading: <a href="https://docs.aws.amazon.com/elasticloadbalancing/latest/userguide/what-is-load-balancing.html">AWS ELB types</a>, <a href="https://docs.aws.amazon.com/global-accelerator/latest/dg/what-is-global-accelerator.html">Global Accelerator</a>, <a href="https://learn.microsoft.com/en-us/azure/architecture/guide/technology-choices/load-balancing-overview">Azure load-balancing selection</a>, <a href="https://learn.microsoft.com/en-us/azure/application-gateway/tcp-tls-proxy-overview">Application Gateway TCP/TLS proxy</a>.</p>
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"Which is a reasonable starting pair for regional non-HTTP UDP?","options":["AWS ALB and Azure Front Door","AWS NLB and Azure Standard Load Balancer","Route 53 and Azure DNS as packet proxies"],"answer":1,"why":"NLB and Standard Load Balancer distribute transport flows including UDP."},
+ {"q":"Gateway Load Balancer primarily solves...","options":["API version management","Media caching","Network appliance insertion"],"answer":2,"why":"It integrates appliances into traffic paths; it is not an API gateway."},
+ {"q":"Are CloudFront and Front Door exact equivalents in every failover configuration?","options":["No; verify origin, protocol and failover semantics separately","Yes","Only if DNS TTL is zero"],"answer":0,"why":"They share an edge-delivery role, not identical features or operational contracts."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+<script>
+(function(){
+  const choices = {
+    http: "AWS: ALB. Azure: Application Gateway v2. Decide public/internal exposure and the TLS/WAF policy.",
+    flow: "AWS: NLB. Azure: Standard Load Balancer. Check flow timeouts, source IP behavior, probes and UDP application health.",
+    edge: "AWS: CloudFront. Azure: Front Door Standard/Premium. Define cache keys, protected origins and regional failover behavior.",
+    dns: "AWS: Route 53 routing policies. Azure: Traffic Manager. Neither proxies application traffic; account for caches and existing connections."
+  };
+  const input = document.getElementById("need");
+  function update() { document.getElementById("selection").textContent = choices[input.value]; }
+  input.addEventListener("change", update);
+  update();
+})();
+</script>
+</body>
+</html>

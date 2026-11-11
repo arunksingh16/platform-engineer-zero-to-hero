@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>9. Edge delivery and streaming | Networking fundamentals</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-lesson="9">
+<main>
+  <span class="tag">Lesson 9</span>
+  <h1>Edge delivery and streaming</h1>
+  <p class="lead">A catalog query and an audio segment may both use HTTPS, but they have different caching, capacity and privacy contracts.</p>
+  <div class="goal"><h3>By the end you can...</h3>Separate media delivery from personalized APIs, and distinguish caching from global traffic steering.</div>
+  <h2>Three workloads, three designs</h2>
+  <ul>
+    <li><strong>Versioned media segments/artwork:</strong> cache immutable content near listeners; support range requests where required. Restrict access with a validated entitlement/token design.</li>
+    <li><strong>Private playlists and account responses:</strong> avoid shared caching by default. Deliberate personalized caching requires correct cache isolation and explicit policy.</li>
+    <li><strong>Persistent control streams:</strong> verify WebSocket/gRPC support, idle limits, drain behavior and reconnect storms. These are not ordinary cache hits.</li>
+  </ul>
+  <p>CloudFront and Front Door provide HTTP edge delivery and configurable caching. A regional ALB/Application Gateway distributes origin/API work. Global Accelerator optimizes supported TCP/UDP paths without being an object cache. DNS steering changes endpoint discovery, not the bytes of an established stream.</p>
+  <h2>The cache key is a security decision</h2>
+  <p>A cache key decides which requests share a response: hostname, path and configured query/header/cookie dimensions. Ignoring a user-specific dimension can leak another user's data. Including every token can destroy the hit ratio. Define authorization at the edge/origin and caching together; signed URL/cookie behavior differs by product. Never assume a CDN validates a token merely because it appears in the URL.</p>
+  <pre><code>Listener -> edge cache -- hit --> media bytes
+                      -- miss -> protected origin
+Listener -> API entry point -> authorized playlist service</code></pre>
+  <p>Protect origins against bypass using supported private-origin connectivity or restricted ingress plus authenticated origin access. A secret header alone is not a substitute for a complete origin access design. WAF addresses selected HTTP threats; volumetric DDoS protection, rate limits and authorization solve different problems.</p>
+  <h2>Global does not mean stateless failover</h2>
+  <p>Health-aware regional steering needs a data strategy: replication lag, write ownership, residency, recovery point and consistency. CloudFront origin groups have specific method and failure-trigger constraints; do not assume arbitrary active-active API failover. Front Door origin-group behavior must also be configured and tested separately.</p>
+  <div class="hand"><h3>Do it by hand</h3><p>100,000 listeners each consume 160 kbit/s of audio. What is total payload throughput? If 95% of bytes hit cache, what reaches the origin?</p><details><summary>Show answer</summary><p>100,000 x 160,000 = 16 Gbit/s payload. A 95% <em>byte</em> hit ratio leaves 5%, or 0.8 Gbit/s, from origin in this simplified steady state. Protocol overhead, retries, region distribution and cold-cache bursts need extra headroom. Request hit ratio alone would not prove this byte saving.</p></details></div>
+  <p>Primary reading: <a href="https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/controlling-the-cache-key.html">CloudFront cache keys</a>, <a href="https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/high_availability_origin_failover.html">CloudFront origin failover</a>, <a href="https://learn.microsoft.com/en-us/azure/frontdoor/front-door-caching">Front Door caching</a>.</p>
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"Which should normally bypass shared caching?","options":["Versioned public artwork","An immutable public asset","A user's private playlist response"],"answer":2,"why":"Personalized data needs explicit isolation; shared caching is unsafe by default."},
+ {"q":"Does Global Accelerator cache audio objects?","options":["Yes","No","Only with a low DNS TTL"],"answer":1,"why":"It accelerates supported network paths; it is not a CDN object cache."},
+ {"q":"A 95% byte hit ratio on 16 Gbit/s leaves how much simplified origin payload?","options":["0.8 Gbit/s","8 Gbit/s","15.2 Gbit/s"],"answer":0,"why":"16 x 0.05 = 0.8 Gbit/s before overhead and bursts."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+</body>
+</html>

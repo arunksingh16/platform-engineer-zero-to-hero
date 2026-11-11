@@ -40,6 +40,10 @@ planning, the packet path and MTU, NetworkPolicy and who enforces it, choosing
 between Flannel, Calico, Cilium and the cloud CNIs, and the eBPF dataplane.
 Vendor-neutral, with its own references section at the end of lesson 5.
 
+`traffic/` — **Ingress, gateways and service mesh**, five lessons: traffic
+layers, Ingress controllers, Gateway API, Kong and API gateways, and Istio with
+its alternatives. References at the end of lesson 5.
+
 ## Kubernetes platforms
 
 OpenShift, AKS and the EKS roadmap are grouped as peers under **Kubernetes

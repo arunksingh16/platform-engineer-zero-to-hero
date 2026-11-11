@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>4. Kong and API gateways · Ingress, gateways and service mesh</title>
+<meta name="description" content="What an API gateway adds over an ingress controller, how Kong works on Kubernetes, how to configure plugins, and the alternatives.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="4">
+<main>
+  <span class="tag">Lesson 4</span>
+  <h1>Kong and API gateways</h1>
+  <p class="lead">An ingress controller answers "which backend gets this request?". An API gateway also answers "is this caller allowed, how much may they send, and what should the request look like when it arrives?". Kong is the best-known open source gateway on Kubernetes; the concept matters more than the product.</p>
+
+  <div class="goal">
+    <h3>By the end you can…</h3>
+    Say what an API gateway adds, install and configure Kong with Gateway API and plugins, and choose between Kong and its alternatives.
+  </div>
+
+  <h2>What a gateway adds</h2>
+  <table>
+    <tr><th>Concern</th><th>Ingress controller</th><th>API gateway</th></tr>
+    <tr><td>Host/path routing, TLS</td><td>Yes</td><td>Yes</td></tr>
+    <tr><td>Authentication (API keys, JWT, OIDC, mTLS)</td><td>Limited, via annotations</td><td>First-class plugins</td></tr>
+    <tr><td>Rate limiting and quotas per consumer</td><td>Basic, per IP</td><td>Per consumer, per route, with shared counters</td></tr>
+    <tr><td>Request/response transformation</td><td>Rewrites</td><td>Header, body and format transforms</td></tr>
+    <tr><td>Consumers, API products, developer portal</td><td>No</td><td>Often, in the commercial tier</td></tr>
+    <tr><td>Observability per API</td><td>Basic metrics</td><td>Per-route metrics, logging and tracing plugins</td></tr>
+  </table>
+
+  <h2>Kong on Kubernetes</h2>
+  <p>Kong has two parts. The <strong>data plane</strong> is Kong Gateway, built on NGINX/OpenResty, which proxies traffic. The <strong>control plane</strong> on Kubernetes is the <strong>Kong Ingress Controller (KIC)</strong>, which watches Kubernetes resources and programs the gateway. It speaks Gateway API as well as Ingress, so you write standard routes and add Kong behaviour through its own CRDs.</p>
+  <ul>
+    <li><code>KongPlugin</code> / <code>KongClusterPlugin</code> — a plugin configuration (rate limiting, auth…).</li>
+    <li><code>KongConsumer</code> — a caller identity, with credentials attached.</li>
+    <li><code>KongUpstreamPolicy</code> and friends — load-balancing and health-check tuning.</li>
+  </ul>
+  <pre><code>apiVersion: configuration.konghq.com/v1
+kind: KongPlugin
+metadata: {name: rate-limit, namespace: prod}
+plugin: rate-limiting
+config:
+  minute: 100
+  policy: local
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: orders
+  namespace: prod
+  annotations:
+    konghq.com/plugins: rate-limit      # attach the plugin to this route
+spec:
+  parentRefs: [{name: kong}]
+  hostnames: [api.example.com]
+  rules:
+  - matches: [{path: {type: PathPrefix, value: /orders}}]
+    backendRefs: [{name: orders, port: 80}]</code></pre>
+  <p>Kong is also usable without a database ("DB-less"), with all configuration coming from Kubernetes objects — the normal mode for Kubernetes.</p>
+
+  <h2>When to use a gateway</h2>
+  <ul>
+    <li>You publish APIs to external consumers or partners and need keys, quotas and per-consumer analytics.</li>
+    <li>Authentication and rate limiting must be consistent across many services without each team re-implementing them.</li>
+    <li>You need to front non-Kubernetes backends too, with one policy layer.</li>
+  </ul>
+  <p><strong>Skip it when</strong> you only route hosts and paths to your own web apps. A plain Gateway API implementation does that with less to run, and a gateway adds a component that every request depends on.</p>
+
+  <h2>The alternatives</h2>
+  <table>
+    <tr><th>Option</th><th>Character</th></tr>
+    <tr><td><strong>Envoy Gateway</strong></td><td>Gateway API-native Envoy with extension policies for auth, rate limiting and more.</td></tr>
+    <tr><td><strong>Istio ingress gateway</strong></td><td>Envoy at the edge, sharing configuration and identity with the mesh.</td></tr>
+    <tr><td><strong>Apache APISIX</strong></td><td>Open source gateway with a large plugin set and etcd-backed config.</td></tr>
+    <tr><td><strong>Traefik</strong></td><td>Ingress plus middleware chains for auth and rate limiting.</td></tr>
+    <tr><td><strong>Tyk, Gravitee, Ambassador/Emissary</strong></td><td>Gateways with different emphases: lifecycle, policy, or developer experience.</td></tr>
+    <tr><td><strong>Managed gateways</strong></td><td>Azure API Management, AWS API Gateway, Apigee — hosted, outside the cluster, with their own pricing and limits.</td></tr>
+  </table>
+  <div class="callout">
+    <h3>The hidden cost: the gateway is in every request path</h3>
+    <p>It needs high availability, careful upgrades and capacity planning, and its plugins add latency. A misconfigured plugin ordering or a failing external auth call becomes an outage for every API at once.</p>
+  </div>
+
+  <div class="hand">
+    <h3>✍️ Do it by hand</h3>
+    <ol>
+      <li>Product wants a free tier of 100 requests a minute and a paid tier of 1000, per customer. Ingress or gateway?</li>
+      <li>You have three internal web apps and a public marketing site, all needing host routing and TLS. Do you need Kong?</li>
+      <li>Where does Kong get its configuration in DB-less mode on Kubernetes?</li>
+    </ol>
+    <details><summary>Show answer</summary>
+      <p>1) A gateway: per-consumer limits need consumer identity and shared counters.</p>
+      <p>2) No. A Gateway API implementation or Ingress controller is enough; Kong would add an operational dependency without a feature you use.</p>
+      <p>3) From Kubernetes resources — Ingress or Gateway API objects and Kong CRDs — translated by the Kong Ingress Controller.</p>
+    </details>
+  </div>
+
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"What does an API gateway add over an ingress controller?","options":["Pod scheduling","Per-consumer auth, quotas, and transformations","Pod networking","Node autoscaling"],"answer":1,"why":"Routing is shared; gateways add API-management policy."},
+ {"q":"What is the Kong Ingress Controller?","options":["The proxy that handles traffic","A controller that translates Kubernetes resources into Kong configuration","A CNI plugin","A database"],"answer":1,"why":"KIC is the control plane; Kong Gateway is the data plane."},
+ {"q":"When is Kong probably overkill?","options":["Publishing partner APIs with quotas","Only host and path routing for your own web apps","Centralised JWT validation","Per-consumer rate limits"],"answer":1,"why":"A plain Gateway API implementation does simple routing with less to operate."},
+ {"q":"Which is a managed gateway outside the cluster?","options":["Envoy Gateway","Traefik","Azure API Management","Contour"],"answer":2,"why":"APIM, AWS API Gateway and Apigee are hosted services."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+</body>
+</html>

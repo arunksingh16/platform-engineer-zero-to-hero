@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>11. Debug the request path | Networking fundamentals</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body data-lesson="11">
+<main>
+  <span class="tag">Lesson 11</span>
+  <h1>Debug the request path</h1>
+  <p class="lead">Start from the affected client's network, name and protocol. A successful test from your laptop may exercise a different resolver, route, policy and proxy.</p>
+  <div class="goal"><h3>By the end you can...</h3>Use evidence to narrow a failure without disabling security controls or changing several things at once.</div>
+  <h2>A repeatable ladder</h2>
+  <table>
+    <caption>Observe the first failing boundary</caption>
+    <tr><th scope="col">Stage</th><th scope="col">Evidence</th><th scope="col">Next question</th></tr>
+    <tr><td>DNS</td><td>Answer, resolver, TTL, A/AAAA, NXDOMAIN/SERVFAIL</td><td>Correct DNS view and forwarding?</td></tr>
+    <tr><td>Route/policy</td><td>Effective routes, flow decisions, SYN attempts</td><td>Forward and return path allowed?</td></tr>
+    <tr><td>Transport</td><td>Timeout versus immediate refusal; retransmissions</td><td>Packet drop, absent listener, reset or exhaustion?</td></tr>
+    <tr><td>TLS</td><td>Name, chain, expiry, SNI, ALPN and alert</td><td>Correct certificate and trust on this leg?</td></tr>
+    <tr><td>HTTP/proxy</td><td>Status, upstream timing, request ID, healthy targets</td><td>Which hop generated the response?</td></tr>
+    <tr><td>Application</td><td>Trace, dependency timings, auth and readiness logs</td><td>Network symptom or application overload?</td></tr>
+  </table>
+  <h2>Small, scoped probes</h2>
+  <p>These are optional examples for systems you are authorized to test, using tools installed separately. <code>api.music.example</code> is a placeholder, not a working service.</p>
+  <pre><code>dig api.music.example A
+dig api.music.example AAAA
+curl --connect-timeout 3 --max-time 10 -sS -o /dev/null \
+  -w 'dns=%{time_namelookup} connect=%{time_connect} tls=%{time_appconnect} first_byte=%{time_starttransfer} total=%{time_total}\n' \
+  https://api.music.example/ready
+openssl s_client -connect api.music.example:443 \
+  -servername api.music.example -verify_hostname api.music.example \
+  -verify_return_error &lt; /dev/null
+ss -lnt
+ip route get 10.20.1.11</code></pre>
+  <p><code>ss</code> and <code>ip</code> examples are Linux-specific. curl timing fields above are cumulative from request start, not separate hop durations. Subtract connect from TLS time to approximate the TLS phase for a new direct connection. Proxies and reuse change interpretation.</p>
+  <p>Use <code>curl --resolve</code> for an authorized known-IP test that preserves hostname/SNI; connecting to an IP URL changes those variables. ICMP ping success does not prove TCP port access, and ping failure does not prove the application is unreachable.</p>
+  <h2>Cloud and VM evidence</h2>
+  <p>AWS: inspect target health/reason codes, CloudWatch LB metrics, access logs, VPC Flow Logs and Reachability Analyzer for supported paths. Azure: inspect backend health, Azure Monitor metrics, access logs, Network Watcher connection troubleshooting and virtual network flow logs. Use current VNet flow logging guidance rather than building new tooling around legacy NSG flow logs.</p>
+  <p>On VMs, correlate proxy access/error logs with host sockets, interface drops and a narrowly scoped, authorized packet capture. Flow logs describe network metadata, not request payloads or proof of application success. Configuration analyzers do not replace live tests. Protect captures and logs: credentials and personal information can be present.</p>
+  <div class="hand"><h3>Incident drill</h3><p>Small health responses work; large media responses stall only over a new VPN. CPU is normal. What do you test first?</p><details><summary>Show answer</summary><p>Suspect MTU/MSS and Path MTU Discovery along the tunnel. Compare packet sizes and retransmissions on both sides, check tunnel overhead and required ICMP signaling. Also rule out proxy/range/timeouts with evidence. Do not globally disable firewalls or randomly lower MTU everywhere.</p></details></div>
+  <p>Primary reading: <a href="https://docs.aws.amazon.com/vpc/latest/reachability/what-is-reachability-analyzer.html">Reachability Analyzer</a>, <a href="https://learn.microsoft.com/en-us/azure/network-watcher/connection-troubleshoot-overview">Azure connection troubleshoot</a>, <a href="https://learn.microsoft.com/en-us/azure/network-watcher/vnet-flow-logs-overview">VNet flow logs</a>.</p>
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+ {"q":"A TCP connect timeout proves...","options":["The application rejected your credentials","Only that the connection did not complete in time; investigate path and listener","DNS is always broken"],"answer":1,"why":"A timeout is evidence of a stage failure, not proof of a single root cause."},
+ {"q":"curl time_appconnect is normally...","options":["Cumulative time to complete TLS from request start","Only backend processing time","A DNS TTL"],"answer":0,"why":"These curl timing markers are cumulative, so compare differences carefully."},
+ {"q":"Why can small requests work while large responses stall across a tunnel?","options":["DNS never supports large files","TLS certificates are too small","MTU/Path MTU Discovery problems can affect larger packets"],"answer":2,"why":"Encapsulation reduces effective MTU; blocked signaling can create a packet-size-dependent black hole."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../course.js"></script>
+</body>
+</html>
