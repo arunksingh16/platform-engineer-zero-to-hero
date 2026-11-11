@@ -14,6 +14,7 @@ Access github pages - https://arunksingh16.github.io/platform-engineer-zero-to-h
 | Kubernetes platforms: OpenShift for senior SREs | Available | Operator-managed architecture, installation, MachineConfig and updates, OLM, OAuth and SCCs, OVN-Kubernetes, routers, storage, multi-tenancy, etcd and operations, fleet management |
 | Kubernetes platforms: AKS production operations | Available | Ownership, node pools, Entra/workload identity, Azure CNI and IP budgeting, ingress/egress/DNS, autoscaling, upgrades, CSI storage, recovery and incident response |
 | Kubernetes platforms: EKS | Planned | AWS specifics layered on the vendor-neutral course; lessons are not published yet |
+| AI platform engineering | Curated resources | Recommended external learning paths for SGLang and vLLM |
 | Infrastructure foundations | Planned | Linux, networking, Git, and containers |
 | Platform systems | Planned | Cloud fundamentals, infrastructure as code, and CI/CD |
 | Reliability and operations | Planned | Site reliability engineering, incident response, and production operations |
@@ -62,6 +63,7 @@ Kubernetes/                Course
   openshift/               Platform track: OpenShift for senior SREs (15 lessons)
   aks/                     Platform track: AKS production operations (9 lessons)
   eks/                     Planned platform track (directory not yet created)
+AIPlatformEngineering/     Curated external learning paths for SGLang and vLLM
 ```
 
 Courses nest. A child course is just a course one level deeper: it gets its own
