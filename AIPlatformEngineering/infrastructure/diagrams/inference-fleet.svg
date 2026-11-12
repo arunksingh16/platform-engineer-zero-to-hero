@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 450" role="img" aria-labelledby="title desc">
+<title id="title">Two independent inference replicas</title><desc id="desc">Requests enter admission and routing, then reach either of two independent model replicas on separate nodes. Each replica contains two cooperating GPU workers. Durable artifacts supply both replicas during loading before readiness.</desc>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="none" stroke="#08766d"/></marker></defs>
+<rect width="800" height="450" rx="12" fill="#f5f7fa"/>
+<g font-family="system-ui,sans-serif" font-size="17" fill="#142b41" text-anchor="middle">
+<text x="400" y="28">Client requests</text><path d="M400 38 V62" stroke="#08766d" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="245" y="66" width="310" height="52" rx="8" fill="#e3f3ef" stroke="#08766d"/><text x="400" y="98">Admission + routing + bounded queue</text>
+<path d="M350 120 V145 H200 V173 M450 120 V145 H600 V173" fill="none" stroke="#08766d" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="35" y="180" width="330" height="156" rx="12" fill="#fff" stroke="#526679" stroke-dasharray="7 4"/><rect x="435" y="180" width="330" height="156" rx="12" fill="#fff" stroke="#526679" stroke-dasharray="7 4"/>
+<text x="200" y="208" font-weight="bold">Node A · Replica 1</text><text x="600" y="208" font-weight="bold">Node B · Replica 2</text>
+<rect x="65" y="226" width="270" height="55" rx="8" fill="#e3f3ef" stroke="#08766d"/><rect x="465" y="226" width="270" height="55" rx="8" fill="#e3f3ef" stroke="#08766d"/><text x="200" y="260">GPU worker ↔ GPU worker</text><text x="600" y="260">GPU worker ↔ GPU worker</text>
+<text x="200" y="312" font-size="14">One complete model-parallel replica</text><text x="600" y="312" font-size="14">One complete model-parallel replica</text>
+<rect x="245" y="382" width="310" height="48" rx="8" fill="#e5eef4" stroke="#1d5a7a"/><text x="400" y="412">Durable model artifacts</text>
+<path d="M245 405 H200 V338 M555 405 H600 V338" stroke="#1d5a7a" stroke-width="2" fill="none" stroke-dasharray="6 4"/>
+<text x="400" y="365" font-size="14">Startup: transfer → load → warm → ready</text>
+</g></svg>

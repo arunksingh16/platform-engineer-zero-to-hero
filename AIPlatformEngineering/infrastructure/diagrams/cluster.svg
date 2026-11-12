@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 440" role="img" aria-labelledby="title desc">
+<title id="title">AI cluster: local and scale-out paths</title><desc id="desc">Two node failure boundaries each enclose a local GPU group and a NIC. The NICs communicate through a shared scale-out fabric. Dataset and checkpoint storage connect to both nodes over a separately labeled logical storage path.</desc>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0 L8 4 L0 8" fill="none" stroke="#08766d"/></marker></defs>
+<rect width="800" height="440" rx="12" fill="#f5f7fa"/>
+<g font-family="system-ui,sans-serif" font-size="17" fill="#142b41" text-anchor="middle">
+<rect x="30" y="25" width="330" height="220" rx="12" fill="#fff" stroke="#526679" stroke-dasharray="7 4"/><rect x="440" y="25" width="330" height="220" rx="12" fill="#fff" stroke="#526679" stroke-dasharray="7 4"/>
+<text x="195" y="55" font-weight="bold">Node A · failure boundary</text><text x="605" y="55" font-weight="bold">Node B · failure boundary</text>
+<rect x="55" y="75" width="280" height="68" rx="8" fill="#e3f3ef" stroke="#08766d"/><rect x="465" y="75" width="280" height="68" rx="8" fill="#e3f3ef" stroke="#08766d"/>
+<text x="195" y="101">GPU 0 ↔ GPU 1</text><text x="195" y="127">Local accelerator links</text><text x="605" y="101">GPU 2 ↔ GPU 3</text><text x="605" y="127">Local accelerator links</text>
+<text x="195" y="168" font-size="14">CPU / RAM · PCIe locality</text><text x="605" y="168" font-size="14">CPU / RAM · PCIe locality</text>
+<rect x="135" y="186" width="120" height="40" rx="6" fill="#e5eef4" stroke="#1d5a7a"/><rect x="545" y="186" width="120" height="40" rx="6" fill="#e5eef4" stroke="#1d5a7a"/><text x="195" y="212">NIC A</text><text x="605" y="212">NIC B</text>
+<path d="M195 228 V275 H285 M605 228 V275 H515" fill="none" stroke="#08766d" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="285" y="253" width="230" height="52" rx="8" fill="#e3f3ef" stroke="#08766d"/><text x="400" y="285">Scale-out fabric</text>
+<rect x="225" y="362" width="350" height="50" rx="8" fill="#e5eef4" stroke="#1d5a7a"/><text x="400" y="393">Durable datasets + checkpoints</text>
+<path d="M225 385 H70 V247 M575 385 H730 V247" stroke="#1d5a7a" stroke-width="2" fill="none" stroke-dasharray="6 4"/>
+<text x="400" y="339" font-size="14">Dashed blue: logical storage path; may share fabric</text>
+</g></svg>

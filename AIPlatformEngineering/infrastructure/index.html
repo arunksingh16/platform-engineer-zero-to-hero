@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI infrastructure at scale · The platform handbook</title>
+<meta name="description" content="Ten interactive lessons on accelerator selection, distributed training, inference fleets, topology, storage, operations and capacity planning.">
+<link rel="stylesheet" href="../../style.css"></head>
+<body data-page="index"><main>
+<span class="tag">10 lessons / Design, size, operate</span>
+<h1>AI infrastructure at scale</h1>
+<p class="lead">You know Kubernetes. Now learn why a running GPU Pod is only the beginning: a useful AI platform must fit the model, move data fast enough, meet deadlines and survive failures.</p>
+<div class="goal"><h3>Your outcome</h3><p>Defend an accelerator and cluster design, calculate explicit resource budgets, validate capacity with measurements, and explain your operating plan in a design review or interview.</p></div>
+<h2>Two systems, one engineering discipline</h2>
+<div class="grid3"><article class="card"><h3>Training team</h3><p>Train a dense language model on a fixed token budget before a deadline. Follow distributed execution, checkpoint recovery, scheduling and cost per completed run.</p></article><article class="card"><h3>Inference team</h3><p>Operate a coding assistant with variable demand and long prompts. Follow memory, serving replicas, latency, warm capacity and cost per successful request.</p></article></div>
+<p>Both are fictional teaching cases. Calculator defaults and performance figures are invented, not hardware benchmarks. LLMs provide the worked examples; data delivery, topology, scheduling and failure planning also apply to other AI workloads. Image and multimodal workloads need their own memory and throughput measurements.</p>
+<h2>Before you begin</h2><p>Know Pods, nodes, resource requests, Services and basic networking. No GPU or machine-learning background is required. Read explanations, work examples by hand, then change one variable in each explorer. Allow roughly 25–40 minutes per lesson, and longer for the capstones.</p>
+<p>The <a href="../01-sglang-vs-vllm.html">SGLang versus vLLM lesson</a> explains engine selection. Here we design the infrastructure around either engine. <a href="../index.html#resources-title">Existing engine learning paths</a> provide implementation depth.</p>
+<h2>Learning path</h2><ol class="lessons" id="lessons"></ol>
+<noscript><p>JavaScript enables calculators, quizzes and saved progress. All lesson explanations remain readable:</p><ol>
+<li><a href="01-workloads.html">Workloads</a></li><li><a href="02-accelerators.html">Accelerators</a></li><li><a href="03-memory.html">Memory</a></li><li><a href="04-parallelism.html">Parallelism</a></li><li><a href="05-topology.html">Topology</a></li><li><a href="06-storage.html">Storage</a></li><li><a href="07-inference.html">Inference</a></li><li><a href="08-operations.html">Operations</a></li><li><a href="09-capacity.html">Capacity</a></li><li><a href="10-capstones.html">Capstones</a></li></ol></noscript>
+<h2>How to use this in an interview</h2><p>State the workload and targets first. Draw boundaries and data paths. Show your assumptions and arithmetic. Explain what you would benchmark, what fails, and what evidence would change your decision. A lab or this course supports your reasoning; describe actual production experience separately and honestly.</p>
+</main><script src="lessons.js"></script><script src="../../course.js"></script></body></html>
