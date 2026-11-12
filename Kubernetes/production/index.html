@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kubernetes: production engineering</title>
+<meta name="description" content="Twelve advanced Kubernetes modules: fleet architecture, IAM, policy, security, storage recovery, networking, performance, capacity, upgrades and incidents.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-page="index">
+<main>
+  <span class="tag">Advanced · 12 modules</span>
+  <h1>Kubernetes: production engineering</h1>
+  <p class="lead">Own the failure boundary. Trace an identity across systems, recover a stateful workload without two writers, survive an admission outage, and upgrade a fleet with evidence rather than optimism.</p>
+  <div class="goal"><h3>Who this is for</h3><p>Engineers comfortable with Pods, Deployments, Services, scheduling and a shell. Complete the <a href="../index.html">core course</a> first if those are new. Each module combines a design decision, an investigation, a recovery procedure and an exercise; allow additional time for the labs.</p></div>
+  <h2>The operating scenario</h2>
+  <p>A fictional regional marketplace runs interactive APIs, asynchronous jobs and stateful dependencies across three zones. Teams share infrastructure but have different risk and latency budgets. Numerical examples are explicit hypothetical inputs, not measurements or claims about Uber's internal architecture.</p>
+  <h2>Modules</h2>
+  <ol class="lessons" id="lessons"></ol>
+  <h2>Lab and evidence pack</h2>
+  <p>Start with the <a href="labs/README.md">lab guide</a>. It contains runnable RBAC, admission, runtime, networking, storage, scheduling and rollout exercises, plus fleet and disaster-recovery drills. Use the <a href="templates/incident-record.md">incident record</a> and <a href="templates/production-readiness.md">production-readiness review</a> to record results.</p>
+  <div class="callout"><h3>Version and validation contract</h3><p>The lab API baseline is Kubernetes 1.30 or later: this is a feature floor, not a recommendation to run an unsupported release. Use a currently supported distribution and compatible kubectl. Linux is assumed for runtime exercises; CSI, snapshots, network enforcement and host access are named prerequisites where needed. Read <a href="VALIDATION.md">validation status</a> for what has actually been checked. Primary references were reviewed on 12 November 2026; current upstream pages can contain newer features than your cluster.</p></div>
+  <h2>Provider implementations</h2>
+  <p>Use <a href="../aks/index.html">AKS</a> for Azure identity, networking and recovery contracts, and <a href="../openshift/index.html">OpenShift</a> for distribution-managed components and supported operations. The <a href="../cni/index.html">CNI</a> and <a href="../traffic/index.html">traffic</a> courses explain the underlying packet and gateway models.</p>
+  <p class="muted">Course progress uses its own browser storage key. See the <a href="AUDIT.md">coverage audit</a> for how this track extends the existing lessons.</p>
+</main>
+<script src="lessons.js"></script><script src="../../course.js"></script>
+</body>
+</html>

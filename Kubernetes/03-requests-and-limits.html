@@ -28,15 +28,15 @@
     memory: 512Mi</code></pre>
   <table>
     <tr><th></th><th>Request</th><th>Limit</th></tr>
-    <tr><td>Read by</td><td>the scheduler, once</td><td>the kubelet, continuously</td></tr>
-    <tr><td>When</td><td>choosing a node</td><td>while the container runs</td></tr>
-    <tr><td>Means</td><td>"reserve this much for me"</td><td>"never let me exceed this"</td></tr>
+    <tr><td>Used by</td><td>scheduler for placement; runtime for CPU weighting; autoscalers and eviction logic</td><td>kubelet and runtime configure kernel enforcement</td></tr>
+    <tr><td>When</td><td>placement, runtime weighting and resource-policy decisions</td><td>while the container runs</td></tr>
+    <tr><td>Means</td><td>scheduling budget and, for CPU, relative share under contention</td><td>runtime boundary: CPU throttling or memory reclaim/OOM</td></tr>
   </table>
   <p>The documentation is precise about the split: <q>the kube-scheduler uses this information to decide which node to place the Pod on</q> for requests, while for limits <q>the kubelet enforces those limits so that the running container is not allowed to use more of that resource than the limit you set</q>.</p>
 
   <div class="callout">
     <h3>The scheduler does not look at actual usage</h3>
-    <p>This single fact explains more confusion than anything else in Kubernetes. A node is "full" when the <strong>sum of requests</strong> reaches its capacity — regardless of what is actually being used.</p>
+    <p>For resource-fit decisions, the scheduler compares effective Pod requests with node <strong>allocatable</strong>, not raw machine capacity or instantaneous usage. System reservations, DaemonSets, init containers and Pod overhead affect that budget. Other placement constraints can still reject a Pod.</p>
     <p>So a node sitting at 9% real CPU can refuse to accept a new Pod, because the Pods on it <em>asked</em> for everything. Requests are an accounting system, and you are paying for what you declare.</p>
   </div>
 
@@ -48,30 +48,30 @@
   <p>The common typo is writing <code>cpu: 1000</code> meaning one core. That asks for a thousand cores, and the Pod stays <code>Pending</code> forever.</p>
 
   <h2>CPU and memory fail completely differently</h2>
-  <p>CPU is <strong>compressible</strong> — you can have less of it and simply go slower. Memory is not: once bytes are written, the only way to reclaim them is to kill something. Kubernetes enforces this asymmetry exactly.</p>
+  <p>CPU is <strong>compressible</strong> — less CPU generally means slower progress. Memory has a harder boundary: the kernel can reclaim file cache and other reclaimable pages, but cannot reclaim arbitrary live application memory without application cooperation or terminating a process.</p>
   <table>
     <tr><th>Over its limit</th><th>What happens</th></tr>
     <tr><td>CPU</td><td><q>cpu limits are enforced by CPU throttling. When a container approaches its cpu limit, the kernel will restrict access to the CPU corresponding to the container's limit.</q> The container survives, and gets slow.</td></tr>
     <tr><td>Memory</td><td><q>memory limits are enforced by the kernel with out of memory (OOM) kills. When a container uses more than its memory limit, the kernel may terminate it.</q></td></tr>
   </table>
-  <p>There is a subtlety in that memory quote worth keeping: <q>terminations only happen when the kernel detects memory pressure. Thus, a container that over allocates memory may not be immediately killed.</q> So an over-limit container can run fine for hours and die the moment the node gets busy — which is why OOMKills so often arrive in clusters, not in testing.</p>
+  <p>Separate three mechanisms: a <strong>cgroup OOM</strong> occurs when charged memory cannot fit within the cgroup's limit after reclaim; a <strong>node OOM</strong> occurs when the host cannot satisfy memory allocation; and <strong>kubelet eviction</strong> reacts to node-pressure thresholds. A container can hit its memory limit on a host with plenty of free memory. Virtual address allocation is not the same as charged resident memory. Inspect termination reasons, kernel/cgroup counters and node conditions before deciding which boundary failed.</p>
   <p>Practical consequence: a CPU limit that is too low produces a service that is mysteriously slow under load, with no errors and nothing in the logs. Latency rises and nothing looks broken. It is one of the most expensive debugging sessions in platform engineering, and the fix is one number.</p>
 
   <h2>QoS: what you get when the node runs out</h2>
-  <p>You never set a QoS class. Kubernetes derives it from the numbers you wrote, and it decides who dies first when a node is under pressure.</p>
+  <p>You never set a QoS class. Kubernetes derives it from resource settings. It influences OOM handling, but is not a complete eviction ordering. The table below models container-level resources; inspect the admitted Pod for defaults and any version-specific Pod-level resource settings.</p>
   <table>
     <tr><th>Class</th><th>Condition</th></tr>
     <tr><td><strong>Guaranteed</strong></td><td>Every container has both CPU and memory requests <em>and</em> limits set, with <strong>limit equal to request</strong> for each.</td></tr>
     <tr><td><strong>Burstable</strong></td><td>Not Guaranteed, but at least one container has some request or limit set.</td></tr>
     <tr><td><strong>BestEffort</strong></td><td>No requests or limits anywhere in the Pod.</td></tr>
   </table>
-  <p>And the consequence, quoted: <q>When a Node runs out of resources, Kubernetes will first evict BestEffort Pods running on that Node, followed by Burstable and finally Guaranteed Pods. When this eviction is due to resource pressure, only Pods exceeding resource requests are candidates for eviction.</q></p>
-  <p>That last sentence is the one to remember. Staying under your request is genuine protection — the eviction logic looks at what you asked for, so a Burstable Pod living within its request is a poor candidate for eviction even under pressure.</p>
+  <p>For memory-pressure eviction, the kubelet ranks Pods by whether usage exceeds requests, then Pod Priority, then usage relative to requests. BestEffort and over-request Burstable Pods are usually earlier candidates. Under-request Burstable and Guaranteed Pods are later candidates, <strong>not immune</strong>. Disk and PID pressure have different signals; CPU requests do not protect against disk exhaustion.</p>
+  <p>Use the detailed <a href="https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/">node-pressure eviction documentation</a> rather than treating QoS names as a universal ordering. Node-pressure eviction also differs from an API eviction governed by a PodDisruptionBudget.</p>
 
   <h2>Work out the class</h2>
   <div class="widget">
     <h3>QoS classifier</h3>
-    <p class="muted">One container. Leave a field blank to omit it.</p>
+    <p class="muted">One container, container-level resources, no LimitRange or admission mutation. An omitted request defaults to its corresponding limit when one is supplied. Leave a field blank to omit it.</p>
     <div class="row">
       <label>cpu request <input id="cr" value="100m" style="width:84px"></label>
       <label>cpu limit <input id="cl" value="500m" style="width:84px"></label>
@@ -93,9 +93,9 @@
   <p>There is no universal answer, but there is a defensible default position:</p>
   <table>
     <tr><th>Setting</th><th>Recommendation</th><th>Why</th></tr>
-    <tr><td>Memory request</td><td>Always set it</td><td>Without it the scheduler cannot reserve anything and you are BestEffort — first to be evicted.</td></tr>
+    <tr><td>Memory request</td><td>Set it deliberately</td><td>It contributes to placement accounting and eviction ranking. Omitting it does not imply BestEffort when other resources are set; a limit can also supply the default request.</td></tr>
     <tr><td>Memory limit</td><td>Set it, at or near the request</td><td>Memory is incompressible. An unbounded leak takes down the whole node, not just itself.</td></tr>
-    <tr><td>CPU request</td><td>Always set it</td><td>It is your share of the node under contention, and the scheduler's only input.</td></tr>
+    <tr><td>CPU request</td><td>Always set it</td><td>It influences your relative CPU share under contention and the scheduler's CPU-fit accounting.</td></tr>
     <tr><td>CPU limit</td><td>Contentious — often leave it off</td><td>Throttling a latency-sensitive service to enforce a ceiling nobody needed is a common self-inflicted wound. Omit it, and the Pod uses spare CPU when it is there.</td></tr>
   </table>
   <p>The counter-argument for CPU limits is real: without them, one noisy workload can starve its neighbours, and performance becomes dependent on who else is on the node. If you need predictability more than speed, set them. Just do it knowingly, rather than because a template had the field.</p>
@@ -119,8 +119,8 @@
     <details><summary>Show answer</summary>
       <p>1) <strong>1 CPU.</strong> 4 minus the 3 requested. Actual usage of 0.3 is irrelevant — the scheduler counts requests only.</p>
       <p>2) <strong>No.</strong> 1500m &gt; the 1000m remaining, so it stays <code>Pending</code> — on a node that is 92% idle. This is the single most surprising behaviour for newcomers, and the trigger for node autoscaling in lesson 7.</p>
-      <p>3) <strong>Guaranteed.</strong> Both resources have request and limit set, and equal. Evicted last.</p>
-      <p>4) <strong>Burstable</strong> — something is set, but not everything. It is evicted after BestEffort Pods, and only if it is exceeding its 1Gi request.</p>
+      <p>3) <strong>Guaranteed.</strong> Both resources have request and limit set, and equal. This is not immunity from node-pressure eviction.</p>
+      <p>4) <strong>Burstable</strong> — something is set, but not everything. Under memory pressure, exceeding its request makes it an earlier candidate; priority and relative usage also matter. Being below 1Gi is not absolute protection.</p>
       <p>5) <strong>CPU throttling.</strong> A 200m limit caps the container at a fifth of a core; past that the kernel throttles it. No errors, nothing logged, just latency. Check the throttling metric, then raise or remove the limit.</p>
     </details>
   </div>
@@ -134,8 +134,8 @@
 [
  {"q":"A node is at 9% actual CPU use but refuses a new Pod. Why?","options":["The node is cordoned","The scheduler counts the sum of requests, not actual usage, and the existing Pods already requested the capacity","The kubelet is unhealthy","Actual usage is measured over 5 minutes"],"answer":1,"why":"Requests are an accounting system. A node is full when its requests are allocated, whatever the real utilisation looks like."},
  {"q":"A container exceeds its CPU limit. What happens?","options":["It is OOMKilled","It is throttled by the kernel — it survives and gets slower","It is evicted","The limit is raised automatically"],"answer":1,"why":"CPU is compressible, so the kernel just restricts access. Memory is not, which is why exceeding a memory limit risks termination instead."},
- {"q":"A Pod sets memory request 1Gi, memory limit 1Gi, cpu request 1, cpu limit 1. QoS class?","options":["BestEffort","Burstable","Guaranteed","Depends on the node"],"answer":2,"why":"Guaranteed needs both resources to have requests and limits set, and equal, for every container. It is evicted last under node pressure."},
- {"q":"Why does an over-limit memory container sometimes run for hours before being OOMKilled?","options":["The kubelet checks every hour","Terminations happen when the kernel detects memory pressure, so an over-allocating container may not be killed immediately","Memory limits are advisory","It was throttled first"],"answer":1,"why":"This is why OOMKills show up in busy clusters rather than in testing — the trigger is node pressure, not the moment you cross the line."}
+  {"q":"A single-container Pod sets memory request 1Gi, memory limit 1Gi, cpu request 1, cpu limit 1. QoS class?","options":["BestEffort","Burstable","Guaranteed","Depends on the node"],"answer":2,"why":"For this container-level example, both resources have equal requests and limits. Guaranteed does not mean immune to eviction."},
+  {"q":"Can a container suffer a cgroup OOM when its host has free memory?","options":["No, only node pressure causes OOM","Yes, its own memory limit can be exhausted","Only if it has no limit","Only during eviction"],"answer":1,"why":"The cgroup memory boundary and the host's available memory are different constraints. Reclaim failure at the container limit can trigger OOM independently of a node OOM."}
 ]
 </script>
 <script src="lessons.js"></script>
@@ -161,30 +161,30 @@
     return parseFloat(m[1])*mult; }
 
   function classify(){
-    const cr=cpu($("cr").value), cl=cpu($("cl").value);
-    const mr=mem($("mr").value), ml=mem($("ml").value);
-    if([cr,cl,mr,ml].some(v=>Number.isNaN(v))){
+    const cl=cpu($("cl").value), ml=mem($("ml").value);
+    const cr=cpu($("cr").value) ?? cl, mr=mem($("mr").value) ?? ml;
+    if([cr,cl,mr,ml].some(v=>v!==null&&(!Number.isFinite(v)||v<0)) || (cr!==null&&cl!==null&&cr>cl) || (mr!==null&&ml!==null&&mr>ml)){
       $("qos").innerHTML='<tr><td class="err">Could not parse one of those values. Try forms like <code>100m</code>, <code>1</code>, <code>256Mi</code>.</td></tr>';
       $("advice").textContent=""; return;
     }
     const none=[cr,cl,mr,ml].every(v=>v===null);
     const guaranteed = cr!==null&&cl!==null&&mr!==null&&ml!==null&&cr>0&&mr>0&&cr===cl&&mr===ml;
     const cls = none?"BestEffort":(guaranteed?"Guaranteed":"Burstable");
-    const evict={BestEffort:"first",Burstable:"second",Guaranteed:"last"}[cls];
+    const evict="depends on pressure resource, requests, priority and relative usage";
     const badge={BestEffort:"err",Burstable:"",Guaranteed:"ok"}[cls];
 
     $("qos").innerHTML=
       `<tr><th>QoS class</th><td><strong class="${badge}">${cls}</strong></td></tr>`+
       `<tr><th>Evicted under node pressure</th><td>${evict}</td></tr>`+
       `<tr><th>Over CPU limit</th><td>${cl===null?"no limit — uses spare CPU when available":"throttled by the kernel"}</td></tr>`+
-      `<tr><th>Over memory limit</th><td>${ml===null?"no limit — can take down the node":"OOMKilled once the node is under pressure"}</td></tr>`;
+      `<tr><th>Over memory limit</th><td>${ml===null?"no limit — can contribute to node exhaustion":"cgroup reclaim, then possible OOM; host memory may still be free"}</td></tr>`;
 
     let a=[];
     if(mr===null)a.push("<strong class='err'>No memory request.</strong> The scheduler reserves nothing for you, and you are a prime eviction candidate.");
     if(ml===null&&mr!==null)a.push("No memory limit: a leak here is a node-wide problem, not just a Pod-level one.");
     if(cl!==null&&cr!==null&&cl===cr)a.push("CPU limit equals request, so there is no burst headroom at all — deliberate for Guaranteed, but it does mean throttling starts the moment you exceed your share.");
-    if(cls==="Burstable"&&mr!==null)a.push("Staying under the memory request is real protection: only Pods exceeding their requests are eviction candidates.");
-    if(cls==="BestEffort")a.push("Nothing is set, so this Pod is scheduled anywhere and killed first. Fine for a batch job you can re-run, bad for anything serving traffic.");
+    if(cls==="Burstable"&&mr!==null)a.push("Staying under the memory request generally improves memory-eviction ranking; it is not immunity.");
+    if(cls==="BestEffort")a.push("No CPU or memory is requested. Placement constraints still apply, and this workload is vulnerable under resource pressure.");
     $("advice").innerHTML=a.join(" ");
   }
 

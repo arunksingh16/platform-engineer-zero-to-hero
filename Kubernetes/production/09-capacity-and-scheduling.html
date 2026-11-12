@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>9. Capacity and scheduling · Kubernetes production engineering</title>
+<meta name="description" content="Plan failure headroom, diagnose fragmented capacity, coordinate autoscalers and measure reliable workload cost.">
+<link rel="stylesheet" href="../../style.css"></head>
+<body data-lesson="9"><main>
+  <span class="tag">Production / 9</span><h1>Capacity, scheduling and cost</h1>
+  <p class="lead">Capacity is the ability to place and serve the next unit of work within its deadline—including during a failure. Aggregate free CPU is only one input.</p>
+  <div class="goal"><h3>By the end you can…</h3>Diagnose unschedulable work, calculate usable headroom, reason about autoscaler interactions and compare cost per successful unit of service.</div>
+  <h2>Scenario: 200 free cores, no place for a Pod</h2>
+  <p>A workload needs eight CPUs on one node, a volume in zone A and a required accelerator label. The fleet has 200 free cores spread across unsuitable nodes. Neither cluster-wide free capacity nor a higher HPA maximum resolves the constraints. Capacity must be available in the right shape, place and time.</p>
+  <h2>A usable capacity model</h2>
+  <p>For a homogeneous node pool, start with allocatable minus DaemonSet requests. A first approximation to Pods per node is the minimum of the floor of available CPU divided by Pod CPU request, available memory divided by Pod memory request, and the Pod/IP/volume limits. Then apply affinity, topology, device and storage constraints. Init containers and Pod overhead can change effective requests. The formula is a bound, not a scheduler simulator.</p>
+  <p>Example: a node has 7 CPU and 26Gi allocatable; DaemonSets request 1 CPU and 2Gi. For Pods requesting 2 CPU and 5Gi, CPU permits three and memory permits four, so CPU limits placement to three before other constraints. At least one spare node may still be needed for a rolling update or node failure.</p>
+  <h2>Keep controllers' responsibilities distinct</h2>
+  <table><tr><th>Controller</th><th>Changes</th><th>Interaction to test</th></tr>
+    <tr><td>HPA / KEDA-generated HPA</td><td>Replica count from a signal</td><td>Metrics lag, activation, stabilization, missing metrics and workload startup time</td></tr>
+    <tr><td>VPA / right-sizing workflow</td><td>Resource requests, depending on mode</td><td>Changing CPU request changes CPU-utilization HPA's denominator</td></tr>
+    <tr><td>Node autoscaler</td><td>Available nodes/capacity</td><td>Provisioning latency, cloud quota, instance availability, constraints and disruption</td></tr>
+    <tr><td>Deployment / GitOps</td><td>Workload specification and rollout</td><td>Replica field ownership and simultaneous surge</td></tr>
+  </table>
+  <p>If usage is 500m and request is 1 CPU, utilization is 50%; lowering the request to 500m makes utilization 100% without any extra customer work. Independent request and replica loops can therefore fight. Choose field ownership and compatible signals. Queue length, oldest message age and arrival/service rates answer different questions; size worker concurrency against downstream limits.</p>
+  <h2>Lead time and overload</h2>
+  <p>Capacity arrival includes detection, autoscaler decision, provisioning, node registration, image pull and application warmup. If demand grows at 200 requests/second each minute and usable capacity takes four minutes to arrive, reserve at least 800 requests/second of growth headroom under that simple linear model, plus failure reserve. Real demand may be nonlinear; replay measured demand distributions.</p>
+  <p>Bound retries and queues. Increasing replicas can overload a database or external quota. Use admission control/load shedding for optional work when downstream capacity cannot grow. For Spot/preemptible nodes, diversify only within workload constraints, keep interruption-tolerant work restartable and maintain a tested fallback capacity path.</p>
+  <h2>Runbook: Pending during peak demand</h2>
+  <pre><code>kubectl --context "$CTX" describe pod "$POD" -n marketplace
+kubectl --context "$CTX" get nodes -L topology.kubernetes.io/zone
+kubectl --context "$CTX" get hpa -n marketplace -o yaml
+kubectl --context "$CTX" get pdb -n marketplace
+kubectl --context "$CTX" get resourcequota -n marketplace</code></pre>
+  <ol><li>Read scheduler Events: insufficient resources, taints, affinity, topology or volume constraints lead to different fixes.</li><li>Check the autoscaler's decision for that Pod and pool. Is there a feasible node shape? Is the pool at its cap, the provider out of quota, or provisioning failing?</li><li>Recover compatible capacity or adjust an incorrect constraint after validating its purpose. Do not remove isolation or storage locality just to turn Pending green.</li><li>Pause consolidation and nonessential surges if they consume recovery headroom. Shed lower-priority work according to service policy when capacity cannot arrive in time.</li><li>Stop scaling when downstream saturation or error rate rises. Verify useful throughput, queue age and latency, not replica count alone.</li><li>Restore normal autoscaler/disruption settings and capture the new capacity assumption.</li></ol>
+  <h2>Disruption and economics</h2>
+  <p>A PDB constrains voluntary API evictions, not every Pod deletion, Deployment rollout or node failure. An overly strict PDB can prevent a drain while providing no protection against a dead node. Model maxUnavailable, surge, topology and application readiness together. Preemption cannot make a wrong-zone volume usable and does not automatically create compatible hardware.</p>
+  <p>Measure <code>total attributable cost / successful business units</code>: include nodes, reserve, control planes, network transfer, storage, idle accelerators, platform overhead and retry waste. Report cost and SLO together. A cheaper instance that increases failures or cross-zone transfer may be more expensive per successful request.</p>
+  <h2>Lab: impossible placement and controlled recovery</h2>
+  <p><a href="labs/README.md#capacity">Run the scheduling exercise</a>: introduce a deliberately impossible node selector on the lab Deployment, inspect Pending Events, then remove only that constraint. The old replicas should remain serving because the rolling strategy permits surge and zero unavailability. Record why the PDB is not the rollout controller's availability mechanism.</p>
+  <div class="hand"><h3>Calculate</h3><p>Normal three-zone utilization is 50%; the tested post-failure ceiling is 70%. Is zone-loss capacity sufficient?</p><details><summary>Answer</summary><p>No. Losing a zone raises surviving utilization to 75% under balanced assumptions. Reduce normal load, add reserve or define tested load shedding.</p></details></div>
+  <h2>Sources and version scope</h2><p>Reviewed 12 November 2026. Autoscaler implementations and provider limits are version-specific; this module uses their shared control-loop responsibilities.</p><ul>
+    <li><a href="https://kubernetes.io/docs/concepts/cluster-administration/node-autoscaling/">Node autoscaling</a></li>
+    <li><a href="https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/">HPA algorithms and behavior</a></li>
+    <li><a href="https://kubernetes.io/docs/concepts/workloads/pods/disruptions/">Disruptions and PDB limits</a></li>
+    <li><a href="https://kubernetes.io/docs/concepts/scheduling-eviction/pod-priority-preemption/">Priority and preemption</a></li>
+  </ul>
+  <div id="quiz"></div><script type="application/json" id="quiz-data">[
+    {"q":"Why can a Pod remain Pending with plenty of aggregate CPU?","options":["The scheduler ignores all CPU requests","Capacity may be fragmented or violate topology/device constraints","HPA always blocks scheduling"],"answer":1,"why":"Placement needs a feasible node, not just a sufficient cluster-wide sum."},
+    {"q":"CPU usage stays constant while its request halves. What happens to utilization percentage?","options":["It doubles","It halves","It stays fixed"],"answer":0,"why":"Utilization is usage divided by request; changing requests changes the HPA signal."},
+    {"q":"What does a PDB not guarantee?","options":["A bound on supported voluntary evictions","Visibility into disruptionsAllowed","Protection from node failure or every rollout deletion"],"answer":2,"why":"PDBs govern the eviction API path, not every source of disruption."}
+  ]</script>
+</main><script src="lessons.js"></script><script src="../../course.js"></script></body></html>

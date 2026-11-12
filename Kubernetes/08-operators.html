@@ -53,7 +53,7 @@ operator     automated operational knowledge for one application</code></pre>
   </div>
 
   <h2>Status is how it talks back</h2>
-  <p>Your CRD gets a <code>status</code> subresource, and your controller owns it. This is not decoration — it is the only way users and other controllers learn what happened:</p>
+  <p>Enable the <code>status</code> subresource in your CRD and give the controller separate permission to update it. Status is a durable API for users and other controllers; Events, logs and metrics add operational evidence:</p>
   <pre><code>status:
   phase: Ready
   readyReplicas: 3
@@ -90,7 +90,7 @@ operator     automated operational knowledge for one application</code></pre>
     <tr><td>Run a stateful app needing ordered failover, backups and version-aware upgrades</td><td>An operator — very likely one that already exists.</td></tr>
     <tr><td>Expose an internal platform API to your own developers</td><td>A CRD plus a controller, which is a genuinely good use.</td></tr>
   </table>
-  <p>Two cautions from practice. First, check whether one exists — databases, message brokers and certificate management are thoroughly covered, and a maintained operator encodes failure modes you have not met yet. Second, an operator is production software with cluster-wide credentials: it needs tests, upgrades and an on-call owner. A half-maintained operator is worse than a runbook, because it acts on its own at three in the morning.</p>
+  <p>Two cautions from practice. First, check whether one exists — databases, message brokers and certificate management are thoroughly covered, and a maintained operator encodes failure modes you have not met yet. Second, an operator is production software: scope its credentials to its actual responsibilities, and give it tests, upgrades and an on-call owner. Cluster-wide credentials are not intrinsic to the pattern. A half-maintained operator is worse than a runbook, because it acts on its own at three in the morning.</p>
 
   <div class="hand">
     <h3>✍️ Do it by hand</h3>
@@ -106,7 +106,7 @@ operator     automated operational knowledge for one application</code></pre>
       <p>1) It is <strong>not idempotent</strong>. Reconcile runs on resyncs and restarts, not only on changes, so you would issue certificates continuously — exhausting rate limits and churning secrets.</p>
       <p>2) It is <strong>edge-triggered</strong>. Miss the event — controller restart, dropped watch — and the certificate silently expires. Nothing re-checks, because nothing is comparing state.</p>
       <p>3) Read the current certificate's expiry, compare against the 30-day threshold, and renew only if needed. On the vast majority of calls it does nothing. That is a healthy reconcile function.</p>
-      <p>4) Record it in <code>status</code> — a condition like <code>Renewing</code> with a timestamp — and check that first. Status is how a level-triggered controller remembers, since it cannot rely on its own memory across restarts.</p>
+      <p>4) Use a stable external operation/idempotency key derived from the object's UID and renewal intent. Reconcile the CA's operation state before starting another renewal. Record the operation ID and a <code>Renewing</code> condition in status, using optimistic concurrency. A status flag alone cannot close the crash window between the CA accepting a request and Kubernetes recording it; it can also get stuck forever after a crash. If the CA has no idempotency support, implement discoverable external identity and explicit duplicate-recovery semantics. See <a href="production/12-platform-apis-and-operators.html">production controller design</a>.</p>
       <p>5) Return an error so the controller retries with backoff, and set a condition explaining why. Do not crash and do not pretend it succeeded: a wrong <code>status</code> is worse than a visibly failing one, because everything downstream trusts it.</p>
     </details>
   </div>
@@ -122,7 +122,7 @@ operator     automated operational knowledge for one application</code></pre>
  {"q":"You apply a CRD for a new <code>PostgresCluster</code> type, then create one. What happens?","options":["A database is provisioned","Nothing — the object is stored and served by the API server, but no controller is watching it","The API server rejects it without a controller","A default controller is generated"],"answer":1,"why":"A CRD only adds a type. The operator is CRD plus controller; without the controller you have a well-typed record in etcd and nothing acting on it."},
  {"q":"Why must a reconcile function be idempotent?","options":["To make it faster","It is called on resyncs and restarts, not only when something changes, so it must be safe when there is nothing to do","Kubernetes requires pure functions","To allow parallel execution"],"answer":1,"why":"That is why the body is \"ensure X exists matching this spec\" rather than \"create X\" — on most calls it correctly does nothing."},
  {"q":"What is wrong with an edge-triggered controller that acts on update events?","options":["Events are too slow","If an event is missed — a restart, a dropped watch — nothing ever re-checks, and the state silently stays wrong","It uses too much memory","Events cannot carry the spec"],"answer":1,"why":"Level-triggered means comparing current desired state to current actual state every time, so a missed event is harmless: the next pass sees the same gap."},
- {"q":"Which of these is a poor reason to write an operator?","options":["Running a database needing ordered failover and version-aware upgrades","Exposing an internal platform API to your developers","Installing an application with some values filled in","Automating backups and restores for a stateful app"],"answer":2,"why":"That is templating — Helm or Kustomize. An operator is production software with cluster-wide credentials and needs an owner; reach for one only when ongoing operational judgement is required."}
+  {"q":"Which of these is a poor reason to write an operator?","options":["Running a database needing ordered failover and version-aware upgrades","Exposing an internal platform API to your developers","Installing an application with some values filled in","Automating backups and restores for a stateful app"],"answer":2,"why":"That is templating — Helm or Kustomize. An operator is production software with scoped credentials and an on-call owner; reach for one only when ongoing operational judgement is required."}
 ]
 </script>
 <script src="lessons.js"></script>

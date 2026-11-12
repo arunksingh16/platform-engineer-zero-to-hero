@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>8. Nodes and performance · Kubernetes production engineering</title>
+<meta name="description" content="Diagnose cgroup OOM, node pressure, CPU throttling, runtime failures and NUMA placement with bounded experiments.">
+<link rel="stylesheet" href="../../style.css"></head>
+<body data-lesson="8"><main>
+  <span class="tag">Production / 8</span><h1>Nodes and performance</h1>
+  <p class="lead">NodeReady is a control-plane observation, not a latency guarantee. A Ready node can be throttling, reclaiming memory, exhausting inodes or placing a workload across costly NUMA boundaries.</p>
+  <div class="goal"><h3>By the end you can…</h3>Separate application limits from host pressure, budget allocatable capacity, investigate runtime failures and evaluate dedicated CPU/topology placement.</div>
+  <h2>Scenario: p99 latency increases but average CPU is low</h2>
+  <p>A latency-sensitive service has a small CPU limit. It performs bursts of parallel work and exhausts its cgroup quota within the enforcement period. A one-minute average looks modest while requests wait for replenishment. More replicas may help, but the diagnosis must compare throttling, concurrency, traffic and p99 latency before changing the resource model.</p>
+  <h2>The enforcement stack</h2>
+  <pre><code>Pod resources → admission defaults → scheduler accounting
+→ kubelet → CRI runtime (for example containerd) → Linux cgroups/kernel
+Node condition / eviction threshold → kubelet reclamation and Pod eviction
+Kernel memory exhaustion → cgroup or host OOM handling</code></pre>
+  <p>CPU requests generally influence placement and proportional scheduling weight under contention. CPU limits constrain runtime time allocation. Memory requests are not a private preallocated region. Memory limits constrain charged memory; cgroup OOM can occur while the host has free memory. A memory-backed <code>emptyDir</code> consumes memory rather than behaving like ordinary disk-backed ephemeral storage.</p>
+  <table><tr><th>Symptom</th><th>Evidence</th><th>Interpretation</th></tr>
+    <tr><td>OOMKilled termination</td><td>Pod lastState, cgroup memory events, kernel records</td><td>Distinguish container-limit failure from host-wide OOM; exit 137 alone is not proof</td></tr>
+    <tr><td>Evicted Pod</td><td>Pod status message, node conditions and eviction events</td><td>Kubelet pressure response; examine the named resource</td></tr>
+    <tr><td>High p99 with throttling</td><td>Throttled periods/time, CPU demand, concurrency and request latency</td><td>Quota may delay bursts; isolate causality with a canary</td></tr>
+    <tr><td>DiskPressure with free bytes</td><td>Filesystem inode use, image/container filesystem split, logs</td><td>Inode exhaustion or a different filesystem can be limiting</td></tr>
+    <tr><td>Sandbox or image creation failures</td><td>Kubelet/runtime logs, registry path, CNI setup</td><td>Failure before application execution, not necessarily application health</td></tr>
+  </table>
+  <h2>Inspect before restarting</h2>
+  <pre><code>kubectl --context "$CTX" describe node "$NODE"
+kubectl --context "$CTX" get pod "$POD" -n marketplace -o yaml
+kubectl --context "$CTX" logs "$POD" -n marketplace --previous --tail=100
+kubectl --context "$CTX" top node "$NODE"
+kubectl --context "$CTX" top pod -n marketplace --containers</code></pre>
+  <p>Set NODE and POD from the affected workload. Metrics commands require metrics-server and show recent usage, not historical peaks or all kernel evidence. Previous logs exist only for a retained prior container instance. On a separately authorized host session, inspect <code>journalctl -u kubelet</code>, runtime logs, <code>crictl ps -a</code>, <code>df -h</code>, <code>df -i</code> and <code>/proc/pressure/</code> where available. On cgroup v2, relevant files include <code>cpu.stat</code>, <code>memory.events</code> and <code>memory.current</code>; locate the correct container cgroup instead of assuming a fixed path.</p>
+  <h2>Budget the host, not the SKU</h2>
+  <p>Start from node allocatable after system and Kubernetes reservations and eviction headroom. Subtract DaemonSets, then account for workload requests, init-container behavior and Pod overhead. Also budget PID count, ephemeral storage, image storage, network state and volume attachments. An 8-core machine is not automatically eight cores available to tenants.</p>
+  <p>Do not use QoS as an absolute eviction order. For memory pressure, usage exceeding requests, Pod priority and relative usage affect ranking. Disk and PID pressure have different signals. A PDB does not prevent kubelet node-pressure eviction or a kernel OOM.</p>
+  <h2>NUMA and exclusive CPUs</h2>
+  <p>CPU Manager's static policy can allocate exclusive CPUs to eligible Guaranteed containers with integer CPU requests. Topology Manager coordinates placement hints from resource managers; a single-NUMA-node policy can reject admission when CPU, memory/device locality cannot be satisfied together. This trades packing flexibility for locality and predictability. Hugepages and device plugins add their own allocation constraints.</p>
+  <p>Configure these policies through the supported node-image/kubelet mechanism on a dedicated canary pool. Changing a manager policy can require draining and state handling; do not edit its checkpoint on a live production node. Measure throughput, tail latency, migrations and cost against the normal pool. More exclusive CPUs are not proof of lower end-to-end latency if the bottleneck is a remote database.</p>
+  <h2>Runbook: pressure or performance regression</h2>
+  <ol><li>Preserve termination reason, node conditions, runtime version and recent rollout. Identify whether one workload, one node image or all nodes are affected.</li><li>Stop new placement on the affected cohort when justified, but account for remaining capacity before draining. Cordon does not reduce existing pressure.</li><li>For a leaking workload, contain its demand and deploy a measured resource/application correction. For host disk/inodes, identify owner and retention; do not blindly remove runtime files.</li><li>Canary one change: resource setting, concurrency limit or node image. Stop if throughput or p99 worsens, or another tenant's SLO regresses.</li><li>Replace defective nodes through the supported lifecycle. Verify repeated load windows, pressure counters and service outcomes before returning capacity.</li></ol>
+  <h2>Lab: bounded memory failure</h2>
+  <p><a href="labs/README.md#nodes">Run the OOM lab</a> in a disposable cluster. The container has a small memory limit and writes beyond it to a memory-backed volume. Record the termination state and node condition separately. This teaches the distinction without deliberately exhausting the host.</p>
+  <div class="hand"><h3>Interpret a graph</h3><p>CPU throttling exists, but latency is normal. Should you remove every CPU limit?</p><details><summary>Answer</summary><p>No. Throttling is evidence of enforcement, not automatically an SLO failure. Evaluate demand, latency, contention and tenant isolation, then canary a justified change.</p></details></div>
+  <h2>Sources and version scope</h2><p>Reviewed 12 November 2026. Linux cgroup paths/options vary by node image. Manager eligibility and feature gates must be checked for the deployed minor version.</p><ul>
+    <li><a href="https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/">Resource enforcement and memory-backed volumes</a></li>
+    <li><a href="https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/">Node-pressure eviction</a></li>
+    <li><a href="https://kubernetes.io/docs/tasks/administer-cluster/cpu-management-policies/">CPU Manager</a></li>
+    <li><a href="https://kubernetes.io/docs/tasks/administer-cluster/topology-manager/">Topology Manager</a></li>
+    <li><a href="https://kubernetes.io/docs/concepts/architecture/cgroups/">cgroup v2</a></li>
+  </ul>
+  <div id="quiz"></div><script type="application/json" id="quiz-data">[
+    {"q":"Can a Pod hit its cgroup memory limit on a healthy host?","options":["Yes","No","Only if its PDB is missing"],"answer":0,"why":"The container memory boundary is independent of host-wide exhaustion."},
+    {"q":"What does a strict NUMA policy trade away?","options":["All memory accounting","Some scheduling/admission flexibility","The need for device drivers"],"answer":1,"why":"Resources may exist in aggregate but not in a compatible locality."},
+    {"q":"Which is a sufficient reason to change a CPU limit?","options":["Any nonzero throttling counter","A Ready node","A measured workload/SLO problem confirmed by a controlled comparison"],"answer":2,"why":"The change needs evidence of benefit and acceptable interference with other workloads."}
+  ]</script>
+</main><script src="lessons.js"></script><script src="../../course.js"></script></body></html>

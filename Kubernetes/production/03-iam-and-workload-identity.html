@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>3. IAM and workload identity · Kubernetes production engineering</title>
+<meta name="description" content="Separate Kubernetes authentication, RBAC, workload federation and resource authorization; diagnose access without broadening privileges.">
+<link rel="stylesheet" href="../../style.css"></head>
+<body data-lesson="3"><main>
+  <span class="tag">Production / 3</span><h1>IAM and workload identity</h1>
+  <p class="lead">“The cluster has permission” is not an identity model. Name the caller, credential, verifier, requested action and authorization policy at every boundary.</p>
+  <div class="goal"><h3>By the end you can…</h3>Design scoped access, recognize indirect privilege escalation, trace a federated workload identity and recover from failed credential rotation.</div>
+  <h2>Scenario: Kubernetes works, object storage returns 403</h2>
+  <p>A reconciliation service can list Pods but cannot upload a report. Its Kubernetes RoleBinding is healthy. The application changed ServiceAccount during a namespace migration; the external trust still names the old subject. Adding cluster-admin would expand risk while leaving the cloud token exchange broken.</p>
+  <pre><code>Human: IdP credential → API authentication → groups → authorization → admission
+Workload API call: projected SA token → API audience/issuer validation → RBAC
+Cloud call: projected/federated credential → external token service → cloud principal
+            → resource IAM + resource policy + network boundary
+Image pull: kubelet/runtime registry credentials → registry</code></pre>
+  <p>Authentication establishes identity; authorization answers whether that identity may perform the requested action; admission evaluates an otherwise authorized object change. Cloud control-plane access, Kubernetes object access and cloud data access are separate grants. A 403 is a clue, not proof of which grant failed: service firewalls can also return it.</p>
+  <h2>RBAC design includes indirect powers</h2>
+  <table><tr><th>Capability</th><th>Operational consequence</th><th>Design response</th></tr>
+    <tr><td>Create Pods / Deployments</td><td>May run as ServiceAccounts and mount Secrets available in that namespace</td><td>Separate trust domains; constrain workload creation and privileged identities</td></tr>
+    <tr><td><code>bind</code>, <code>escalate</code>, <code>impersonate</code></td><td>Can bypass normal grant restrictions or act as another identity when scoped that way</td><td>Review explicitly; never hide inside wildcard verbs</td></tr>
+    <tr><td>Secret list/watch, exec, node proxy, CSR approval</td><td>Can expose credentials or reach powerful execution paths</td><td>Separate operational roles and audit usage</td></tr>
+    <tr><td>Cluster-scoped policy, CRD or webhook administration</td><td>Can change behavior for unrelated tenants</td><td>Platform ownership; namespace editors do not need these capabilities</td></tr>
+  </table>
+  <p>Prefer group-based human access and namespace RoleBindings to reusable ClusterRoles when appropriate. Avoid wildcard resources: tomorrow's CRD silently becomes part of today's grant. A namespace is not a strong tenant boundary if the tenant can run privileged host workloads. Do not use <code>system:masters</code> for routine access; it bypasses authorization checks rather than behaving like an ordinary revocable RoleBinding.</p>
+  <h2>A minimal runnable grant</h2>
+  <p><a href="labs/rbac.yaml">The RBAC fixture</a> creates a ServiceAccount and a Role with <code>get/list/watch</code> on Pods only. After applying it in the lab, inspect both an allowed and a denied action:</p>
+  <pre><code>kubectl --context "$CTX" auth can-i list pods -n pe-lab \
+  --as=system:serviceaccount:pe-lab:observer
+kubectl --context "$CTX" auth can-i get secrets -n pe-lab \
+  --as=system:serviceaccount:pe-lab:observer
+kubectl --context "$CTX" get rolebinding -n pe-lab -o yaml</code></pre>
+  <p>The operator running <code>--as</code> needs impersonation rights. These checks evaluate authorization; they do not test actual token authentication, admission or network reachability. The lab expects “yes” then “no”; a broader preexisting binding can change the result and should be investigated.</p>
+  <h2>Federation and credential lifecycle</h2>
+  <p>Use short-lived projected ServiceAccount tokens with the audience required by the receiver. An API token's audience is not automatically correct for a cloud exchange. Bind trust to the exact issuer and subject, typically including namespace and ServiceAccount, and verify signing-key discovery, token lifetime and clock synchronization. Disable automatic token mounts for workloads that do not use the API; mount an explicit audience-specific projection where a supported integration needs one.</p>
+  <p>Rotation succeeds only when the running SDK or process rereads renewed credentials. Environment-variable secrets generally need process replacement; mounted files need reload behavior. Test expiry and rotation under ongoing traffic, including transient token-service failure. Keep credential revocation, trust revocation and already-issued downstream token expiry as separate timelines.</p>
+  <p>For implementation detail, follow <a href="../aks/03-identity-and-security.html">AKS direct federation</a> or <a href="../openshift/08-identity-and-rbac.html">OpenShift identity</a>. Providers differ in token audiences, agents, annotations and credential chains; do not transplant one provider's manifest into another.</p>
+  <h2>Runbook: denied cloud request</h2>
+  <ol><li>Record service error code and request ID, Pod UID, namespace, ServiceAccount and recent identity changes. Do not export raw tokens or Secrets as evidence.</li><li>Determine whether the failure occurs during credential discovery, exchange or the resource call. A DNS timeout precedes IAM; fix that path first.</li><li>Inspect the admitted Pod's projection/injection and SDK configuration. Verify issuer, subject and audience against the external trust without printing token contents.</li><li>If exchange succeeds, inspect the actual cloud principal and its narrow action/resource grant, resource policy and network restrictions.</li><li>Restore the previous tested identity binding or correct the exact trust. Recreate Pods only when injection/reload requires it. Stop if the proposed fix grants unrelated resources.</li><li>Verify one allowed and one denied operation, observe rotation, then remove temporary bindings and obsolete trust.</li></ol>
+  <h2>Lab and access review</h2>
+  <p>Run <a href="labs/README.md#iam">the IAM lab</a>. Then produce an access matrix with principal, scope, verbs, resource, owner, reason and review date. Emergency access should have an independent recovery path, short-lived issuance where supported, explicit audit evidence and a tested revocation procedure.</p>
+  <div class="hand"><h3>Review question</h3><p>A team cannot read Secrets but can create Pods using any ServiceAccount in its namespace. Are the credentials isolated?</p><details><summary>Answer</summary><p>No. Pod creation can expose mounted Secrets and powerful ServiceAccount identities. Model indirect execution rights, and separate privileged identities into an appropriately controlled boundary.</p></details></div>
+  <h2>Sources and version scope</h2><p>Reviewed 12 November 2026. Projected tokens and RBAC use stable APIs; external federation follows the deployed provider's contract.</p><ul>
+    <li><a href="https://kubernetes.io/docs/concepts/security/rbac-good-practices/">RBAC good practices and escalation paths</a></li>
+    <li><a href="https://kubernetes.io/docs/concepts/security/service-accounts/">ServiceAccounts and credentials</a></li>
+    <li><a href="https://kubernetes.io/docs/reference/access-authn-authz/authentication/">API authentication</a></li>
+  </ul>
+  <div id="quiz"></div><script type="application/json" id="quiz-data">[
+    {"q":"A namespace move breaks federation. Which trust field commonly changes?","options":["Token subject","Node CPU count","Storage access mode"],"answer":0,"why":"The ServiceAccount subject includes its namespace and name."},
+    {"q":"What does an impersonated can-i check prove?","options":["The real token can authenticate","The requested authorization decision for that identity","The cloud resource permits access"],"answer":1,"why":"It does not exercise the real credential, cloud exchange or admission path."},
+    {"q":"Why review Pod creation alongside Secret permissions?","options":["Pods cannot use credentials","Pod creation always requires cluster-admin","Pod execution can indirectly expose Secrets or ServiceAccount authority"],"answer":2,"why":"Execution rights can convey access beyond direct API read permissions."}
+  ]</script>
+</main><script src="lessons.js"></script><script src="../../course.js"></script></body></html>

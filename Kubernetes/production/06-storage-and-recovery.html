@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>6. Storage and recovery · Kubernetes production engineering</title>
+<meta name="description" content="Follow the CSI volume lifecycle, diagnose topology and attachment failures, fence writers and validate application recovery.">
+<link rel="stylesheet" href="../../style.css"></head>
+<body data-lesson="6"><main>
+  <span class="tag">Production / 6</span><h1>Storage and stateful recovery</h1>
+  <p class="lead">A replacement Pod is not a recovered database. Recovery requires accessible data, exactly the intended writers and an application-level correctness check.</p>
+  <div class="goal"><h3>By the end you can…</h3>Locate a CSI failure stage, choose storage semantics, recover a lost node without split brain and measure data recovery objectives.</div>
+  <h2>Scenario: a disappeared node still owns the volume</h2>
+  <p>A database Pod loses contact with the API. Its replacement is Pending or reports multi-attach errors. The original node may be powered off, or merely partitioned while still writing. Force-deleting API objects does not prove the original process stopped. Creating two writers can turn an availability incident into data corruption.</p>
+  <h2>Follow the volume lifecycle</h2>
+  <pre><code>PVC → StorageClass/provisioner → PV with topology
+Pod scheduling → compatible node / volume binding
+CSI controller attach (when required) → VolumeAttachment
+CSI node stage/publish → mounted filesystem or block device → application</code></pre>
+  <p><code>WaitForFirstConsumer</code> lets provisioning account for scheduling topology. Immediate provisioning can create a volume in a zone the workload cannot use. A bound PVC proves neither attachment nor a successful filesystem mount. Some CSI drivers do not require a controller attach step, so absence of VolumeAttachment is not universally a failure.</p>
+  <table><tr><th>Decision</th><th>Meaning</th><th>Trap</th></tr>
+    <tr><td>ReadWriteOnce</td><td>Read-write mount by one node</td><td>Multiple Pods on that node can use it; it is not a single-writer database guarantee</td></tr>
+    <tr><td>ReadWriteOncePod</td><td>Single-Pod mount constraint for supported CSI volumes</td><td>Requires compatible Kubernetes/sidecars; still plan fencing and application recovery</td></tr>
+    <tr><td>ReadWriteMany</td><td>Multi-node read-write semantics from the backend</td><td>Does not add application locking or database consistency</td></tr>
+    <tr><td>Local versus network storage</td><td>Local latency/local failure domain versus independent attachment/network dependency</td><td>A replacement node cannot recover a local disk simply by rebinding a PVC</td></tr>
+    <tr><td>Retain versus Delete</td><td>PV reclamation policy after claim release</td><td>Retention is not backup; deletion may remove the underlying storage</td></tr>
+  </table>
+  <h2>Inspect the failed stage</h2>
+  <pre><code>kubectl --context "$CTX" describe pod database-0 -n marketplace
+kubectl --context "$CTX" describe pvc data-database-0 -n marketplace
+kubectl --context "$CTX" get pv,storageclass
+kubectl --context "$CTX" get volumeattachments
+kubectl --context "$CTX" get csinodes
+kubectl --context "$CTX" get nodes -L topology.kubernetes.io/zone</code></pre>
+  <p>Match Events to controller and node-plugin logs for the same volume handle and time. <code>FailedScheduling</code> with volume node affinity points at topology. <code>FailedAttachVolume</code> points at backend permissions, attachment limits, stale attachment or backend state. <code>FailedMount</code> points later in the path: node plugin, device, filesystem, permissions or secrets. A filesystem permissions error is not fixed by expanding IAM at the controller.</p>
+  <h2>Runbook: lost node and suspected stale attachment</h2>
+  <ol><li>Pause operator-driven failover if its next action could create an additional writer. Identify Pod, PVC, PV, backend volume and all possible writers.</li><li>Determine physical/virtual node state through infrastructure control, not only Kubernetes NodeReady. Fence the old writer using the backend's supported method: confirmed power-off, storage-access revocation or equivalent.</li><li>After fencing is proven, follow the distribution's non-graceful shutdown procedure. The out-of-service taint mechanism can help volume detach and Pod replacement where supported; it is not a substitute for fencing.</li><li>Check destination-zone compatibility, attach limits, available capacity and encryption access. Escalate to the storage owner if backend state disagrees with Kubernetes; do not remove attachment finalizers as a generic repair.</li><li>Start one intended writer, complete filesystem/database recovery and check durable application markers before restoring traffic.</li><li>Remove temporary node state only after recovery and before returning a node to service. Record the fencing evidence and recovery times.</li></ol>
+  <p><strong>Stop condition:</strong> if you cannot prove the old writer is fenced, do not force a second writer. Preserve consistency and communicate the availability impact.</p>
+  <h2>Backups, performance and restore objectives</h2>
+  <p>A CSI snapshot is commonly crash-consistent and may share the storage system's failure domain. Application-consistent backup requires database coordination, transaction-log/WAL handling or a supported operator procedure. A useful backup has independent retention, encryption-key access and a tested restore destination. Kubernetes object backup, etcd recovery and application-data backup solve different problems.</p>
+  <p>Define <strong>RPO</strong> from the newest committed business record recoverable after failure; define <strong>RTO</strong> from incident start to verified useful service. Example: failure at 12:00, latest recovered commit 11:57, verified service at 12:24 means measured RPO 3 minutes and RTO 24 minutes. Snapshot completion time alone establishes neither.</p>
+  <p>Capacity planning includes queue depth, p99 IO latency, throughput, IOPS, volume count/attach limits and rebuild load. A disk size increase might change performance on one backend and not another. Expansion can involve controller and filesystem stages; verify <code>allowVolumeExpansion</code>, driver support and application-visible space. PVC shrinking is not a generic reverse operation.</p>
+  <h2>Lab: persistence and restore</h2>
+  <p><a href="labs/README.md#storage">Run the storage lab</a>: create a durable marker, recreate the consumer and verify persistence; then back up the toy file to the host, corrupt it, restore it and verify the checksum. This is a file-level learning exercise. The extended CSI/database drill requires a snapshot-capable driver and measures real RPO/RTO, consistency and recovery into a separate destination.</p>
+  <div class="hand"><h3>Choose the action</h3><p>The old node is NotReady. Is that sufficient fencing evidence?</p><details><summary>Answer</summary><p>No. It might still run and write while unable to reach the API. Confirm power or storage-level fencing through the infrastructure/backend before forced detach and replacement.</p></details></div>
+  <h2>Sources and version scope</h2><p>Reviewed 12 November 2026. RWOP is stable from 1.29 and CSI-only; snapshots require installed snapshot APIs/controller plus driver support. The portable lab uses the cluster's selected default StorageClass.</p><ul>
+    <li><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/">PV access modes and lifecycle</a></li>
+    <li><a href="https://kubernetes.io/docs/concepts/storage/storage-classes/">Binding mode and expansion</a></li>
+    <li><a href="https://kubernetes.io/docs/concepts/cluster-administration/node-shutdown/">Non-graceful shutdown and forced-detach risks</a></li>
+    <li><a href="https://kubernetes.io/docs/concepts/storage/volume-snapshots/">Volume snapshots</a></li>
+  </ul>
+  <div id="quiz"></div><script type="application/json" id="quiz-data">[
+    {"q":"What does ReadWriteOnce constrain?","options":["Exactly one database process","Read-write attachment/mount access to one node","Exactly one transaction"],"answer":1,"why":"It is not a single-Pod or application single-writer guarantee."},
+    {"q":"What must precede forced replacement when an old node might still write?","options":["Proven fencing","Deleting every finalizer","Increasing replicas"],"answer":0,"why":"A partitioned old node can remain an active writer. Fencing prevents split brain."},
+    {"q":"What demonstrates usable recovery?","options":["A completed snapshot alone","A Bound PVC alone","Restored application state and service verified against RPO/RTO"],"answer":2,"why":"Backup artifacts and infrastructure health do not prove application correctness."}
+  ]</script>
+</main><script src="lessons.js"></script><script src="../../course.js"></script></body></html>

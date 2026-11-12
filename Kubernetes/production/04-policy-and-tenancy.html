@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>4. Policy and tenancy · Kubernetes production engineering</title>
+<meta name="description" content="Engineer tenant isolation, quotas, Pod Security Admission, CEL validation and resilient policy rollouts.">
+<link rel="stylesheet" href="../../style.css"></head>
+<body data-lesson="4"><main>
+  <span class="tag">Production / 4</span><h1>Policy and multi-tenancy</h1>
+  <p class="lead">A policy engine is on the production write path. Its correctness, latency, ownership and emergency recovery deserve the same attention as the API server it protects.</p>
+  <div class="goal"><h3>By the end you can…</h3>Separate policy layers, choose an enforcement mechanism, stage a rollout and avoid turning one tenant's policy into a fleet outage.</div>
+  <h2>Scenario: the guardrail blocks its own repair</h2>
+  <p>A fail-closed webhook matches every Pod. Its only replica is unavailable, and replacement Pods also require that webhook. Now routine workloads and the repair workload are both blocked. Availability requires redundant healthy endpoints, narrow matching and a tested bootstrap/recovery path—not just setting <code>failurePolicy: Fail</code>.</p>
+  <h2>Tenancy is a set of boundaries</h2>
+  <table><tr><th>Layer</th><th>Control</th><th>Limit</th></tr>
+    <tr><td>API access</td><td>RBAC and scoped ServiceAccounts</td><td>Does not contain arbitrary host-level execution</td></tr>
+    <tr><td>Workload privilege</td><td>Pod Security Admission and additional validation</td><td>Does not allocate fair CPU or filter all network traffic</td></tr>
+    <tr><td>Resource use</td><td>ResourceQuota, LimitRange, priority ownership</td><td>CPU/memory quota does not cap every API operation or IO interference</td></tr>
+    <tr><td>Network</td><td>Enforced NetworkPolicy and egress architecture</td><td>Standard policy does not express every L7/FQDN or host-network requirement</td></tr>
+    <tr><td>Host and control plane</td><td>Dedicated nodes, sandbox runtime or separate clusters</td><td>Dedicated workers still share the API and cluster-scoped extensions</td></tr>
+  </table>
+  <p>Use object-count quotas for high-churn resources as well as resource quotas. Constrain who creates PriorityClasses and who may select critical classes. An adversarial tenant sharing a privileged kernel or cluster-admin is outside a namespace-only isolation model.</p>
+  <h2>Choose the smallest mechanism that expresses the rule</h2>
+  <p><strong>Pod Security Admission</strong> covers standard Pod Security Standards. Pin enforce policy to a reviewed minor version and use audit/warn to preview stricter versions. <strong>ValidatingAdmissionPolicy</strong> evaluates CEL inside the API server and is stable from 1.30; it avoids an external webhook dependency for expressible validations. It does not mutate objects or perform arbitrary external API calls.</p>
+  <p><strong>Kyverno or Gatekeeper</strong> can fit broader policy-library, reporting or organization-specific workflows. Evaluate required capabilities against the installed release, controller/webhook availability, latency and operational ownership. Do not deploy two engines enforcing the same rule without deciding whose error and exception semantics win. Rules requiring external data inherit that data source's freshness and availability problems.</p>
+  <h2>A complete CEL rollout fixture</h2>
+  <p><a href="labs/policy.yaml">The policy fixture</a> requires a <code>team</code> label on Pods only in the lab namespace. Its binding starts with <code>Warn</code> and <code>Audit</code>. In the lab, change it to <code>Deny</code> and confirm an unlabeled Pod is rejected while a labeled one is accepted.</p>
+  <pre><code># Inspection; cluster-scoped policy read rights required
+kubectl --context "$CTX" get validatingadmissionpolicy pe-lab-team -o yaml
+kubectl --context "$CTX" get validatingadmissionpolicybinding pe-lab-team -o yaml
+kubectl --context "$CTX" get namespace pe-lab --show-labels
+kubectl --context "$CTX" get resourcequota,limitrange -n pe-lab</code></pre>
+  <p>Distinguish <code>failurePolicy</code> from <code>validationActions</code>: the former controls evaluation-error handling, while the binding controls false validation results and enforcement. <code>Deny</code> and <code>Warn</code> cannot be combined in the same binding. Audit output requires an audit pipeline to observe; a manifest does not create one.</p>
+  <h2>Operate the policy lifecycle</h2>
+  <ol><li>Define invariant, target resources, owner, exceptions and expiry. Test CREATE and UPDATE, missing fields, init containers and subresources as applicable.</li><li>Run audit/warn in one namespace. Measure violations by owning team and estimate deployment impact, including controllers generating Pods.</li><li>Fix workloads, then deny on a canary cohort. Track admission latency, rejected requests, timeouts and stalled rollouts.</li><li>Expand by failure domain. Keep the policy engine's dependency and repair path independent from rules that could strand it.</li><li>Record exceptions as scoped, reviewed resources/configuration with a removal date; avoid permanent catch-all exclusions.</li></ol>
+  <h2>Runbook: admission outage</h2>
+  <p>First distinguish a legitimate policy rejection from a transport/TLS timeout or CEL evaluation error. Inspect the admission response, policy revision, endpoints and certificate expiry. Restore the previous working configuration or narrowly suspend the faulty binding via the platform-owned emergency identity. Capture the temporary enforcement gap; do not delete every webhook configuration.</p>
+  <p>Stop widening the workaround if failures involve unrelated policies or no longer match the initial diagnosis. Verify the repair path with both a compliant and deliberately noncompliant disposable Pod. Resume paused rollouts, restore the intended enforcement and confirm the exception is gone from Git and the live cluster.</p>
+  <h2>Lab: audit to deny to recovery</h2>
+  <p><a href="labs/README.md#policy">Run the policy exercise</a>, including the expected-denial check. Its namespace selector limits scope. Repeat with a renamed namespace to understand why label governance matters: tenants who can remove enforcement-selection labels can bypass a selector-based control.</p>
+  <div class="hand"><h3>Trade-off</h3><p>Should every webhook fail open to preserve availability?</p><details><summary>Answer</summary><p>No universal setting is correct. Fail-open can admit forbidden changes; fail-closed can block recovery. Classify the invariant, narrow matching, design redundant endpoints and explicitly rehearse the emergency path.</p></details></div>
+  <h2>Sources and version scope</h2><p>Reviewed 12 November 2026. CEL lab uses stable 1.30+ APIs; PSA lab pins v1.30 semantics to make the exercise repeatable.</p><ul>
+    <li><a href="https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/">ValidatingAdmissionPolicy and binding semantics</a></li>
+    <li><a href="https://kubernetes.io/docs/concepts/security/pod-security-admission/">Pod Security Admission</a></li>
+    <li><a href="https://kubernetes.io/docs/concepts/cluster-administration/admission-webhooks-good-practices/">Webhook design and recovery</a></li>
+    <li><a href="https://kubernetes.io/docs/concepts/policy/resource-quotas/">Resource and object-count quotas</a></li>
+  </ul>
+  <div id="quiz"></div><script type="application/json" id="quiz-data">[
+    {"q":"Which mechanism avoids a separate webhook for a simple in-process validation?","options":["A larger ClusterRole","ValidatingAdmissionPolicy","A StorageClass"],"answer":1,"why":"CEL validations execute in the API server when supported by the deployed version."},
+    {"q":"Why test the repair path before a fail-closed rollout?","options":["The rule might block replacement of its own dependency","Fail-closed never rejects Pods","Replicas eliminate certificate failures"],"answer":0,"why":"Dependency cycles can make the component needed for repair unavailable to the repair itself."},
+    {"q":"Does CPU quota alone prevent tenant API overload?","options":["Yes","Only for three zones","No; API fairness, object counts and client behavior also matter"],"answer":2,"why":"Quota covers declared dimensions, not every shared control-plane bottleneck."}
+  ]</script>
+</main><script src="lessons.js"></script><script src="../../course.js"></script></body></html>

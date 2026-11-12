@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>11. Observability and incidents · Kubernetes production engineering</title>
+<meta name="description" content="Define Kubernetes platform SLOs, use bounded evidence-led triage, coordinate incident response and verify recovery.">
+<link rel="stylesheet" href="../../style.css"></head>
+<body data-lesson="11"><main>
+  <span class="tag">Production / 11</span><h1>Observability and incident command</h1>
+  <p class="lead">A useful alert identifies customer or platform impact and the first decision to make. A wall of component alarms rarely tells you which dependency failed first.</p>
+  <div class="goal"><h3>By the end you can…</h3>Define a platform SLI, distinguish symptom from cause, run a bounded investigation and close an incident with objective recovery evidence.</div>
+  <h2>Scenario: deployments fail while customer traffic survives</h2>
+  <p>The API's readiness probe is green and HTTP success is normal. New workloads cannot pull images because registry access expired. The platform is still failing its provisioning contract and cannot replace capacity. Separate user-request availability, workload readiness latency and platform change success; one green dashboard cannot represent all three.</p>
+  <h2>Define denominators before alerts</h2>
+  <table><tr><th>SLI</th><th>Eligible population and success</th><th>Important exclusion</th></tr>
+    <tr><td>Workload provisioning</td><td>Valid admitted workloads becoming Ready within a declared deadline</td><td>Invalid specs and deliberate unschedulable tests; record exclusions explicitly</td></tr>
+    <tr><td>API availability/latency</td><td>Defined client operations returning expected results within budget</td><td>Do not lump watches, intentional 4xx and ordinary reads into one latency bucket</td></tr>
+    <tr><td>Network service</td><td>Synthetic DNS, cross-node and egress transactions</td><td>Probe topology must represent real failure domains</td></tr>
+    <tr><td>Storage recovery</td><td>Verified recoveries meeting RPO/RTO</td><td>Snapshot creation is not the measured outcome</td></tr>
+    <tr><td>Fleet lifecycle</td><td>Clusters within supported policy and successful upgrades</td><td>Averages must not hide an abandoned high-risk cohort</td></tr>
+  </table>
+  <p>Track workload demand and platform saturation together: pending age, scheduling latency, unavailable endpoints, API errors, webhook timeouts, etcd latency, node pressure, DNS errors, CNI drops and CSI operation failures. Attach cluster, region, component and owning team labels. Avoid unbounded request IDs, user IDs or Pod UIDs as long-lived metric labels; use logs/traces for high-cardinality evidence.</p>
+  <h2>Worked error-budget signal</h2>
+  <p>For a hypothetical 99.9% provisioning SLO, the allowed bad fraction is 0.001. A measured bad fraction of 0.01 burns budget at <code>0.01 / 0.001 = 10×</code>. Use paired short/long windows to distinguish a transient spike from sustained budget consumption, and decide alert thresholds from the response time and budget policy.</p>
+  <p>If your instrumentation exports the following custom counters, this illustrative query computes a five-minute bad fraction. These are <strong>proposed metrics, not built-in Kubernetes metrics</strong>; define deadline handling, delayed completions and zero-traffic behavior before deploying an alert:</p>
+  <pre><code>sum(rate(platform_provisioning_total{outcome="deadline_missed"}[5m]))
+/
+sum(rate(platform_provisioning_total[5m]))</code></pre>
+  <p>Pair this with target/scrape availability and synthetic probes. Missing telemetry is not zero failures. See the <a href="../../Observability/index.html">observability course</a> for counter semantics, histograms and burn-rate alert design.</p>
+  <h2>The first ten minutes</h2>
+  <ol><li><strong>Declare impact:</strong> affected user journey, cluster/cell, first known bad time, affected proportion and data-risk status. Assign incident commander, investigator and communications owner as needed.</li><li><strong>Stabilize change:</strong> pause implicated rollouts and noisy automation. Preserve the exact revisions and timestamps.</li><li><strong>Build a short hypothesis table:</strong> hypothesis, supporting evidence, discriminating check and next decision. Prefer a healthy cohort comparison.</li><li><strong>Choose a reversible mitigation:</strong> narrow rollback, traffic shift within tested capacity, demand shedding or dependency repair. Assign one owner and an explicit stop condition.</li><li><strong>Verify:</strong> run the failed operation end to end, observe the relevant SLI and confirm no new failure domain is affected.</li></ol>
+  <h2>Bounded evidence collection</h2>
+  <pre><code>kubectl --context "$CTX" get pods -n marketplace -o wide
+kubectl --context "$CTX" get events -n marketplace --sort-by=.metadata.creationTimestamp
+kubectl --context "$CTX" describe pod "$POD" -n marketplace
+kubectl --context "$CTX" logs "$POD" -n marketplace --since=10m --tail=200
+kubectl --context "$CTX" get endpointslices -n marketplace</code></pre>
+  <p>These are starting points, not a command to run repeatedly across every namespace. Events are transient and logs may contain sensitive application data; scope exports and retention. Save request/audit correlation IDs when possible. Avoid dumping Secrets, environment credentials or entire cluster objects into a public incident channel.</p>
+  <h2>Runbook: cascading component alarms</h2>
+  <p>Order failures by time and dependency. If ingress, autoscaling and workloads all fail after DNS degradation, investigate name-resolution dependencies before restarting every component. If API writes fail but existing traffic works, follow admission/control-plane evidence. If new Pods fail only on one node image, compare runtime/CNI state there.</p>
+  <p>Stop the current mitigation if errors spread to a healthy cohort, downstream saturation rises or evidence contradicts the hypothesis. Escalate to the dependency owner with exact scope, operation, timestamp and evidence, rather than “Kubernetes is broken.” Keep a next-update time even while the technical cause is unknown.</p>
+  <p>Close only after sustained recovery through the relevant load window, successful replacement/provisioning and removal of temporary drift. The postmortem records trigger, enabling conditions, amplification, detection delay, mitigation effect and prevention owners. “Human error” does not explain why a bad change crossed every cell without a stop gate.</p>
+  <h2>Lab: diagnose an injected failure</h2>
+  <p><a href="labs/README.md#incidents">Run the incident exercise</a> with the failed rollout or scheduling fixture. Complete the <a href="templates/incident-record.md">incident record</a> without assuming the injected cause. Grade the investigation on evidence, scope and recovery verification rather than on how many commands were executed.</p>
+  <div class="hand"><h3>Choose a signal</h3><p>Every node is Ready but no new Pod can become Ready. Which platform contract should alert?</p><details><summary>Answer</summary><p>Workload provisioning/readiness deadline success, supported by image-pull, admission, scheduling and dependency evidence. NodeReady alone does not measure that outcome.</p></details></div>
+  <h2>Sources and version scope</h2><p>Reviewed 12 November 2026. Metric names/labels vary by release and distribution; custom SLI examples are explicitly instrumentation designs.</p><ul>
+    <li><a href="https://kubernetes.io/docs/tasks/debug/debug-cluster/">Cluster troubleshooting</a></li>
+    <li><a href="https://kubernetes.io/docs/reference/instrumentation/metrics/">Kubernetes metric reference</a></li>
+    <li><a href="https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/">Audit policy and event handling</a></li>
+    <li><a href="https://sre.google/workbook/alerting-on-slos/">SRE Workbook: alerting on SLOs</a></li>
+  </ul>
+  <div id="quiz"></div><script type="application/json" id="quiz-data">[
+    {"q":"A 99.9% SLO observes 1% bad events. What is the burn rate?","options":["1×","10×","100×"],"answer":1,"why":"0.01 observed bad fraction divided by 0.001 allowed bad fraction equals 10."},
+    {"q":"What should follow a mitigation?","options":["End-to-end recovery and SLI verification","Immediate incident closure","Deletion of all logs"],"answer":0,"why":"A command succeeding does not demonstrate that the affected service recovered."},
+    {"q":"Which is the better investigation record?","options":["A long list of commands","A statement that the network is broken","A hypothesis, discriminating evidence and resulting decision"],"answer":2,"why":"The record should explain why the next action is justified and what would disprove it."}
+  ]</script>
+</main><script src="lessons.js"></script><script src="../../course.js"></script></body></html>

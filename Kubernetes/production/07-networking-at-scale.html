@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>7. Networking at scale · Kubernetes production engineering</title>
+<meta name="description" content="Diagnose DNS, Service routing, policy, conntrack, SNAT and MTU failures and operate network migrations.">
+<link rel="stylesheet" href="../../style.css"></head>
+<body data-lesson="7"><main>
+  <span class="tag">Production / 7</span><h1>Networking at scale</h1>
+  <p class="lead">“The network is down” is not a useful hypothesis. Name the source, destination, protocol, port, payload size and failing hop.</p>
+  <div class="goal"><h3>By the end you can…</h3>Separate DNS, endpoint, policy and translation failures; identify exhaustion signals; and define rollback gates for network changes.</div>
+  <h2>Scenario: small requests work, large responses stall</h2>
+  <p>A new overlay path crosses a lower-MTU underlay. TCP connections establish and health probes pass, but larger responses retransmit until timeout. Restarting CoreDNS cannot fix a packet-size-dependent failure. The correct hypothesis starts with the new path, encapsulation overhead, path MTU discovery and ICMP handling.</p>
+  <h2>Build the path before choosing a command</h2>
+  <pre><code>Pod resolver → cluster DNS / node-local DNS → upstream DNS
+Pod network namespace → veth / CNI dataplane → Service translation or direct Pod route
+→ network policy → node route / overlay → destination
+External egress: optional node SNAT → NAT gateway/firewall → remote service
+Ingress: edge LB → ingress/gateway → Service/endpoints → Pod</code></pre>
+  <p>The exact order of NAT and policy can differ by implementation. A Service IP is a virtual destination implemented by the dataplane, not necessarily an address bound to an interface. In kube-proxy replacement modes, inspect the CNI's service maps rather than assuming iptables. Follow <a href="../cni/index.html">the CNI course</a> for packet mechanics and <a href="../traffic/index.html">the traffic course</a> for L7 routing.</p>
+  <h2>Use discriminating tests</h2>
+  <table><tr><th>Observation</th><th>Next discriminator</th><th>Likely cause if confirmed</th></tr>
+    <tr><td>Name fails, IP works</td><td>Resolver config, search expansion, DNS response codes and query latency</td><td>DNS policy, saturation, upstream or node-local path</td></tr>
+    <tr><td>Service fails, direct endpoint works</td><td>Service selector/port, EndpointSlices and dataplane state</td><td>Service configuration or translation path</td></tr>
+    <tr><td>Only cross-node connections fail</td><td>Routes, encapsulation, security rules, MTU and node pair</td><td>Inter-node dataplane/underlay</td></tr>
+    <tr><td>Only new external connections fail under load</td><td>SNAT allocation errors, conntrack utilization and destination concentration</td><td>Translation/state exhaustion, not necessarily remote latency</td></tr>
+    <tr><td>Only large payloads fail</td><td>Retransmits, packet captures, interface MTUs and PMTU signals</td><td>MTU black hole or path-specific filtering</td></tr>
+  </table>
+  <pre><code>kubectl --context "$CTX" get service echo -n pe-lab -o yaml
+kubectl --context "$CTX" get endpointslices -n pe-lab \
+  -l kubernetes.io/service-name=echo -o yaml
+kubectl --context "$CTX" get networkpolicy -n pe-lab -o yaml
+kubectl --context "$CTX" exec -n pe-lab deploy/echo -- cat /etc/resolv.conf
+kubectl --context "$CTX" exec -n pe-lab deploy/echo -- nslookup kubernetes.default.svc.cluster.local</code></pre>
+  <p>The example assumes the lab's <code>cluster.local</code> domain. In production read the configured domain and use a tool present in the image or a controlled diagnostic image. Avoid changing the application image merely to add troubleshooting tools. Packet captures and host tools require separately authorized node access.</p>
+  <h2>Capacity and policy</h2>
+  <p>DNS demand scales with connection creation, search paths, retry behavior and TTLs, not just Pod count. Fix excessive lookups and connection churn before blindly increasing DNS replicas. Node-local DNS changes the path and policy allowances. For external connections, track NAT port allocation per actual gateway/node/destination contract; there is no universal “ports per Pod” budget.</p>
+  <p>Linux host evidence can include <code>nf_conntrack_count</code> versus <code>nf_conntrack_max</code>, conntrack insert failures, interface drops and retransmits. Increasing limits consumes memory and may only postpone the fault. Prefer connection reuse, bounded retries and sufficient translation capacity; changing timeouts without understanding flow lifetimes can break established sessions.</p>
+  <p>Standard NetworkPolicies combine allowed traffic additively. An empty default-deny egress policy blocks DNS unless another allowance exists. A policy object does nothing if the installed dataplane does not enforce it. Confirm both allowed and denied flows, including cross-node traffic and node-local DNS behavior. Namespace/pod selectors in the same peer are ANDed; separate peers are alternatives.</p>
+  <h2>Runbook: network regression during rollout</h2>
+  <ol><li>Freeze the network change and identify affected node cohort, source/destination pair and old/new versions. Compare an unchanged cohort.</li><li>Test DNS, Service IP, endpoint IP, cross-node and external paths separately with bounded timeouts. Capture the first failing layer and relevant CNI/LB events.</li><li>If selectors or ports are wrong, restore the known-good configuration. If the dataplane change is implicated, follow its supported rollback/replacement path; some CNI migrations require new nodes or clusters.</li><li>Stop migration if service reachability, network isolation or control-plane connectivity fails. Do not clear every connection table as a generic repair.</li><li>Verify ingress, egress, DNS, policy denials, large payloads and long-lived connection draining before expanding the cohort.</li></ol>
+  <p>Certificate rotation and load-balancer draining also need end-to-end tests: clients may cache old trust or retain connections to terminating Pods. Align application termination grace, endpoint removal and gateway/LB drain behavior. Readiness alone is not a guarantee that all traffic has stopped.</p>
+  <h2>Lab: prove policy enforcement</h2>
+  <p><a href="labs/README.md#network">Run the network exercise</a> with an enforcing CNI: record successful baseline traffic, apply default deny, observe failure and restore only the required DNS/HTTP flows. Default kind networking may not enforce policy; in that environment record the enforcement test as unsupported rather than “passed.”</p>
+  <div class="hand"><h3>Interpret the evidence</h3><p>A NetworkPolicy exists and every test request still succeeds. Is that a valid isolation test?</p><details><summary>Answer</summary><p>No. Inspect selectors, other additive allowances and the enforcement implementation. A policy acceptance response proves API storage, not dataplane enforcement.</p></details></div>
+  <h2>Sources and version scope</h2><p>Reviewed 12 November 2026. Dataplane commands and NAT order are implementation-specific; the fixture uses stable networking.k8s.io/v1.</p><ul>
+    <li><a href="https://kubernetes.io/docs/concepts/services-networking/network-policies/">NetworkPolicy semantics and NAT caveats</a></li>
+    <li><a href="https://kubernetes.io/docs/tasks/administer-cluster/dns-debugging-resolution/">DNS debugging</a></li>
+    <li><a href="https://kubernetes.io/docs/tasks/debug/debug-application/debug-service/">Service debugging</a></li>
+    <li><a href="https://kubernetes.io/docs/tasks/administer-cluster/nodelocaldns/">Node-local DNS</a></li>
+  </ul>
+  <div id="quiz"></div><script type="application/json" id="quiz-data">[
+    {"q":"Small requests work and large responses stall after an overlay change. Best first hypothesis?","options":["RBAC","Path MTU / encapsulation mismatch","PVC capacity"],"answer":1,"why":"Payload-size dependence distinguishes this from ordinary name resolution or authorization failures."},
+    {"q":"A default-deny policy is stored. What proves enforcement?","options":["Allowed and denied flow tests on the actual dataplane","The object's creation timestamp","The namespace name"],"answer":0,"why":"API acceptance does not show that any component enforces the policy."},
+    {"q":"Only new outbound connections fail at peak traffic. Which evidence matters?","options":["Deployment revision history alone","CPU requests alone","NAT allocation failures and conntrack pressure"],"answer":2,"why":"State or translation capacity can fail new flows while existing connections remain healthy."}
+  ]</script>
+</main><script src="lessons.js"></script><script src="../../course.js"></script></body></html>

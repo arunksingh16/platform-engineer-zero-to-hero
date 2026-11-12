@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>2. Control plane and etcd · Kubernetes production engineering</title>
+<meta name="description" content="Diagnose Kubernetes API saturation, admission latency, etcd quorum, storage pressure and disaster recovery.">
+<link rel="stylesheet" href="../../style.css"></head>
+<body data-lesson="2"><main>
+  <span class="tag">Production / 2</span><h1>Control plane and etcd</h1>
+  <p class="lead">Adding API-server replicas does not repair a slow disk, an unavailable webhook or a controller that continuously rewrites thousands of objects.</p>
+  <div class="goal"><h3>By the end you can…</h3>Localize API latency, contain a reconciliation storm, explain quorum and plan an etcd restore that accounts for watches, encryption and external state.</div>
+  <h2>Scenario: reads succeed, deployments time out</h2>
+  <p>A policy rollout is followed by slow Pod creation, controller retries and rising API request volume. Existing workloads mostly serve normally. The initial hypothesis is etcd saturation. But reads remain fast and admission duration rises first: a webhook is waiting on an external service. The retry storm is an amplifier, not the initiating fault.</p>
+  <p>The logical write path includes authentication, authorization, flow control, admission/validation and persistence. Mutation occurs before final validating admission; not every read goes through admission or reaches etcd directly. Instrument stages rather than assuming all API latency is storage latency.</p>
+  <h2>Read evidence by subsystem</h2>
+  <table><tr><th>Evidence</th><th>Likely boundary</th><th>Next check</th></tr>
+    <tr><td>429 responses, growing APF queues</td><td>Request concurrency/fairness or excessive clients</td><td>Identify principal, verb, resource and retry behavior; separate important traffic from batch automation</td></tr>
+    <tr><td>Slow creates but fast reads; webhook duration/errors rise</td><td>Admission dependency</td><td>Endpoints, TLS, timeout, selectors, policy revision and dependency reachability</td></tr>
+    <tr><td>Slow writes across resources; etcd WAL fsync/commit latency rises</td><td>etcd disk, peer network or leader health</td><td>Host IO, peer RTT, leader changes, proposals and backend quota alarms</td></tr>
+    <tr><td>High list traffic after restarts</td><td>Client/cache reconnect storm</td><td>Controller restart loop, watch errors, cache scope and backoff</td></tr>
+  </table>
+  <pre><code>kubectl --context "$CTX" get --raw '/readyz?verbose'
+kubectl --context "$CTX" get flowschemas,prioritylevelconfigurations
+kubectl --context "$CTX" get validatingwebhookconfigurations,mutatingwebhookconfigurations
+kubectl --context "$CTX" get events -n marketplace --sort-by=.metadata.creationTimestamp</code></pre>
+  <p>APF allocates concurrency using priority levels and flow schemas. It is not a substitute for client backoff, and a broad exemption can let one client starve the control plane. Avoid cluster-wide watch/list commands in a tight diagnostic loop during overload. Inspect audit metadata and existing metrics instead.</p>
+  <h2>etcd: quorum, latency and state size</h2>
+  <p>A voting cluster needs <code>floor(N/2)+1</code> members for quorum. Three members tolerate one failure; five tolerate two. Four still tolerate only one. Extra members add replication work and do not linearly increase write throughput. Place members across intended failure domains while preserving the latency budget; a cross-region quorum is not a free disaster-recovery solution.</p>
+  <p>Track <code>etcd_disk_wal_fsync_duration_seconds</code>, <code>etcd_disk_backend_commit_duration_seconds</code>, pending proposals, leader changes and backend size relative to quota. Metric availability and labels depend on the etcd distribution. A large object count, frequent status writes and retained history consume different resources. Compaction removes historical revisions; defragmentation reclaims backend space and can block the target member. Use the distribution's maintenance procedure and retain quorum.</p>
+  <h2>Recovery runbook: saturation without data loss</h2>
+  <ol><li>Capture start time, changed component and request classes. Confirm whether the API is unhealthy or only particular operations fail.</li><li>Pause the offending automation or reduce its concurrency at its source. Preserve essential controllers and emergency access.</li><li>If admission is responsible, restore the last healthy narrow policy/webhook configuration using the documented emergency path. Broadly disabling admission changes security posture; record the exact temporary exception.</li><li>If etcd is responsible, check health and alarms using provider tooling. Repair disk/network or replace a failed member through the supported procedure; do not restore an old snapshot merely to solve high latency.</li><li>Resume clients in batches after write latency, queue depth and controller lag return to baseline. Verify create, update, watch and deletion on a disposable object.</li></ol>
+  <h2>Disaster recovery is a different procedure</h2>
+  <p>For actual quorum/data loss, isolate the old cluster and stop competing writers before restoring. A recovery bundle includes a verified snapshot, member topology, compatible binaries, PKI and encryption/KMS configuration. Restoring encrypted Secrets without usable decryption keys does not recover the service. An etcd snapshot contains sensitive cluster state and needs independent access controls and off-cluster retention.</p>
+  <p>Use <code>etcdctl snapshot save</code> for a live authenticated snapshot and the matching <code>etcdutl snapshot status</code> for inspection. The version-specific restore procedure creates new member data directories and identities. For Kubernetes, plan a revision bump and mark-compacted restore where supported so old informer caches invalidate rather than silently retaining state from a newer revision. Restore commands depend on peer URLs, member names, paths and version; copy them from the matched distribution recovery procedure, not a generic one-line recipe.</p>
+  <p>After restore, reconcile cloud load balancers, volumes and other external side effects with restored Kubernetes state. Measure API recovery separately from application recovery. Require a create/watch/delete probe, healthy controllers, readable Secrets and an application transaction before reopening normal changes.</p>
+  <h2>Lab: write-path probe and restore rehearsal</h2>
+  <p><a href="labs/README.md#control-plane">Run the bounded write-path exercise</a> and record timings. The extended drill uses a separate recoverable environment and the provider's restore procedure. Exit when restored data matches a known marker and controllers converge; snapshot creation alone is not a pass.</p>
+  <div class="hand"><h3>Failure analysis</h3><p>Five etcd members have two failed disks. Can you take a third member offline for defragmentation?</p><details><summary>Answer</summary><p>No. Three votes are required. Only three members remain, so taking another down loses quorum. Repair membership first and verify health before maintenance.</p></details></div>
+  <h2>Sources and version scope</h2><p>Reviewed 12 November 2026. APF v1 is available in the 1.30+ lab baseline; etcd restore options here refer to the linked 3.6 guide and must match your deployed version.</p><ul>
+    <li><a href="https://kubernetes.io/docs/concepts/cluster-administration/flow-control/">API Priority and Fairness</a></li>
+    <li><a href="https://kubernetes.io/docs/concepts/cluster-administration/admission-webhooks-good-practices/">Admission webhook availability</a></li>
+    <li><a href="https://etcd.io/docs/v3.6/op-guide/recovery/">etcd disaster recovery, revision bumps and cache invalidation</a></li>
+    <li><a href="https://etcd.io/docs/v3.6/op-guide/maintenance/">etcd maintenance</a></li>
+  </ul>
+  <div id="quiz"></div><script type="application/json" id="quiz-data">[
+    {"q":"Reads are fast but Pod creates stall after a webhook rollout. Where do you start?","options":["Restore etcd immediately","Admission latency, endpoints and the change","Increase all client retries"],"answer":1,"why":"The operation-specific pattern points at the write admission path. Evidence should precede storage recovery."},
+    {"q":"How many failures can four voting etcd members tolerate?","options":["One","Two","Three"],"answer":0,"why":"Quorum is three, leaving a tolerance of one."},
+    {"q":"Why can a Kubernetes etcd restore require revision bumping and compaction marking?","options":["To enlarge volumes","To make Pods start without a scheduler","To invalidate watches and informer state from later revisions"],"answer":2,"why":"Restoring older state must account for clients that previously observed newer revisions."}
+  ]</script>
+</main><script src="lessons.js"></script><script src="../../course.js"></script></body></html>

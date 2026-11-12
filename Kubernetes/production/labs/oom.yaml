@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: memory-boundary
+  namespace: pe-lab
+  labels:
+    team: platform
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: writer
+      image: busybox:1.37.0
+      command: ["dd", "if=/dev/zero", "of=/memory/blob", "bs=1M", "count=128"]
+      resources:
+        requests: {cpu: 10m, memory: 16Mi}
+        limits: {cpu: 100m, memory: 32Mi}
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      volumeMounts:
+        - name: memory
+          mountPath: /memory
+  volumes:
+    - name: memory
+      emptyDir:
+        medium: Memory
+        sizeLimit: 128Mi

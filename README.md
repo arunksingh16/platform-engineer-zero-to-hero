@@ -1,6 +1,6 @@
 # Platform Engineering: Zero to Hero
 
-A practical, self-guided learning path for platform engineering. Eight published tracks cover Networking fundamentals, Kubernetes fundamentals, CNI networking, Ingress/gateways/service mesh, OpenShift, AKS, Observability and Code analysis. Other topics below remain roadmap items rather than published lessons.
+A practical, self-guided learning path for platform engineering. Ten published tracks cover Networking fundamentals, Kubernetes fundamentals, Kubernetes production engineering, CNI networking, Ingress/gateways/service mesh, OpenShift, AKS, Observability, Code analysis and AI infrastructure. Other topics below remain roadmap items rather than published lessons.
 Access github pages - https://arunksingh16.github.io/platform-engineer-zero-to-hero
 
 ## Courses
@@ -11,12 +11,13 @@ Access github pages - https://arunksingh16.github.io/platform-engineer-zero-to-h
 | Observability | Available | Metrics, time series, logs, traces, OpenTelemetry, SLIs, SLOs, and burn-rate alerting |
 | Code analysis | Available | Pure functions and IO, abstract syntax trees, call graphs, runtime detection, and measuring a detector honestly |
 | Kubernetes | Available | Control loops, Pods and controllers, scheduling, requests and limits, HPA, KEDA, Karpenter, and operators |
+| [Kubernetes: production engineering](Kubernetes/production/index.html) | Available | 12 advanced modules: fleet architecture, etcd, IAM, policy, security, storage recovery, networking, nodes, capacity, upgrades, incidents and operators; executable labs and recovery evidence |
 | Kubernetes: Pod networking and the CNI | Available | The network model, the packet path and MTU, NetworkPolicy enforcement, Flannel/Calico/Cilium/cloud CNIs, and eBPF |
 | [Kubernetes: Ingress, gateways and service mesh](Kubernetes/traffic/index.html) | Available | Ingress controllers, Gateway API, Kong/API gateways, Istio and service mesh decisions |
 | Kubernetes platforms: OpenShift for senior SREs | Available | Operator-managed architecture, installation, MachineConfig and updates, OLM, OAuth and SCCs, OVN-Kubernetes, routers, storage, multi-tenancy, etcd and operations, fleet management |
 | Kubernetes platforms: AKS production operations | Available | Ownership, node pools, Entra/workload identity, Azure CNI and IP budgeting, ingress/egress/DNS, autoscaling, upgrades, CSI storage, recovery and incident response |
 | Kubernetes platforms: EKS | Planned | AWS specifics layered on the vendor-neutral course; lessons are not published yet |
-| AI platform engineering | Curated resources | Recommended external learning paths for SGLang and vLLM |
+| [AI platform engineering](AIPlatformEngineering/index.html) | Available + curated resources | 10-lesson AI infrastructure course, SGLang versus vLLM decision lesson, and external engine learning paths |
 | Infrastructure foundations | Partially available | Networking is published above; Linux, Git, and containers remain planned |
 | Platform systems | Planned | Cloud fundamentals, infrastructure as code, and CI/CD |
 | Reliability and operations | Planned | Site reliability engineering, incident response, and production operations |
@@ -67,11 +68,13 @@ Kubernetes/                Course
   01-...html to 09-...html Interactive lessons, ending in a references page
   cni/                     Child course: Pod networking and the CNI (5 lessons)
   traffic/                 Child course: Ingress, gateways and service mesh (5 lessons)
-  traffic/                 Child course: Ingress, gateways and service mesh (5 lessons)
+  production/              Advanced operations handbook (12 modules, labs, runbooks)
   openshift/               Platform track: OpenShift for senior SREs (15 lessons)
   aks/                     Platform track: AKS production operations (9 lessons)
   eks/                     Planned platform track (directory not yet created)
-AIPlatformEngineering/     Curated external learning paths for SGLang and vLLM
+AIPlatformEngineering/     Serving-engine decision lesson and curated engine guides
+  infrastructure/         10 lessons: AI infrastructure design, sizing and operations
+    diagrams/             Editable SVG cluster and inference-fleet diagrams
 ```
 
 Courses nest. A child course is just a course one level deeper: it gets its own

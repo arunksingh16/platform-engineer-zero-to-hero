@@ -35,6 +35,15 @@ python3 -m http.server 8000
 
 ## Child courses
 
+`production/` — **Kubernetes: production engineering**, twelve advanced modules:
+fleet architecture, control plane and etcd, IAM and workload identity, policy and
+tenancy, security, storage recovery, networking at scale, node performance,
+capacity and cost, fleet upgrades, incident response, and platform operators.
+Includes executable fixtures, failure/recovery exercises, an integration runner,
+incident/readiness templates and an explicit validation record. Start at
+[`production/index.html`](production/index.html); see the
+[coverage audit](production/AUDIT.md) and [lab guide](production/labs/README.md).
+
 `cni/` — **Pod networking and the CNI**, five lessons: the network model and IP
 planning, the packet path and MTU, NetworkPolicy and who enforces it, choosing
 between Flannel, Calico, Cilium and the cloud CNIs, and the eBPF dataplane.
@@ -108,7 +117,7 @@ Lessons link to published material rather than re-teaching it:
 | 1. Desired state | [Code analysis: call graphs](../CodeAnalysis/02-ast-call-graph.html) | Sweeping until nothing changes — convergence, bounded there and deliberately non-terminating here |
 | 3. Requests and limits | [Observability: metrics](../Observability/02-metrics.html), [querying](../Observability/05-querying.html) | You cannot set a request honestly without percentiles; averages are what cause OOMKills |
 | 5. HPA | [Observability: metrics](../Observability/02-metrics.html), [SLOs](../Observability/09-slos.html) | Choosing a scaling signal is choosing an SLI — mind the denominator |
-| 6. KEDA | [Observability: SLOs](../Observability/09-slos.html) | Queue depth is a level, consumer lag is a rate; the distinction decides which to scale on |
+| 6. KEDA | [Observability: SLOs](../Observability/09-slos.html) | Queue depth and offset lag are backlog quantities; arrival/drain rates and oldest-message age add different scaling and SLO signals |
 | 8. Operators | [Code analysis: what counts as IO](../CodeAnalysis/01-what-is-io.html) | A reconcile loop is IO by definition, which is exactly why it must be safe to re-run |
 
 ## Sources

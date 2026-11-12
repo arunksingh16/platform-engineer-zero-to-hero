@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>1. Fleet architecture · Kubernetes production engineering</title>
+<meta name="description" content="Design Kubernetes cells, failure domains, ownership boundaries and recovery capacity with explicit trade-offs.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="1"><main>
+  <span class="tag">Production / 1</span><h1>Fleet architecture and failure domains</h1>
+  <p class="lead">A cluster is both a scheduling pool and a shared failure boundary. The architecture question is how much customer impact one mistake is allowed to cause.</p>
+  <div class="goal"><h3>By the end you can…</h3>Choose a cluster boundary, enumerate shared dependencies, calculate failover headroom and define a testable ownership contract.</div>
+  <h2>Scenario: a fleet that shares more than it admits</h2>
+  <p>Assume a marketplace with 120 services, three zones per region and two regions. A team proposes one large cluster per region to maximize utilization. Another proposes a cluster per team. Both miss the dominant incident: a shared admission service is deployed incorrectly across every cluster at once. Cluster count alone did not isolate change.</p>
+  <p>Draw three paths separately: customer requests, provisioning/reconciliation, and recovery. Existing traffic may survive an API outage while replacement Pods cannot start. A registry failure may be invisible until nodes churn. A central identity provider can block new access even when every node is healthy.</p>
+  <h2>Choose boundaries from requirements</h2>
+  <table><tr><th>Model</th><th>Good fit</th><th>Cost and residual risk</th></tr>
+    <tr><td>Shared cluster, namespaces</td><td>Cooperating teams, common trust and release cadence</td><td>Efficient packing; shared API, admission, nodes and cluster-scoped APIs</td></tr>
+    <tr><td>Dedicated nodes, shared control plane</td><td>Performance separation, specialized hardware</td><td>Less packing efficiency; API overload and privileged cluster administration still cross tenants</td></tr>
+    <tr><td>Separate clusters / cells</td><td>Independent blast radius, upgrade waves, high-risk workloads</td><td>Duplicated add-ons, spare capacity and operational overhead; global dependencies remain</td></tr>
+    <tr><td>Separate accounts/projects and regions</td><td>Administrative and regional failure separation</td><td>More networking, identity and data-replication complexity; requires independent recovery credentials</td></tr>
+  </table>
+  <p>A <strong>cell</strong> is an intentionally bounded serving unit, not a Kubernetes API type. Route a stable customer or workload partition to it and bound its capacity. Cross-cell synchronous dependencies can erase the isolation. Choose the maximum cell size from acceptable impact and tested evacuation capacity, rather than an upstream maximum node count.</p>
+  <h2>Capacity must survive the failure you claim</h2>
+  <p>With evenly spread work across three identical zones, loss of one zone multiplies surviving load by <code>3 / 2</code>. At 60% normal utilization, survivors reach 90% before retries or failover overhead. If the tested safe ceiling is 70%, normal utilization must be at most <code>70% × 2/3 = 46.7%</code>. This model assumes fungible capacity, balanced placement, working routing and available data; topology-bound volumes and GPUs invalidate those assumptions.</p>
+  <p>Record capacity at the limiting resource: safe requests/second at a latency target, CPU, memory, storage throughput, IPs, or downstream database connections. A regional traffic shift that doubles API replicas but exhausts database connections is not recovery.</p>
+  <h2>Write the ownership contract</h2>
+  <table><tr><th>Boundary</th><th>Evidence required</th><th>Owner</th></tr>
+    <tr><td>API and etcd</td><td>Availability, latency, backup/recovery mechanism, support escalation</td><td>Platform or managed-service provider, explicitly split</td></tr>
+    <tr><td>Nodes and add-ons</td><td>Image lifecycle, CNI/CSI compatibility, capacity replacement time</td><td>Platform team</td></tr>
+    <tr><td>Application and data</td><td>Readiness semantics, retry budget, schema compatibility, restore validation</td><td>Service/data owner</td></tr>
+    <tr><td>Global services</td><td>DNS, identity, registry, Git, secrets and telemetry outage behavior</td><td>Named dependency owner</td></tr>
+  </table>
+  <h2>Investigation and recovery: one cell cannot schedule</h2>
+  <pre><code>kubectl --context "$CTX" get nodes -L topology.kubernetes.io/zone
+kubectl --context "$CTX" get pods -n marketplace -o wide
+kubectl --context "$CTX" get events -n marketplace --sort-by=.metadata.creationTimestamp
+kubectl --context "$CTX" get --raw '/readyz?verbose'</code></pre>
+  <p>Set <code>CTX</code> to the intended cluster. These inspections require read permissions, with separate access for non-resource health URLs. Compare a healthy cell: identical application errors with a single cell's failed scheduling suggest a local platform path; every cell failing after the same policy revision suggests a common change.</p>
+  <ol><li>Pause the implicated rollout and record affected cells, timestamps and revision. Separate serving health from change-plane health.</li><li>Check surviving-cell measured capacity and data residency before shifting traffic. Shift a small cohort first; watch latency, error rate and downstream saturation.</li><li>Stop the shift if the receiving cell exceeds its tested ceiling or data correctness becomes uncertain. Shed optional work rather than multiplying retries.</li><li>Recover the failed cell's dependency, verify a new Pod can become Ready and serve a synthetic transaction, then gradually return traffic.</li><li>Reconcile temporary routing and Git state; a green API endpoint alone is insufficient recovery evidence.</li></ol>
+  <h2>Lab: dependency-loss review</h2>
+  <p>Use <a href="labs/README.md#fleet">the fleet exercise</a>. Inventory a lab cluster and build a dependency map for existing traffic, new Pods and emergency access. Remove one dependency on paper at a time. For each, predict which path fails and identify an observable signal. Do not claim region-failure tolerance from a laptop cluster.</p>
+  <div class="hand"><h3>Design review</h3><p>Two cells share a database, registry and admission release pipeline. What do two cells actually buy?</p><details><summary>Answer</summary><p>They can isolate some node, API and local configuration failures. They do not independently survive shared database failure or correlated admission rollout. Separate release waves, bound data dependencies and test image-cold recovery before calling them independent.</p></details></div>
+  <h2>Sources and version scope</h2><p>Design numbers are hypothetical. Kubernetes topology and tenancy references reviewed 12 November 2026:</p><ul>
+    <li><a href="https://kubernetes.io/docs/setup/production-environment/">Production environment and control-plane choices</a></li>
+    <li><a href="https://kubernetes.io/docs/concepts/security/multi-tenancy/">Multi-tenancy and isolation</a></li>
+    <li><a href="https://kubernetes.io/docs/setup/best-practices/multiple-zones/">Running across zones</a></li>
+  </ul>
+  <div id="quiz"></div><script type="application/json" id="quiz-data">[
+    {"q":"Three equal zones normally run at 60%. What happens after losing one, under the balanced-load model?","options":["Survivors stay at 60%","Survivors reach 90%","Survivors reach 120%"],"answer":1,"why":"The same work lands on two-thirds of the capacity: 60% × 3/2 = 90%."},
+    {"q":"Which change most directly limits a correlated admission rollout failure?","options":["More namespaces","Larger worker nodes","Independent canary and release waves"],"answer":2,"why":"Independent clusters still fail together if the same bad change reaches all of them simultaneously."},
+    {"q":"Existing requests succeed while replacement Pods cannot start. Which distinction matters?","options":["Serving plane versus change/recovery plane","CPU versus millicores only","Region names"],"answer":0,"why":"A platform can continue serving while losing the ability to reconcile or recover capacity."}
+  ]</script>
+</main><script src="lessons.js"></script><script src="../../course.js"></script></body></html>

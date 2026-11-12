@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>10. Upgrades and fleet delivery · Kubernetes production engineering</title>
+<meta name="description" content="Plan Kubernetes version skew, API and CRD migrations, canary upgrades, GitOps recovery and forward-recovery boundaries.">
+<link rel="stylesheet" href="../../style.css"></head>
+<body data-lesson="10"><main>
+  <span class="tag">Production / 10</span><h1>Upgrades and fleet delivery</h1>
+  <p class="lead">An upgrade is a sequence of compatibility transitions. “Rollback available” is meaningful only when you name which component and which persisted state can go backward.</p>
+  <div class="goal"><h3>By the end you can…</h3>Build a compatibility matrix, detect removed API usage, stage fleet upgrades and distinguish configuration rollback from control-plane or data recovery.</div>
+  <h2>Scenario: the canary passes, the first real tenant fails</h2>
+  <p>A canary cluster contains only stateless test Pods. The production cohort also has a CSI driver, a conversion webhook and an operator using an old API. The canary never exercised them. Representativeness means coverage of the risky contracts, including stateful restore and admission, not merely a smaller node count.</p>
+  <h2>Build the transition matrix</h2>
+  <table><tr><th>Component</th><th>Record before change</th><th>Required proof</th></tr>
+    <tr><td>API server, scheduler, controllers, kubelet, proxy</td><td>Current/target versions and allowed intermediate skew</td><td>Supported ordering and no unsupported mixed phase</td></tr>
+    <tr><td>CNI, CSI, DNS, ingress, policy, metrics</td><td>Compatibility ranges and upgrade procedure</td><td>Old/new control-plane and node compatibility during transition</td></tr>
+    <tr><td>CRDs and operators</td><td>Served/storage versions, storedVersions, conversion service</td><td>Read/write round-trip and storage migration</td></tr>
+    <tr><td>Applications and automation</td><td>API calls, manifests, SDKs, runtime assumptions</td><td>Removed APIs eliminated; representative functional probes</td></tr>
+    <tr><td>Certificates and credentials</td><td>Expiry, issuer/trust, renewal owner</td><td>Rotation and emergency access survive the window</td></tr>
+  </table>
+  <p>Under current upstream policy, kubectl is supported within one minor of the API server. Modern kubelets may be up to three minors older but must not be newer than any API server they can contact; HA mixed versions narrow the intersection. Do not skip API-server minor versions. Providers and add-ons may impose stricter rules, so upstream skew is necessary but not sufficient.</p>
+  <h2>Inventory API and storage contracts</h2>
+  <pre><code>kubectl --context "$CTX" version -o yaml
+kubectl --context "$CTX" get nodes \
+  -o custom-columns=NAME:.metadata.name,KUBELET:.status.nodeInfo.kubeletVersion,RUNTIME:.status.nodeInfo.containerRuntimeVersion
+kubectl --context "$CTX" get crd \
+  -o custom-columns=NAME:.metadata.name,STORED:.status.storedVersions
+kubectl --context "$CTX" api-resources
+kubectl --context "$CTX" get validatingwebhookconfigurations,mutatingwebhookconfigurations</code></pre>
+  <p>Server-side dry-run on the current cluster does not prove compatibility with the target release. Validate rendered manifests on a target-version test cluster and inspect deprecated API request metrics/audit evidence over a representative business cycle. Rare monthly Jobs and recovery tools can escape a short observation window.</p>
+  <p>Changing a CRD's <code>storage: true</code> version does not rewrite all existing objects. Keep old served versions and conversion compatibility until data is migrated and clients are updated. Verify conversion round-trips before removing versions; do not patch <code>status.storedVersions</code> just to silence a migration error.</p>
+  <h2>Upgrade waves and exit gates</h2>
+  <ol><li>Capture baseline SLOs, API error/latency, capacity, backups and tested recovery. Inventory current versions and freeze unrelated platform changes.</li><li>Upgrade a representative canary through the supported sequence. Exercise create/delete, policy rejection, DNS/egress, volume provisioning/restore and workload identity.</li><li>Replace a limited node cohort with sufficient surge and IP/volume capacity. Check PDBs and topology before drains; never solve an unknown drain block by blindly bypassing eviction.</li><li>Hold the wave through representative load and scheduled work. Proceed only when error budget, pending age, node health, controller lag and functional checks meet declared thresholds.</li><li>Expand by independent failure domain. Keep a working previous cohort while supported and maintain a clear pause owner.</li><li>Remove obsolete API clients, images and exceptions after the fleet converges. Record the final version matrix and renewal dates.</li></ol>
+  <h2>Runbook: failed upgrade wave</h2>
+  <p>Pause orchestration and identify the failed layer. Restore a bad manifest or supported add-on release if its data/schema is backward-compatible. Replace faulty canary nodes with the previous approved image only where control-plane skew and provider lifecycle permit. An API-server downgrade or etcd restore is not equivalent to <code>kubectl rollout undo</code>; often the supported path is forward repair or migration to a prepared replacement cluster.</p>
+  <p>Coordinate live mitigation with GitOps ownership. Pause the relevant reconciliation scope, save the intended revision, apply the narrow repair, then update/revert Git before resuming. Otherwise GitOps can undo the fix or recreate the incident. Stop the wave if data integrity, policy enforcement or identity trust fails even if application error rate temporarily looks healthy.</p>
+  <p>Recovery is verified by functional probes and restored SLOs plus converged desired state. Record temporary drift, follow-up migrations and a next decision time. Do not leave the fleet indefinitely in a barely supported skew window.</p>
+  <h2>Lab: broken release and evidence-led rollback</h2>
+  <p><a href="labs/README.md#upgrades">Run the rollout exercise</a>. Set a nonexistent image on the lab Deployment, observe the stalled rollout and preserved old endpoints, then undo it and verify service. This validates application rollout mechanics, not a Kubernetes downgrade. The extended exercise creates a second target-version cluster and validates the same fixtures there.</p>
+  <div class="hand"><h3>Migration review</h3><p>The new CRD storage version is configured and new writes succeed. May you delete the old version?</p><details><summary>Answer</summary><p>Not yet. Verify stored objects migrated, old clients retired and conversion remains correct. Served and storage version flags alone do not prove those conditions.</p></details></div>
+  <h2>Sources and version scope</h2><p>Reviewed 12 November 2026. Recheck this matrix for every release and distribution rather than assuming a feature floor is a support statement.</p><ul>
+    <li><a href="https://kubernetes.io/releases/version-skew-policy/">Version skew and upgrade order</a></li>
+    <li><a href="https://kubernetes.io/docs/reference/using-api/deprecation-guide/">Deprecated API migration guide</a></li>
+    <li><a href="https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definition-versioning/">CRD versioning and stored data migration</a></li>
+    <li><a href="../aks/07-upgrades-and-maintenance.html">AKS maintenance contract</a> and <a href="../openshift/06-updates-and-lifecycle.html">OpenShift update graph</a></li>
+  </ul>
+  <div id="quiz"></div><script type="application/json" id="quiz-data">[
+    {"q":"What does successful dry-run on the old cluster prove?","options":["Compatibility with every future version","Acceptance by the current API/admission contract","Safe etcd downgrade"],"answer":1,"why":"Target compatibility needs target-version validation and representative runtime checks."},
+    {"q":"Why update Git before resuming GitOps after an emergency fix?","options":["Reconciliation could restore the bad desired state","Git stores etcd revisions","It changes the kubelet version"],"answer":0,"why":"Live state and declared ownership must converge on the repaired configuration."},
+    {"q":"Is rollout undo a Kubernetes control-plane downgrade?","options":["Yes","Only for StatefulSets","No; it restores a workload revision"],"answer":2,"why":"Control-plane, API storage and application revisions have different recovery contracts."}
+  ]</script>
+</main><script src="lessons.js"></script><script src="../../course.js"></script></body></html>

@@ -23,7 +23,7 @@
   <p>Two habits protect you:</p>
   <ul>
     <li><strong>Pin the docs to your version.</strong> The Kubernetes site serves older releases; use the version selector rather than reading <code>/latest</code> when something matters.</li>
-    <li><strong>Ask the cluster, not the internet.</strong> <code>kubectl explain</code> reads the schema from your own API server, so it is always right for you:
+    <li><strong>Inspect the deployed contract.</strong> <code>kubectl explain</code> reads the API schema. Also verify feature gates, admission configuration and provider support: a documented field does not prove a feature is enabled or operational:
       <pre><code>kubectl explain deployment.spec.strategy.rollingUpdate
 kubectl explain hpa.spec.behavior.scaleDown
 kubectl api-resources            # everything your cluster serves, CRDs included
@@ -59,7 +59,7 @@ kubectl version</code></pre>
     <tr><td><q>memory limits are enforced by the kernel with out of memory (OOM) kills… terminations only happen when the kernel detects memory pressure</q></td><td><a href="https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/">Resource management</a></td></tr>
     <tr><td>CPU in cores/millicores; memory in bytes with <code>Mi</code>/<code>M</code> distinct</td><td><a href="https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/">Resource management</a></td></tr>
     <tr><td>Exact conditions for Guaranteed, Burstable and BestEffort</td><td><a href="https://kubernetes.io/docs/concepts/workloads/pods/pod-qos/">Pod QoS classes</a></td></tr>
-    <tr><td><q>Kubernetes will first evict BestEffort Pods… followed by Burstable and finally Guaranteed</q>; <q>only Pods exceeding resource requests are candidates for eviction</q></td><td><a href="https://kubernetes.io/docs/concepts/workloads/pods/pod-qos/">Pod QoS classes</a></td></tr>
+    <tr><td>Memory-pressure eviction ranks usage above requests, Pod priority and relative usage; under-request Pods are not immune. Distinguish cgroup OOM, node OOM and kubelet eviction.</td><td><a href="https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/">Node-pressure eviction</a>, <a href="https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/">Resource management</a></td></tr>
   </table>
 
   <h2>Lesson 4 — Scheduling</h2>
@@ -131,6 +131,7 @@ kubectl version</code></pre>
   </div>
 
   <h2>Going further</h2>
+  <p>Continue with <a href="production/index.html">production engineering</a>: twelve advanced modules with IAM, security, policy, storage recovery, control-plane operations and executable incident labs.</p>
   <table>
     <tr><th>Topic</th><th>Where</th></tr>
     <tr><td>The API conventions every resource follows</td><td><a href="https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md">sig-architecture API conventions</a></td></tr>

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>12. Platform APIs and operators · Kubernetes production engineering</title>
+<meta name="description" content="Design crash-safe Kubernetes operators with explicit ownership, idempotent external effects, finalizers and compatible API evolution.">
+<link rel="stylesheet" href="../../style.css"></head>
+<body data-lesson="12"><main>
+  <span class="tag">Production / 12</span><h1>Platform APIs and operators</h1>
+  <p class="lead">An operator is a distributed system that happens to watch Kubernetes objects. API writes and external side effects do not become one transaction because they occur in the same reconcile function.</p>
+  <div class="goal"><h3>By the end you can…</h3>Define a stable platform API, make external operations recoverable across crashes, operate finalizers and evolve controllers without fleet-wide storms.</div>
+  <h2>Scenario: the database was created twice</h2>
+  <p>A controller creates an external database and crashes before writing its ID to status. On restart, status is empty, so it creates another database. A <code>Provisioning</code> flag written before the call merely moves the crash window: now a crash can leave the flag set when no database exists. Status is evidence, not an atomic commit with the provider.</p>
+  <h2>Design the API around intent and ownership</h2>
+  <p>Expose domain intent such as service tier, region, backup objective and deletion policy. Keep provider credentials and incidental implementation details out of tenant-editable fields. Validate immutable transitions and define defaulting deliberately. Users own spec; the controller owns status, including conditions, external identifiers and the observed generation that the result corresponds to.</p>
+  <p>A Ready condition describing generation 4 cannot prove generation 5 has converged. Compare <code>metadata.generation</code> with the relevant <code>observedGeneration</code>. Give each field one owner; server-side apply field management helps coordinate ownership but cannot make conflicting desired states sensible. Separate spec updates from status updates to avoid reconciliation loops triggered by meaningless writes.</p>
+  <h2>A crash-aware reconciliation outline</h2>
+  <pre><code>read current object; return if no longer present
+if deletionTimestamp is set:
+    find external resource by stable owner identity
+    execute/reconcile the declared deletion or retention policy
+    remove only our finalizer after the obligation is satisfied
+    return
+ensure our finalizer is persisted before creating external state
+derive stable operation identity from UID + desired operation revision
+discover external resource / operation by identity
+if absent:
+    start operation with provider idempotency key, when supported
+observe actual external state; reconcile toward current intent
+patch status using resourceVersion-aware conflict handling
+requeue on a bounded schedule while asynchronous work remains</code></pre>
+  <p>This is pseudocode, not an SDK implementation. The exact contract depends on the external API. A stable key should identify one logical operation: do not use a new random key per retry, and do not let unrelated spec edits accidentally create a new resource. If the provider cannot deduplicate requests, design discoverable ownership tags/names, uncertain-outcome handling and a compensation/manual-recovery procedure.</p>
+  <h2>Concurrency, caches and load</h2>
+  <table><tr><th>Mechanism</th><th>What it solves</th><th>What it does not solve</th></tr>
+    <tr><td>Optimistic concurrency / resourceVersion</td><td>Detects conflicting API writes</td><td>Does not deduplicate external calls already accepted</td></tr>
+    <tr><td>Leader election</td><td>Coordinates active controller leadership</td><td>Does not guarantee exactly-once execution through partitions or restarts</td></tr>
+    <tr><td>Informer cache</td><td>Reduces API traffic and supports watches</td><td>Reads can lag; a write may not immediately appear in cache</td></tr>
+    <tr><td>Rate-limited work queue</td><td>Bounds retries and helps avoid hot loops</td><td>Cannot fix an endlessly changing desired state or unbounded external latency</td></tr>
+  </table>
+  <p>Make conflicts retryable through reread and recomputation, not blind overwrite. Bound reconcile concurrency against API and provider quotas. Add timeouts and jittered backoff. Track queue depth, oldest queued age, reconcile duration/errors, external operation age and writes per reconciliation. A controller that rewrites status on every pass can overload the API without changing useful state.</p>
+  <h2>Deletion is a contract</h2>
+  <p>A finalizer blocks object removal while cleanup obligations remain; it is not a backup mechanism. Record whether deleting the custom resource deletes, retains or orphans external data. OwnerReferences enable Kubernetes garbage collection within its scope rules but do not clean up an external cloud database automatically. Restore and namespace-deletion procedures must account for these relationships.</p>
+  <h2>Runbook: stuck finalizer</h2>
+  <ol><li>Identify the finalizer's owning controller and the resource's deletion policy. Capture deletion timestamp, conditions, generation and external ID without exposing credentials.</li><li>Check controller availability, RBAC, external API connectivity and provider operation state. A deleting object with a live external database may be correctly waiting.</li><li>Repair the controller/dependency and observe cleanup reconciliation. Stop if the proposed repair could delete retained data or affect another owner.</li><li>If normal cleanup is impossible, have the resource owner explicitly resolve the external obligation and record retained/orphaned assets.</li><li>Only then remove the specific finalizer through the supported recovery procedure. Verify external state and inventory agree; do not strip every finalizer from a namespace.</li></ol>
+  <h2>API evolution and testing</h2>
+  <p>Version schemas, conversion and controller behavior together. Test old objects read by the new controller, new objects read during rollback, unknown-field handling and defaulting. CRD storage-version migration is separate from serving a new version; see <a href="10-upgrades-and-fleet-delivery.html">fleet delivery</a>.</p>
+  <p>Useful failure tests interrupt execution after an external API accepts the operation but before status persists; after finalizer persistence but before creation; during a 409 conflict; during provider timeout with uncertain outcome; and during deletion. Assertions should target no unintended duplicate resource, convergence on restart, bounded retries and honored retention. A test that merely compares a generated manifest cannot establish these properties.</p>
+  <h2>Lab: finalizer mechanics and crash-window analysis</h2>
+  <p><a href="labs/README.md#operators">Run the finalizer exercise</a> on a disposable ConfigMap with a training finalizer and no external assets. Then complete the crash-window worksheet for the pseudocode. The fixture demonstrates API deletion mechanics; it deliberately does not claim to test a real cloud operator's exactly-once behavior.</p>
+  <div class="hand"><h3>Recovery design</h3><p>The external request timed out. Should the controller immediately create a replacement with a new key?</p><details><summary>Answer</summary><p>No. Timeout leaves the outcome uncertain. Query by the stable operation/resource identity or retry with the same provider-supported idempotency key. A new identity can create a duplicate.</p></details></div>
+  <h2>Sources and version scope</h2><p>Reviewed 12 November 2026. API mechanics are stable; controller library and external provider retry contracts must be verified for the selected implementation.</p><ul>
+    <li><a href="https://kubernetes.io/docs/concepts/extend-kubernetes/operator/">Operator pattern</a></li>
+    <li><a href="https://kubernetes.io/docs/concepts/overview/working-with-objects/finalizers/">Finalizers</a></li>
+    <li><a href="https://kubernetes.io/docs/reference/using-api/api-concepts/">Resource versions, watches and concurrency</a></li>
+    <li><a href="https://kubernetes.io/docs/reference/using-api/server-side-apply/">Field ownership and server-side apply</a></li>
+    <li><a href="https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md">API conventions and conditions</a></li>
+  </ul>
+  <div id="quiz"></div><script type="application/json" id="quiz-data">[
+    {"q":"Why is a Provisioning status flag insufficient to prevent duplicate external resources?","options":["Status cannot contain strings","The external call and status write are not atomic","Kubernetes disables retries"],"answer":1,"why":"A crash can occur between the two systems' state changes."},
+    {"q":"What should precede removing a stuck production finalizer?","options":["Resolve and verify its external cleanup/retention obligation","Delete all namespace Secrets","Create a new random operation key"],"answer":0,"why":"Removing the gate without resolving the obligation can leak or destroy external resources."},
+    {"q":"What does observedGeneration help establish?","options":["The Kubernetes server version","The cloud billing account","Which desired-spec generation a status result describes"],"answer":2,"why":"A Ready condition for an older generation may be stale relative to the current desired state."}
+  ]</script>
+</main><script src="lessons.js"></script><script src="../../course.js"></script></body></html>

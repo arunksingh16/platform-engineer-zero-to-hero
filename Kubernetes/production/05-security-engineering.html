@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>5. Security engineering · Kubernetes production engineering</title>
+<meta name="description" content="Harden Kubernetes workloads and nodes, protect secrets and software supply chains, and contain compromised workloads.">
+<link rel="stylesheet" href="../../style.css"></head>
+<body data-lesson="5"><main>
+  <span class="tag">Production / 5</span><h1>Security engineering</h1>
+  <p class="lead">A hardened Pod is one layer. The complete system includes who built its image, who can replace it, which credentials it receives, what the host exposes and how you detect abuse.</p>
+  <div class="goal"><h3>By the end you can…</h3>Build a layered threat model, apply a working restricted security context, rotate secrets with evidence and contain an incident without destroying its history.</div>
+  <h2>Scenario: an application vulnerability becomes a cloud incident</h2>
+  <p>An internet-facing service executes attacker-controlled input. Its container runs as root, mounts an unnecessary API token and can reach a node metadata endpoint. The critical question is not just whether the image scanner found a CVE: it is whether application compromise can become node, cluster or cloud-account compromise.</p>
+  <h2>Control the transitions</h2>
+  <table><tr><th>Transition</th><th>Controls</th><th>Evidence</th></tr>
+    <tr><td>Source to deployed image</td><td>Reviewed build pipeline, immutable digest, provenance/signature verification, registry permissions</td><td>Deployed digest maps to source/build identity; rejected untrusted image test</td></tr>
+    <tr><td>Process to container privilege</td><td>Non-root, no privilege escalation, drop capabilities, seccomp, read-only root</td><td>Admitted Pod plus runtime behavior; required writable paths explicitly mounted</td></tr>
+    <tr><td>Container to host</td><td>Restrict host namespaces, hostPath, privileged mode, device access; patch kernel/runtime</td><td>Admission tests and node image inventory</td></tr>
+    <tr><td>Workload to credentials/data</td><td>Minimal identity, scoped federation, controlled metadata access, egress policy</td><td>Denied out-of-scope calls and rotation/revocation tests</td></tr>
+    <tr><td>Abuse to detection</td><td>Audit metadata, runtime events, unusual egress and credential-use signals</td><td>Alert reaches an owner with enough context to act</td></tr>
+  </table>
+  <p>Image signing authenticates a supply-chain assertion; it does not prove absence of vulnerabilities. Scanning needs a remediation window, exploitability context and expiring exceptions. Pin production images by digest and retain the previous approved digest for recovery. The lab uses a version tag for accessibility; record its resolved digest before treating a result as reproducible.</p>
+  <h2>A restricted workload that can actually start</h2>
+  <p><a href="labs/workload.yaml">The complete workload</a> uses a non-root BusyBox process, an explicit writable <code>emptyDir</code>, no automatic API token and an HTTP readiness probe. Its security context includes:</p>
+  <pre><code>securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+# Per-container securityContext:
+#   allowPrivilegeEscalation: false
+#   readOnlyRootFilesystem: true
+#   capabilities:
+#     drop: ["ALL"]</code></pre>
+  <p>Pod-level identity and seccomp defaults differ from container-level capabilities and privilege-escalation controls. Test real application requirements: TLS caches, temporary files and log paths can fail under a read-only filesystem. Add narrowly scoped writable volumes instead of reverting to privileged mode. Sandboxed runtimes may strengthen workload separation but need compatible devices, performance measurements and operational support.</p>
+  <h2>Secrets: storage, delivery and revocation</h2>
+  <p>Kubernetes Secret base64 encoding is not encryption. Configure encryption at rest through the supported API-server/provider mechanism and protect KMS access independently. Verify key rotation includes rewriting existing objects when required; changing the write key does not automatically migrate every stored object. Keep the old decrypt capability until migration and restore testing prove it is safe to retire.</p>
+  <p>External secret delivery reduces copies only if the chosen integration actually avoids synchronization into Kubernetes Secrets. Mounted updates do not prove process reload. Record maximum credential age, file-refresh interval, application reload delay and downstream session lifetime. Never include Secret bodies or bearer tokens in audit exports; metadata-level evidence is usually enough for access investigations.</p>
+  <h2>Runbook: suspected workload compromise</h2>
+  <ol><li>Record Pod UID, image digest, node, ServiceAccount, deployment revision, first suspicious request and observable outbound destinations. Preserve existing logs and audit IDs in a restricted incident record.</li><li>Contain at the smallest reliable boundary: remove the serving route and block malicious egress with the enforcing network layer. Cordon alone does not stop the running Pod or isolate its traffic.</li><li>Determine whether host access or powerful credentials were available. If node compromise is plausible, isolate and replace that node through the incident procedure rather than trusting a container restart.</li><li>Revoke affected grants/trust and rotate exposed credentials, accounting for already-issued tokens. Roll forward to a patched, verified image or restore the last known-safe compatible release.</li><li>Stop automated redeployment of the vulnerable digest. Validate expected service behavior and verify the exploit path and out-of-scope credential action fail.</li><li>Restore controlled traffic, retain evidence, close temporary exceptions and add a regression control for the failed transition.</li></ol>
+  <p>Stop routine recovery if the scope expands from workload to node or signing/build infrastructure: the trust used to deploy the “fixed” workload may itself be compromised. Recovery ownership must include the affected identity or build system.</p>
+  <h2>Lab: prove the runtime restrictions</h2>
+  <p>Run <a href="labs/README.md#security">the runtime lab</a>. Verify non-root identity, a failed root-filesystem write, a successful write to the designated volume, absence of the automatic token and a Ready endpoint. Then test a privileged Pod with server-side dry-run: restricted PSA should reject it. A manifest review alone cannot show that your image tolerates the restrictions.</p>
+  <div class="hand"><h3>Rotation drill</h3><p>A mounted credential file changes but the application keeps failing authentication. What remains unproven?</p><details><summary>Answer</summary><p>The application or SDK may cache the old credential or connection. Check reload behavior and active sessions, then observe a new authenticated request with the replacement identity. File freshness is only one stage.</p></details></div>
+  <h2>Sources and version scope</h2><p>Reviewed 12 November 2026. Runtime exercises assume Linux and a compatible container runtime; provider-managed encryption has a different administration path.</p><ul>
+    <li><a href="https://kubernetes.io/docs/concepts/security/security-checklist/">Kubernetes security checklist</a></li>
+    <li><a href="https://kubernetes.io/docs/concepts/security/pod-security-standards/">Pod Security Standards</a></li>
+    <li><a href="https://kubernetes.io/docs/tasks/administer-cluster/encrypt-data/">Encryption at rest and key rotation</a></li>
+    <li><a href="https://kubernetes.io/docs/concepts/security/secrets-good-practices/">Secrets good practices</a></li>
+    <li><a href="https://kubernetes.io/docs/tasks/configure-pod-container/security-context/">Security context and runtime settings</a></li>
+  </ul>
+  <div id="quiz"></div><script type="application/json" id="quiz-data">[
+    {"q":"Does cordoning a compromised node isolate its running workloads?","options":["Yes, all network traffic stops","No, it primarily prevents new scheduling","Yes, tokens are revoked"],"answer":1,"why":"Running Pods and their traffic continue unless separately contained."},
+    {"q":"What does a valid image signature establish?","options":["A verified signing assertion under the configured trust policy","No exploitable vulnerabilities exist","The application has least-privilege IAM"],"answer":0,"why":"Provenance and vulnerability/risk assessment are different controls."},
+    {"q":"Which completes a mounted-secret rotation test?","options":["A new file timestamp only","A successful API apply","The application uses the new credential and the old path is retired as intended"],"answer":2,"why":"Delivery, reload, active sessions and revocation all affect effective rotation."}
+  ]</script>
+</main><script src="lessons.js"></script><script src="../../course.js"></script></body></html>
