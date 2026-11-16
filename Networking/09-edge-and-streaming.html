@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>9. Edge delivery and streaming | Networking fundamentals</title>
 <link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="visuals.css">
 </head>
 <body data-lesson="9">
 <main>
@@ -13,6 +14,23 @@
   <p class="lead">A catalog query and an audio segment may both use HTTPS, but they have different caching, capacity and privacy contracts.</p>
   <div class="goal"><h3>By the end you can...</h3>Separate media delivery from personalized APIs, and distinguish caching from global traffic steering.</div>
   <h2>Three workloads, three designs</h2>
+  <figure class="net-figure"><img src="diagrams/edge.svg" width="800" height="450" alt="Media cache hits return at the edge, cache misses reach the protected origin, and private playlist requests follow a separate API path."><figcaption>On a cache hit the origin does no delivery work for that object. Private playlists require a different cache and authorization policy.</figcaption></figure>
+  <section class="widget net-lab" data-walkthrough aria-labelledby="edge-walk">
+    <h2 id="edge-walk">A cold object becomes a warm hit</h2>
+    <p>Assume an immutable public audio segment, a stable cache key, sufficient freshness and no eviction. Private playlists do not use this policy.</p>
+    <ol class="net-flow">
+      <li><strong>First listener: cache miss</strong><code>Listener A → edge → protected origin</code><p>The object is absent. The edge fetches it through the origin access policy; cacheability and freshness rules govern storage.</p></li>
+      <li><strong>Second listener: cache hit</strong><code>Listener B → same edge → cached bytes</code><p>The matching key reuses the stored object while fresh. Another edge location might still be cold.</p></li>
+      <li><strong>Private playlist: bypass shared cache</strong><code>Listener B → authenticated API → own data</code><p>Identical URL paths do not mean identical authorization or responses. Never let another listener inherit a user's playlist through a shared key.</p></li>
+      <li><strong>Popular release: simultaneous misses</strong><code>Many cold locations → origin demand spike</code><p>Steady-state hit ratio hides cold-cache bursts. Evaluate request coalescing, shielding, origin limits and overload behavior where supported.</p></li>
+    </ol>
+  </section>
+  <h2>Anycast: one address, several possible sites</h2>
+  <figure class="net-figure"><img src="diagrams/anycast.svg" width="800" height="390" alt="The client keeps service IP 203.0.113.80. Routing initially selects site A; after A withdraws its route, traffic can converge to site B advertising the same prefix."><figcaption>Same address does not imply the same machine, site or connection state.</figcaption></figure>
+  <p>At an internet edge, multiple sites can advertise reachability to the same IP prefix with <strong>BGP</strong>, the routing protocol used between autonomous systems (independently administered networks). Routers choose routes using policy and path attributes. This can bring a client to a nearby edge in routing terms, but does not guarantee the geographically closest or least-loaded site.</p>
+  <p><strong>Anycast is not a cache or an application health check.</strong> It selects a network path. A service needs health-aware advertisement/withdrawal and sufficient capacity at surviving sites. Routing changes can send a later packet to another site; long-lived connections need an explicit continuity strategy and may reset. DNS steering instead changes the address discovered by future lookups. Neither mechanism copies live connection state.</p>
+  <div class="hand"><h3>Explain it to your teammate</h3><p>A client keeps the same destination IP after an edge site fails. Can traffic reach another site? Is its existing TCP session guaranteed to survive?</p><details><summary>Show answer</summary><p>Yes, an anycast route can converge toward another site advertising the same prefix. No, TCP survival is not guaranteed: the other site may lack connection state. Distinguish routing convergence, application readiness and client recovery.</p></details></div>
+  <p>Protocol reading: <a href="https://www.rfc-editor.org/rfc/rfc4786">RFC 4786: operation of anycast services</a> and <a href="https://www.rfc-editor.org/rfc/rfc4271">RFC 4271: BGP-4</a>.</p>
   <ul>
     <li><strong>Versioned media segments/artwork:</strong> cache immutable content near listeners; support range requests where required. Restrict access with a validated entitlement/token design.</li>
     <li><strong>Private playlists and account responses:</strong> avoid shared caching by default. Deliberate personalized caching requires correct cache isolation and explicit policy.</li>
@@ -33,6 +51,7 @@ Listener -> API entry point -> authorized playlist service</code></pre>
 </main>
 <script type="application/json" id="quiz-data">
 [
+ {"q":"After anycast routing converges to another site, which statement is correct?","options":["The destination IP must change","The geographically closest site is guaranteed","The IP can stay the same, but the TCP connection may fail"],"answer":2,"why":"Several sites advertise reachability to the same prefix. Routing changes do not automatically transfer connection state."},
  {"q":"Which should normally bypass shared caching?","options":["Versioned public artwork","An immutable public asset","A user's private playlist response"],"answer":2,"why":"Personalized data needs explicit isolation; shared caching is unsafe by default."},
  {"q":"Does Global Accelerator cache audio objects?","options":["Yes","No","Only with a low DNS TTL"],"answer":1,"why":"It accelerates supported network paths; it is not a CDN object cache."},
  {"q":"A 95% byte hit ratio on 16 Gbit/s leaves how much simplified origin payload?","options":["0.8 Gbit/s","8 Gbit/s","15.2 Gbit/s"],"answer":0,"why":"16 x 0.05 = 0.8 Gbit/s before overhead and bursts."}
@@ -40,5 +59,6 @@ Listener -> API entry point -> authorized playlist service</code></pre>
 </script>
 <script src="lessons.js"></script>
 <script src="../course.js"></script>
+<script src="visuals.js"></script>
 </body>
 </html>

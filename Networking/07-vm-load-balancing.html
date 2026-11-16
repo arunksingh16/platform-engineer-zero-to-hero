@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>7. Load balancing a fleet of VMs | Networking fundamentals</title>
 <link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="visuals.css">
 </head>
 <body data-lesson="7">
 <main>
@@ -38,6 +39,16 @@ backend api_vms
     server api3 10.20.1.13:8080 check</code></pre>
   <p>The loopback bind limits the frontend to local clients. Merge this into a version-appropriate HAProxy configuration with global/default timeout settings; validate with <code>haproxy -c -f /path/to/haproxy.cfg</code> before reload. This is a configuration illustration, not a runnable standalone deployment.</p>
   <h2>How does the frontend survive?</h2>
+  <section class="widget net-lab" data-walkthrough aria-labelledby="proxy-walk">
+    <h2 id="proxy-walk">Kill the proxy, not just a backend</h2>
+    <p>Assume a redundant, health-aware frontend sends connections to two proxy VMs in separate failure domains. The arrows below are connection paths, not automatic state replication.</p>
+    <ol class="net-flow">
+      <li><strong>Healthy path</strong><code>Client → frontend → proxy A/B → app fleet</code><p>Both proxies have current configuration and certificates. Either survivor must have enough capacity for the declared failure case.</p></li>
+      <li><strong>Proxy A fails</strong><code>Existing connection → A ✕</code><p>Connections terminating on A are interrupted. A copy of its configuration on B does not contain live TCP/TLS/application state.</p></li>
+      <li><strong>Health detection removes A</strong><code>New connection → frontend → B</code><p>Until detection and steering converge, new attempts can still fail. Measure this window rather than assuming instant failover.</p></li>
+      <li><strong>Client reconnects to B</strong><code>Reconnect → authenticate → resume</code><p>The client needs deadlines, retry limits and safe resume semantics. Prove the outcome from the client and watch B's saturation.</p></li>
+    </ol>
+  </section>
   <ul>
     <li><strong>Cloud VMs:</strong> prefer a managed LB directly to application VMs when it meets the requirements. If custom proxies are necessary, a managed LB can front multiple proxy VMs across failure domains.</li>
     <li><strong>Controlled on-premises network:</strong> two proxies may share a floating VIP with Keepalived/VRRP where the network supports it. Prevent split-brain and test failover. Existing connection state does not automatically transfer.</li>
@@ -58,5 +69,6 @@ backend api_vms
 </script>
 <script src="lessons.js"></script>
 <script src="../course.js"></script>
+<script src="visuals.js"></script>
 </body>
 </html>

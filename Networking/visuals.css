@@ -1,0 +1,33 @@
+/* Networking-only, progressively enhanced diagrams. */
+.net-lab { margin: 28px 0; }
+.net-lab h2 { margin-top: 0; }
+.net-flow { list-style: none; padding: 0; display: grid; gap: 12px; counter-reset: hop; }
+.net-flow li { position: relative; padding: 14px 16px 14px 54px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--card); max-width: none; counter-increment: hop; }
+.net-flow li::before { content: counter(hop); position: absolute; left: 14px; top: 15px; width: 26px; height: 26px; border-radius: 50%; background: var(--code); text-align: center; font: 700 16px/26px var(--mono); }
+.net-flow li + li::after { content: '↓'; position: absolute; left: 22px; top: -20px; color: var(--signal); font-weight: bold; }
+.net-flow strong, .net-flow code { display: block; }
+.net-flow code { margin: 6px 0; font-size: .8rem; }
+.net-flow p { margin: 5px 0 0; font-size: .95rem; }
+.net-flow .is-current { border: 2px solid var(--signal); background: var(--signal-soft); padding: 13px 15px 13px 53px; }
+.net-flow .is-current::before { background: var(--signal); color: var(--on-signal); }
+.net-flow .is-current strong::after { content: ' ← inspecting'; font: 500 .75rem var(--mono); color: var(--signal); }
+.net-flow .is-current { animation: net-arrive .4s ease-out; }
+@keyframes net-arrive { from { transform: translateY(-4px); } to { transform: translateY(0); } }
+.net-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.net-status { font: .85rem/1.5 var(--mono); min-height: 2.5em; }
+.net-figure { margin: 24px 0; }
+.net-figure img { width: 100%; height: auto; display: block; border-radius: 12px; }
+.net-figure figcaption { margin-top: 8px; font-size: .85rem; color: var(--muted); }
+.net-bits { display: flex; gap: 2px; margin: 14px 0; }
+.net-bits span { flex: 1; height: 24px; border: 1px solid var(--line-strong); background: var(--note-soft); }
+.net-bits .host-bit { background: var(--signal-fill); }
+.net-readout { padding: 12px; border-left: 3px solid var(--signal); background: var(--signal-soft); }
+.net-meter { width: 100%; height: 24px; accent-color: var(--signal); }
+@media (min-width: 650px) {
+  .net-flow { grid-template-columns: 1fr 1fr; }
+  .net-flow li + li::after { content: none; }
+}
+@media print {
+  .net-controls { display: none; }
+  .net-flow li { break-inside: avoid; }
+}

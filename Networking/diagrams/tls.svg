@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="410" viewBox="0 0 800 410" role="img" aria-labelledby="title desc">
+  <title id="title">A reverse proxy owns two independent connections</title>
+  <desc id="desc">Client to proxy TCP and TLS handshake on the first leg. Proxy to backend TCP and TLS handshake on the second leg. The proxy decrypts HTTP and authenticates the backend separately. Connections may be pooled.</desc>
+  <rect width="800" height="410" rx="16" fill="#102a40"/>
+  <g font-family="system-ui,sans-serif" fill="#e3edf5" font-size="17">
+    <text x="30" y="38" font-size="21" font-weight="700">TLS termination + re-encryption: two trust decisions</text>
+    <g text-anchor="middle"><text x="100" y="80">Client</text><text x="400" y="80">L7 proxy</text><text x="700" y="80">Backend</text></g>
+    <g stroke="#6a8a9e" stroke-dasharray="5 5"><path d="M100 95 V350"/><path d="M400 95 V350"/><path d="M700 95 V350"/></g>
+    <g stroke="#67d8c3" stroke-width="2"><path d="M100 125 H400 l-10 -6 m10 6 l-10 6"/><path d="M400 175 H100 l10 -6 m-10 6 l10 6"/><path d="M100 225 H400 l-10 -6 m10 6 l-10 6"/><path d="M400 275 H700 l-10 -6 m10 6 l-10 6"/><path d="M700 325 H400 l10 -6 m-10 6 l10 6"/></g>
+    <g font-size="15" text-anchor="middle"><text x="250" y="116">TCP, then TLS ClientHello</text><text x="250" y="166">Proxy certificate + TLS handshake</text><text x="250" y="216">Encrypted HTTP request</text><text x="550" y="266">Separate TCP + TLS, then HTTP</text><text x="550" y="316">Backend response</text></g>
+    <text x="430" y="145" fill="#67d8c3">HTTP is visible here.</text><text x="430" y="171" fill="#b5c8d6">Validate backend name + trust.</text><text x="430" y="197" fill="#b5c8d6">A client certificate is not</text><text x="430" y="220" fill="#b5c8d6">automatically forwarded as mTLS.</text>
+    <text x="30" y="375" font-size="16">Conceptual phases, not individual packets or a scale timing diagram.</text>
+    <text x="30" y="398" font-size="15" fill="#b5c8d6">Pooled backend connections may already exist before this request arrives.</text>
+  </g>
+</svg>

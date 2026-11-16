@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>12. Design a streaming platform | Networking fundamentals</title>
 <link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="visuals.css">
 </head>
 <body data-lesson="12">
 <main>
@@ -13,6 +14,17 @@
   <p class="lead">Turn the vocabulary into a reviewable design. The goal is not the most boxes: it is a path whose capacity, trust boundaries and failure behavior you can explain.</p>
   <div class="goal"><h3>Your design brief</h3>Serve 100,000 concurrent 160 kbit/s listeners, 2,400 API requests/s at peak and private playlists. Survive one zone failure without waiting for new VMs. Prepare for a second region, but do not claim regional recovery until data replication and failover are tested.</div>
   <h2>Separate delivery and control</h2>
+  <figure class="net-figure"><img src="diagrams/edge.svg" width="800" height="450" alt="Separate DNS discovery, cacheable media delivery and private API traffic. Cache misses reach a protected origin; API requests reach private VMs and data."><figcaption>Your review drawing: annotate every arrow with protocol, identity, timeout, capacity, return path and owner.</figcaption></figure>
+  <section class="widget net-lab" data-walkthrough aria-labelledby="review-walk">
+    <h2 id="review-walk">Lead your first network design review</h2>
+    <p>Pause at each gate and explain your answer aloud before continuing. These are review gates, not a sequence of packet hops.</p>
+    <ol class="net-flow">
+      <li><strong>Trace one request and its reply</strong><code>Name → address → route → connection → response</code><p>Identify resolver, entry point, proxy connections, TLS boundaries, private dependencies and return routes. Include IPv6 if advertised.</p></li>
+      <li><strong>Separate data classes</strong><code>Public media ≠ private playlist ≠ live stream</code><p>State which responses may share cache keys, who authorizes access and how the origin prevents bypass. Specify stream reconnect and resume behavior.</p></li>
+      <li><strong>Remove a failure domain on paper</strong><code>2400 API rps; 16 Gbit/s media payload</code><p>Prove ready surviving capacity, then account for cold caches, retries, NAT/connection limits and dependencies. Region steering alone does not recover data.</p></li>
+      <li><strong>Bring client evidence to the review</strong><code>Failure injection → timing → SLO → recovery</code><p>Name the owner, test, expected outcome and rollback for each boundary. Measure interruption during zone loss, proxy loss, certificate rotation and a large transfer over a tunnel.</p></li>
+    </ol>
+  </section>
   <pre><code>Media: listener -> HTTP edge/cache -> protected media origin
 APIs:  listener -> regional HTTP entry -> private API VMs -> private data
 Ops:   trusted admin path -> management endpoints (not public SSH)
@@ -59,5 +71,6 @@ DNS:   public names + private zones/forwarding for internal dependencies</code><
 </script>
 <script src="lessons.js"></script>
 <script src="../course.js"></script>
+<script src="visuals.js"></script>
 </body>
 </html>

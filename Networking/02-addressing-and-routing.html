@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>2. Addresses, subnets and routes | Networking fundamentals</title>
 <link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="visuals.css">
 </head>
 <body data-lesson="2">
 <main>
@@ -15,6 +16,25 @@
   <h2>CIDR without mystery</h2>
   <p>IPv4 has 32 bits. A <code>/24</code> fixes 24 network bits, leaving 8 address bits: <code>2^(32 - 24) = 256</code> total addresses. <code>10.20.4.0/24</code> spans <code>10.20.4.0</code> through <code>10.20.4.255</code>. A <code>/26</code> has 64, not 26, addresses.</p>
   <p>For ordinary IPv4 subnets, AWS and Azure each reserve five addresses; a /26 therefore has 59 assignable addresses before workload-specific consumption. Account separately for load balancers, private endpoints, node growth, Pod addressing modes and upgrade surge. Special subnet types and services have additional rules.</p>
+  <section class="widget net-lab" aria-labelledby="subnet-lab">
+    <h2 id="subnet-lab">Give the host bits back</h2>
+    <p>Fit 45 VM addresses + 16 surge addresses. Move from /26 to /25: does one fewer network bit give one more address, or twice as many?</p>
+    <label for="net-prefix">Prefix length (10.20.4.0, /24–/28)</label>
+    <input id="net-prefix" type="range" min="24" max="28" value="26">
+    <div id="net-bits" class="net-bits" aria-hidden="true"></div>
+    <p class="muted">32 boxes: pale = fixed network bits; teal = variable host bits.</p>
+    <p id="net-subnet-result" class="net-readout" role="status">/26 leaves 6 host bits: 64 total addresses, 59 assignable in an ordinary AWS/Azure IPv4 subnet. The 61-address budget does not fit.</p>
+  </section>
+  <section class="widget net-lab" data-walkthrough aria-labelledby="route-walk">
+    <h2 id="route-walk">A route lookup is a specificity contest</h2>
+    <p>Destination: <code>10.30.8.7</code>. These are candidate routes, not four routers visited in sequence.</p>
+    <ol class="net-flow">
+      <li><strong>/0 matches everything</strong><code>0.0.0.0/0 → egress</code><p>Keep as a fallback. “Default” does not mean preferred when a more specific match exists.</p></li>
+      <li><strong>/16 matches the network</strong><code>10.30.0.0/16 → peer</code><p>Sixteen fixed bits match. This beats the default route.</p></li>
+      <li><strong>/24 wins this lookup</strong><code>10.30.8.0/24 → inspection</code><p>Twenty-four fixed bits match. Send to the inspection appliance, even if the broader peer path looks simpler.</p></li>
+      <li><strong>A selected route can still fail</strong><code>Route selection ≠ health check</code><p>If the appliance drops traffic while the route remains installed, do not assume fallback to /16. Verify forwarding, policy and the return path.</p></li>
+    </ol>
+  </section>
   <h2>The most specific matching route wins</h2>
   <table>
     <caption>An illustrative route table</caption>
@@ -41,5 +61,6 @@
 </script>
 <script src="lessons.js"></script>
 <script src="../course.js"></script>
+<script src="visuals.js"></script>
 </body>
 </html>

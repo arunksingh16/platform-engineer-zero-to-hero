@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>11. Debug the request path | Networking fundamentals</title>
 <link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="visuals.css">
 </head>
 <body data-lesson="11">
 <main>
@@ -24,6 +25,30 @@
     <tr><td>Application</td><td>Trace, dependency timings, auth and readiness logs</td><td>Network symptom or application overload?</td></tr>
   </table>
   <h2>Small, scoped probes</h2>
+  <section class="widget net-lab" data-walkthrough aria-labelledby="incident-walk">
+    <h2 id="incident-walk">Incident replay: the SYN never gets an answer</h2>
+    <p>A synthetic capture from a failing client shows repeated SYNs. Walk from observation to a narrower hypothesis; do not jump straight to “the firewall.”</p>
+    <ol class="net-flow">
+      <li><strong>Name resolves to the expected address</strong><code>A api.music.example = 10.30.8.7</code><p>This proves an answer was obtained, not that a SYN can reach the destination. Confirm this is the intended DNS view.</p></li>
+      <li><strong>Client sends, then retransmits</strong><code>0s SYN seq=100; 1s SYN seq=100; 3s SYN seq=100</code><p>Illustrative timings, not universal TCP constants. No SYN-ACK was observed here. Possibilities include forward drop, return drop, server trouble or exhausted state.</p></li>
+      <li><strong>Compare server-side evidence</strong><code>Server sees SYN and sends SYN-ACK</code><p>In this scenario, the forward packet arrived and the listener replied. Now investigate the return path and intermediate state rather than changing DNS.</p></li>
+      <li><strong>Find the first missing boundary</strong><code>Return filter drops destination port 53000</code><p>A stateless return rule allowed destination 443 only. Correct the scoped rule, rerun the same client probe and verify transport, TLS and the actual request.</p></li>
+    </ol>
+  </section>
+  <section class="widget net-lab" aria-labelledby="mtu-lab">
+    <h2 id="mtu-lab">Why the small probe lies</h2>
+    <p>Model: IPv4 with Don't Fragment (DF), 1500-byte underlay and a fixed 100-byte tunnel overhead. Effective inner MTU is 1400. Classic Path MTU Discovery (PMTUD) needs ICMP feedback; packetization-layer discovery can recover differently.</p>
+    <label for="net-packet-size">Inner IP packet size, including IP header (bytes)</label>
+    <input id="net-packet-size" type="range" min="1200" max="1500" step="20" value="1500">
+    <div class="row"><input id="net-icmp" type="checkbox"><label for="net-icmp">Allow required ICMP fragmentation-needed feedback</label></div>
+    <label for="net-packet-meter">Inner packet size relative to 1500 bytes</label>
+    <meter id="net-packet-meter" class="net-meter" min="0" max="1500" high="1400" optimum="1200" value="1500">1500 bytes</meter>
+    <p id="net-mtu-result" class="net-readout" role="status">A 1500-byte inner packet plus 100 bytes of overhead does not fit. With DF set and feedback blocked, large transfers may stall while small probes succeed.</p>
+  </section>
+  <h2>MTU, MSS and packet evidence</h2>
+  <p><strong>MTU</strong> limits the IP packet on a link; <strong>TCP MSS</strong> describes TCP data bytes, excluding IP/TCP headers. At inner MTU 1400, plain IPv4 (20-byte header) + TCP (20-byte header) leaves 1360 data bytes before options. Tunnel overhead varies. IPv6 routers do not fragment forwarded packets; required ICMPv6 Packet Too Big messages and sender behavior matter.</p>
+  <p>A reset (RST) is different from silence: it shows a TCP-speaking host or intermediary actively rejected or reset the connection, not necessarily the intended application. An HTTP 403 means some HTTP component replied; identify which one before concluding the backend denied you. Intermediate traceroute hops can rate-limit or ignore probes while forwarding application traffic normally.</p>
+  <p>Protocol reading: <a href="https://www.rfc-editor.org/rfc/rfc1191">IPv4 Path MTU Discovery</a>, <a href="https://www.rfc-editor.org/rfc/rfc8201">IPv6 Path MTU Discovery</a> and <a href="https://www.rfc-editor.org/rfc/rfc9293">TCP specification</a>.</p>
   <p>These are optional examples for systems you are authorized to test, using tools installed separately. <code>api.music.example</code> is a placeholder, not a working service.</p>
   <pre><code>dig api.music.example A
 dig api.music.example AAAA
@@ -46,6 +71,7 @@ ip route get 10.20.1.11</code></pre>
 </main>
 <script type="application/json" id="quiz-data">
 [
+ {"q":"An IPv4 tunnel adds 100 bytes over a 1500-byte underlay. What inner IP size fits this model?","options":["1500 bytes","1400 bytes","1600 bytes"],"answer":1,"why":"1500 minus 100 leaves a 1400-byte inner IP packet. TCP data must also leave room for inner IP/TCP headers."},
  {"q":"A TCP connect timeout proves...","options":["The application rejected your credentials","Only that the connection did not complete in time; investigate path and listener","DNS is always broken"],"answer":1,"why":"A timeout is evidence of a stage failure, not proof of a single root cause."},
  {"q":"curl time_appconnect is normally...","options":["Cumulative time to complete TLS from request start","Only backend processing time","A DNS TTL"],"answer":0,"why":"These curl timing markers are cumulative, so compare differences carefully."},
  {"q":"Why can small requests work while large responses stall across a tunnel?","options":["DNS never supports large files","TLS certificates are too small","MTU/Path MTU Discovery problems can affect larger packets"],"answer":2,"why":"Encapsulation reduces effective MTU; blocked signaling can create a packet-size-dependent black hole."}
@@ -53,5 +79,6 @@ ip route get 10.20.1.11</code></pre>
 </script>
 <script src="lessons.js"></script>
 <script src="../course.js"></script>
+<script src="visuals.js"></script>
 </body>
 </html>

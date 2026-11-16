@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>3. DNS and service discovery | Networking fundamentals</title>
 <link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="visuals.css">
 </head>
 <body data-lesson="3">
 <main>
@@ -19,6 +20,26 @@
 private data name -> private IP (inside the intended DNS view)</code></pre>
   <p>Use documented endpoint names rather than pinning a managed proxy's observed IP. Choose an explicitly supported static-IP service when an allowlist requires it. DNS rotation is not per-request balancing: one client can reuse one connection for thousands of requests.</p>
   <h2>Map the concept</h2>
+  <section class="widget net-lab" data-walkthrough aria-labelledby="dns-walk">
+    <h2 id="dns-walk">A cold recursive lookup</h2>
+    <p>Conceptual lookup for <code>api.example.com</code>, with empty caches and no CNAME. The recursive resolver does the walking; the application does not contact each authority.</p>
+    <ol class="net-flow">
+      <li><strong>Application → recursive resolver</strong><p>The stub asks for an A or AAAA record. A usable cache entry could end the lookup here.</p></li>
+      <li><strong>Resolver → root → .com authority</strong><p>The root refers the resolver to .com nameservers. The .com authority refers it to example.com nameservers; neither needs to know the API address.</p></li>
+      <li><strong>Resolver → example.com authority</strong><p>The authority supplies the record and TTL. The resolver caches the result and returns the answer.</p></li>
+      <li><strong>Client → returned address</strong><p>The client opens an application connection. DNS is no longer in the packet path; routes, policy, a listener and valid TLS are still needed.</p></li>
+    </ol>
+  </section>
+  <section class="widget net-lab" aria-labelledby="dns-clock">
+    <h2 id="dns-clock">Scrub the failover clock</h2>
+    <p>At t=0 the resolver caches A for 60 seconds. A fails and the authoritative answer changes to B at t=10. Assume compliant caching, no prefetch/serve-stale and no detection delay.</p>
+    <label for="net-dns-time">Time since initial lookup (seconds)</label>
+    <input id="net-dns-time" type="range" min="0" max="90" value="10">
+    <label for="net-dns-ttl">Remaining original cache TTL</label>
+    <progress id="net-dns-ttl" class="net-meter" max="60" value="50">50 seconds</progress>
+    <p id="net-dns-result" class="net-readout" role="status">At t=10, the authority says B but the resolver can keep A for another 50 seconds. Existing connections do not migrate.</p>
+  </section>
+  <div class="callout"><h3>Different DNS failures, different investigations</h3><p><strong>NXDOMAIN:</strong> the name does not exist in this DNS view. <strong>SERVFAIL:</strong> resolution failed, for example because an upstream is unreachable or DNSSEC validation failed. <strong>Timeout:</strong> no usable reply arrived in time. Record which resolver answered before changing records. DNSSEC authenticates DNS data; it does not encrypt queries or authenticate your HTTP application.</p></div>
   <table>
     <caption>Names and discovery across environments</caption>
     <tr><th scope="col">Need</th><th scope="col">AWS</th><th scope="col">Azure</th><th scope="col">VM fleet</th></tr>
@@ -29,10 +50,12 @@ private data name -> private IP (inside the intended DNS view)</code></pre>
   <div class="callout"><h3>Discovery is not reachability</h3>DNS or a service registry tells you where to try. Routes, policy, listener health and application authorization determine whether that attempt works. DNS health checks also need an appropriate vantage point; public probes cannot automatically test arbitrary private addresses.</div>
   <div class="hand"><h3>Do it by hand</h3><p>A resolver cached region A at t=0 with TTL 60 seconds. A fails at t=10 and the authoritative answer changes immediately. When can this cached answer expire? What about a connection established at t=5?</p><details><summary>Show answer</summary><p>At t=60: up to 50 seconds after the failure in this simplified compliant-cache example. Health detection would add delay in reality. The existing connection is independent of DNS TTL; it needs to fail, close or be re-established. TTL is not an end-to-end recovery guarantee.</p></details></div>
   <p>Primary reading: <a href="https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/routing-policy.html">Route 53 routing policies</a>, <a href="https://learn.microsoft.com/en-us/azure/traffic-manager/traffic-manager-overview">Traffic Manager</a>, <a href="https://www.rfc-editor.org/rfc/rfc2308">negative caching</a>.</p>
+  <p>Protocol reading: <a href="https://www.rfc-editor.org/rfc/rfc1034">DNS concepts and facilities</a> and <a href="https://www.rfc-editor.org/rfc/rfc4033">DNSSEC introduction and requirements</a>.</p>
   <section id="quiz"></section>
 </main>
 <script type="application/json" id="quiz-data">
 [
+ {"q":"A resolver cached A at t=0 with TTL 60. The authority changes to B at t=10. With ordinary caching, when does the original entry expire?","options":["t=10","t=70","t=60"],"answer":2,"why":"TTL counts from when that answer was cached; changing the authority does not invalidate the cached copy."},
  {"q":"Does DNS failover migrate an established TCP connection?","options":["Yes, at TTL expiry","No","Only with a CNAME"],"answer":1,"why":"DNS affects future resolution, not already established connections."},
  {"q":"Azure DNS and Traffic Manager have which distinction?","options":["Both proxy every HTTP request","DNS hosts zones; Traffic Manager adds DNS-based traffic steering","Traffic Manager is a regional HTTP proxy"],"answer":1,"why":"Traffic Manager answers DNS queries according to policy and endpoint health; it is not in the application data path."},
  {"q":"A private name resolves correctly, but the connection times out. What next?","options":["Assume DNS proves connectivity","Disable TLS","Check routes, policies and the listener from that client network"],"answer":2,"why":"A correct address alone does not establish a working data path."}
@@ -40,5 +63,6 @@ private data name -> private IP (inside the intended DNS view)</code></pre>
 </script>
 <script src="lessons.js"></script>
 <script src="../course.js"></script>
+<script src="visuals.js"></script>
 </body>
 </html>

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="390" viewBox="0 0 800 390" role="img" aria-labelledby="title desc">
+  <title id="title">Anycast changes the route, not the destination address</title>
+  <desc id="desc">Two sites advertise the same prefix containing service IP 203.0.113.80. Routing initially selects A. After withdrawal of A's route, traffic can converge to B. Existing TCP state may not be present at B.</desc>
+  <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10" fill="#67d8c3"/></marker></defs>
+  <rect width="800" height="390" rx="16" fill="#102a40"/>
+  <g font-family="system-ui,sans-serif" fill="#e3edf5">
+    <text x="30" y="38" font-size="21" font-weight="700">Anycast: same service IP, different possible edge sites</text>
+    <g fill="#17354c" stroke="#6a8a9e"><rect x="30" y="140" width="175" height="95" rx="10"/><rect x="300" y="140" width="175" height="95" rx="10"/><rect x="575" y="75" width="195" height="85" rx="10"/><rect x="575" y="235" width="195" height="85" rx="10"/></g>
+    <g text-anchor="middle" font-size="18"><text x="117" y="171">Client</text><text x="387" y="171">Routing policy</text><text x="672" y="104">Site A</text><text x="672" y="264">Site B</text></g>
+    <g text-anchor="middle" font-size="15" fill="#b5c8d6"><text x="117" y="200">to 203.0.113.80</text><text x="387" y="200">Selects a path</text><text x="672" y="136">203.0.113.80</text><text x="672" y="296">203.0.113.80</text></g>
+    <g fill="none" stroke="#67d8c3" stroke-width="2" marker-end="url(#arrow)"><path d="M205 188 H290"/><path d="M475 170 L565 118"/><path d="M475 209 L565 277" stroke-dasharray="6 5"/></g>
+    <text x="448" y="105" fill="#67d8c3" font-size="15">Before</text><text x="430" y="303" fill="#67d8c3" font-size="15">After withdrawal</text>
+    <text x="30" y="351" font-size="16">Both sites advertise the same covering prefix. Diagram uses documentation addresses.</text>
+    <text x="30" y="376" font-size="15" fill="#b5c8d6">Convergence takes time. The new site may not have the old site's connection state.</text>
+  </g>
+</svg>

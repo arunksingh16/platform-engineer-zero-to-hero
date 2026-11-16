@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>8. Private connectivity and egress | Networking fundamentals</title>
 <link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="visuals.css">
 </head>
 <body data-lesson="8">
 <main>
@@ -32,6 +33,17 @@
   <p>Peering is not automatically transitive: A-to-B and B-to-C do not imply A-to-C. Private endpoints expose a service rather than merging whole networks. DNS, endpoint policy, security rules and service authorization remain necessary. Creating a private endpoint does not universally disable the public endpoint; explicitly configure and test public-access restrictions.</p>
   <p>Dedicated connectivity is not synonymous with end-to-end encryption. Choose IPsec, supported link encryption, and/or application TLS according to the threat model. Build diverse redundant paths and exercise failover; two tunnels sharing one upstream failure domain may not satisfy the requirement.</p>
   <h2>Egress needs a budget</h2>
+  <section class="widget net-lab" data-walkthrough aria-labelledby="nat-walk">
+    <h2 id="nat-walk">Inspect the NAT translation ledger</h2>
+    <p>Illustrative TCP egress. Public addresses below are reserved documentation ranges. Actual allocated ports and mapping lifetimes are implementation-specific.</p>
+    <ol class="net-flow">
+      <li><strong>Private client opens a connection</strong><code>10.20.4.10:53000 → 198.51.100.20:443</code><p>The route sends the outbound packet toward NAT. Routing and firewall checks are separate from translation.</p></li>
+      <li><strong>SNAT records a mapping</strong><code>203.0.113.5:62001 → 198.51.100.20:443</code><p>The source becomes a public address and allocated port. The gateway tracks enough state to associate replies with the private client.</p></li>
+      <li><strong>The server replies</strong><code>198.51.100.20:443 → 203.0.113.5:62001</code><p>The remote server sees the translated source. A reply must reach a gateway with the relevant translation state.</p></li>
+      <li><strong>Reverse translation delivers the reply</strong><code>198.51.100.20:443 → 10.20.4.10:53000</code><p>The gateway restores the private destination. An expired mapping or broken return route can still drop it. Translation is not application identity.</p></li>
+    </ol>
+  </section>
+  <div class="hand"><h3>Read the reverse five-tuple</h3><p>An outbound TCP rule permits destination port 443. For a stateless return filter, is the reply's destination port 443 or 53000 before any translation on the client-side link?</p><details><summary>Show answer</summary><p>53000. Source and destination roles reverse: server source port 443, client destination port 53000. Scope return rules to the intended address ranges and actual ephemeral-port policy. Stateful tracking can recognize replies; stateless filters require explicit return allowance.</p></details></div>
   <p>SNAT uses a finite pool of source addresses and ports. Many short connections to the same destination can exhaust mappings before CPU saturates. Pool connections where appropriate, monitor allocation/drop signals, and size using the actual provider's destination and timeout rules. A NAT gateway provides egress, not an inbound application frontend.</p>
   <div class="hand"><h3>Do it by hand</h3><p>A playlist service resolves a database private name correctly but cannot connect. List five checks before changing DNS.</p><details><summary>Show answer</summary><p>Check forward and return routes, effective security rules, endpoint approval/service exposure, listener port and health, and application identity/authorization. Determine first whether the failure is a network timeout, refused connection, TLS error or authenticated denial; they point to different layers.</p></details></div>
   <p>Primary reading: <a href="https://docs.aws.amazon.com/vpc/latest/userguide/vpc-security-groups.html">AWS security groups</a>, <a href="https://docs.aws.amazon.com/vpc/latest/privatelink/what-is-privatelink.html">AWS PrivateLink</a>, <a href="https://learn.microsoft.com/en-us/azure/private-link/private-endpoint-overview">Azure private endpoints</a>, <a href="https://learn.microsoft.com/en-us/azure/nat-gateway/nat-overview">Azure NAT Gateway</a>.</p>
@@ -39,6 +51,7 @@
 </main>
 <script type="application/json" id="quiz-data">
 [
+ {"q":"A client connects from TCP port 53000 to server port 443. On the client-side link, the reply's destination port is...","options":["443","53000","53"],"answer":1,"why":"Reply source and destination roles reverse. Stateless filters must permit the appropriate return destination ports."},
  {"q":"Which comparison is correct?","options":["AWS NACLs and Azure NSGs are both stateless","AWS security groups and Azure NSGs are stateful","NAT authenticates application users"],"answer":1,"why":"NSGs resemble security groups in statefulness, not stateless NACLs."},
  {"q":"A private endpoint always disables public service access.","options":["True","True only for HTTPS","False; configure and verify the service's public-access policy"],"answer":2,"why":"Private reachability and public-access restrictions are separate controls."},
  {"q":"A-to-B and B-to-C peering imply...","options":["No automatic A-to-C transit","Automatic full mesh","Automatic encryption"],"answer":0,"why":"Use an explicit supported transit design where transit is needed."}
@@ -46,5 +59,6 @@
 </script>
 <script src="lessons.js"></script>
 <script src="../course.js"></script>
+<script src="visuals.js"></script>
 </body>
 </html>

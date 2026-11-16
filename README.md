@@ -132,7 +132,10 @@ All site links and assets are relative so GitHub Pages project subpaths work.
 The [Networking fundamentals track](Networking/index.html) starts before Kubernetes
 and maps design requirements to AWS, Azure and self-managed Linux VMs. Its fictional
 streaming-platform scenarios are not claims about Spotify's internal architecture.
-Each lesson includes an exercise, quiz and primary references; the
+Each lesson includes a visual step-through walkthrough, an exercise, quiz and primary references.
+Packet-envelope, TLS-leg and edge-path SVGs accompany interactive subnet, DNS-cache
+and tunnel-MTU models. Controls work with a keyboard; reduced-motion users can
+step manually, and explanations remain readable without JavaScript. The
 [capstone](Networking/12-design-review.html) brings the designs together.
 Service mappings describe roles, not exact feature parity. Check current SKU,
 region, protocol support, failure behavior and pricing before deployment.

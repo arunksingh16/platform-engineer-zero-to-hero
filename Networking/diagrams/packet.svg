@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="410" viewBox="0 0 800 410" role="img" aria-labelledby="title desc">
+  <title id="title">One routed packet, two different Ethernet frames</title>
+  <desc id="desc">A client sends an IP packet for a remote server to its local gateway's MAC address. The router replaces the link header, decrements IP TTL and forwards toward the server. IP addresses stay the same in this example without NAT.</desc>
+  <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10" fill="#67d8c3"/></marker></defs>
+  <rect width="800" height="410" rx="16" fill="#102a40"/>
+  <g font-family="system-ui,sans-serif" fill="#e3edf5">
+    <text x="30" y="38" font-size="21" font-weight="700">The IP destination is not the next-hop MAC</text>
+    <g fill="#17354c" stroke="#6a8a9e"><rect x="30" y="75" width="190" height="80" rx="10"/><rect x="305" y="75" width="190" height="80" rx="10"/><rect x="580" y="75" width="190" height="80" rx="10"/></g>
+    <g text-anchor="middle" font-size="18"><text x="125" y="105">Client</text><text x="400" y="105">Router</text><text x="675" y="105">Server</text></g>
+    <g text-anchor="middle" font-size="15" fill="#b5c8d6"><text x="125" y="134">10.20.4.10</text><text x="400" y="134">Gateway: 10.20.4.1</text><text x="675" y="134">10.30.8.7</text></g>
+    <g stroke="#67d8c3" stroke-width="3" marker-end="url(#arrow)"><path d="M225 115 H295"/><path d="M500 115 H570"/></g>
+    <g fill="#123d40" stroke="#50bbaa"><rect x="30" y="190" width="355" height="142" rx="10"/><rect x="415" y="190" width="355" height="142" rx="10"/></g>
+    <g font-size="16"><text x="48" y="218" fill="#67d8c3">LINK 1: client → gateway</text><text x="48" y="248">Ethernet: client MAC → gateway MAC</text><text x="48" y="278">IP: 10.20.4.10 → 10.30.8.7; TTL 64</text><text x="48" y="308">TCP: 53000 → 443; encrypted data</text>
+    <text x="433" y="218" fill="#67d8c3">LINK 2: router → server</text><text x="433" y="248">Ethernet: router MAC → server MAC</text><text x="433" y="278">IP: 10.20.4.10 → 10.30.8.7; TTL 63</text><text x="433" y="308">TCP: 53000 → 443; encrypted data</text></g>
+    <text x="30" y="370" font-size="16">Simplified two-link Ethernet network: no NAT, proxy or tunnel.</text>
+    <text x="30" y="395" font-size="15" fill="#b5c8d6">ARP discovers the local next hop; it does not discover every router on the internet.</text>
+  </g>
+</svg>

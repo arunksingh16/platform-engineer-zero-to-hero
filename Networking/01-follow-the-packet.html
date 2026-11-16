@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>1. Follow the packet | Networking fundamentals</title>
 <link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="visuals.css">
 </head>
 <body data-lesson="1">
 <main>
@@ -23,6 +24,18 @@
   </table>
   <p>A switch forwards frames within a link; a router forwards packets between networks. A host uses its route table to choose a next hop, resolving that hop's link address where needed. Cloud virtual networks abstract much of the physical fabric, not the need for correct routes and policy.</p>
   <h2>There is more than one path</h2>
+  <figure class="net-figure"><img src="diagrams/packet.svg" width="800" height="410" alt="Client sends a frame to its gateway MAC but keeps the remote server as the IP destination. The router replaces the Ethernet header and decrements TTL without changing the IP endpoints."><figcaption>Read the envelope from outside in: Ethernet frame → IP packet → TCP segment → application bytes. Example: two Ethernet links, no NAT, proxy or tunnel.</figcaption></figure>
+  <section class="widget net-lab" data-walkthrough aria-labelledby="packet-walk">
+    <h2 id="packet-walk">Walk beside the packet</h2>
+    <p>Predict first: for a remote destination, does the client ARP for the server or for its gateway?</p>
+    <ol class="net-flow">
+      <li><strong>Choose a next hop</strong><code>10.20.4.10 → 10.30.8.7:443</code><p>The host selects a route via 10.20.4.1. The destination IP remains the remote server.</p></li>
+      <li><strong>Resolve the local neighbor</strong><code>ARP: who has 10.20.4.1?</code><p>On an empty neighbor cache, ARP finds the gateway's MAC. It is local to this link. IPv6 uses ICMPv6 Neighbor Discovery rather than ARP.</p></li>
+      <li><strong>Forward at the router</strong><code>New link header; TTL 64 → 63</code><p>The router removes the incoming link header, looks up the destination and sends a new frame. An expired TTL causes a drop, preventing endless routing loops.</p></li>
+      <li><strong>Prove the return path</strong><code>10.30.8.7:443 → 10.20.4.10:53000</code><p>The server makes its own route lookup for the reply. Return routes and stateful policy must work too.</p></li>
+    </ol>
+  </section>
+  <div class="callout"><h3>At the whiteboard</h3><p>“Which address is for the final destination, and which is only for the next hop?” Answer that at every router. A switch learns source MAC locations and forwards by destination MAC; a router selects a next hop by destination IP.</p></div>
   <pre><code>Name lookup: device -> recursive DNS resolver -> DNS answer
 API request: device -> edge proxy -> regional LB -> API VM -> data service
 Media fetch: device -> CDN cache -> origin (only on a cache miss)</code></pre>
@@ -32,10 +45,12 @@ Media fetch: device -> CDN cache -> origin (only on a cache miss)</code></pre>
   <p>In AWS, a VPC, subnet route table and security group shape the path to EC2. In Azure, a VNet, effective routes and NSG shape the path to a VM. On your own VMs, inspect the host route table, host firewall and upstream router. A managed load balancer does not own your application's readiness or capacity.</p>
   <div class="hand"><h3>Do it by hand</h3><p>DNS succeeds. The edge returns an HTTP 502. Which boundaries have you proved, and what should you inspect next?</p><details><summary>Show answer</summary><p>You obtained a DNS answer and reached an HTTP-speaking component that returned 502. That does not prove the edge reached a healthy origin. Identify who generated the status, then inspect its backend connection, TLS handshake, target health and upstream logs. Do not start by changing DNS.</p></details></div>
   <p>Next: put addresses and routes on this drawing. Primary reading: <a href="https://www.rfc-editor.org/rfc/rfc1122">RFC 1122: Internet host communication layers</a>.</p>
+  <p>Link-layer reading: <a href="https://www.rfc-editor.org/rfc/rfc826">ARP</a> and <a href="https://www.rfc-editor.org/rfc/rfc4861">IPv6 Neighbor Discovery</a>.</p>
   <section id="quiz"></section>
 </main>
 <script type="application/json" id="quiz-data">
 [
+ {"q":"In a routed Ethernet network without NAT, which destination MAC does a client use for an off-link server?","options":["The remote server's MAC across the internet","The local next-hop gateway's MAC","The DNS resolver's MAC"],"answer":1,"why":"The frame reaches the local next hop while the IP destination remains the remote server."},
  {"q":"What does an L3 route primarily select?","options":["An HTTP path","A next hop for a destination IP","A TLS certificate"],"answer":1,"why":"Routing forwards packets toward destination networks; it does not select URL paths."},
  {"q":"Does a successful DNS lookup prove the API is reachable?","options":["Yes","Only for HTTPS","No"],"answer":2,"why":"Name resolution and the API data path are separate operations."},
  {"q":"A reverse proxy usually creates...","options":["Separate client-side and backend connections","One DNS record per packet","No backend connection"],"answer":0,"why":"A terminating proxy is a client of the backend as well as a server to the original client."}
@@ -43,5 +58,6 @@ Media fetch: device -> CDN cache -> origin (only on a cache miss)</code></pre>
 </script>
 <script src="lessons.js"></script>
 <script src="../course.js"></script>
+<script src="visuals.js"></script>
 </body>
 </html>

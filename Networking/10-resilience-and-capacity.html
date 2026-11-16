@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>10. Capacity and failure design | Networking fundamentals</title>
 <link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="visuals.css">
 </head>
 <body data-lesson="10">
 <main>
@@ -13,6 +14,7 @@
   <p class="lead">Do the capacity calculation after removing a failure domain. "We have three zones" says nothing about whether the survivors can carry traffic.</p>
   <div class="goal"><h3>By the end you can...</h3>Budget surviving capacity, in-flight work, retries and network cost.</div>
   <h2>Start with measured safe capacity</h2>
+  <figure class="net-figure"><img src="diagrams/failure-domains.svg" width="800" height="400" alt="Three zones contain two 500-rps VMs each. Losing zone A leaves 2000 safe rps, 400 below the 2400-rps demand."><figcaption>Draw the failed domain as unavailable before doing the arithmetic. Use the slider below to change demand.</figcaption></figure>
   <p>Measure per-instance throughput at the latency/error SLO using a representative request mix. Peak benchmark throughput is not safe operating capacity. Six VMs across three zones, each safe at 500 requests/s, provide 3,000 requests/s normally and 2,000 after losing a two-VM zone. A 2,400 requests/s peak does not fit after that loss.</p>
   <div class="widget">
     <h3>Remove one zone</h3>
@@ -22,6 +24,16 @@
     <p id="capacity" role="status"></p>
   </div>
   <h2>Requests are not the only budget</h2>
+  <section class="widget net-lab" data-walkthrough aria-labelledby="capacity-walk">
+    <h2 id="capacity-walk">A zone loss becomes a queueing incident</h2>
+    <p>Work through the existing six-VM design at 2,400 requests/s. Autoscaling is not instantaneous.</p>
+    <ol class="net-flow">
+      <li><strong>Three zones are healthy</strong><code>A: 1000 + B: 1000 + C: 1000 = 3000 rps</code><p>Two VMs per zone, 500 safe rps each. Demand is 80% of the stated total safe capacity.</p></li>
+      <li><strong>Zone A disappears</strong><code>A: offline + B: 1000 + C: 1000 = 2000 rps</code><p>Traffic is now 120% of surviving safe capacity. A green load balancer cannot manufacture the missing 400 rps.</p></li>
+      <li><strong>Queues and retries grow</strong><code>2400 original rps + retries → more overload</code><p>Longer waits keep more work in flight. Without admission limits and deadlines, retries can deepen the incident.</p></li>
+      <li><strong>Make capacity ready before failure</strong><code>3 VMs/zone → 6 survivors × 500 = 3000 rps</code><p>Now demand is 80% of surviving safe capacity. Still test other budgets: bandwidth, connection tracking, dependencies and reconnect bursts.</p></li>
+    </ol>
+  </section>
   <p>Little's Law gives average in-flight work <code>L = arrival rate x average time in system</code> in a stable system. At 2,000 requests/s and 0.2 s average time, that is 400 requests in flight. If latency rises to 2 s at the same admitted rate, it becomes 4,000. These are averages, not p99 limits or a prediction of an unstable queue.</p>
   <p>Budget sockets, file descriptors, conntrack entries, SNAT ports, TLS handshakes, packets/s and bandwidth separately. Autoscaling cannot instantly replace lost capacity: detection, VM startup, registration and warm-up take time. Cloud LB scaling and quotas also need review for sudden events.</p>
   <h2>Retries amplify incidents</h2>
@@ -42,6 +54,7 @@
 </script>
 <script src="lessons.js"></script>
 <script src="../course.js"></script>
+<script src="visuals.js"></script>
 <script>
 (function(){
   const input = document.getElementById("demand");

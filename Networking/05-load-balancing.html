@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>5. When and how to load balance | Networking fundamentals</title>
 <link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="visuals.css">
 </head>
 <body data-lesson="5">
 <main>
@@ -26,6 +27,17 @@
   <p>Round-robin distributes turns; weighted policies reflect capacity or rollout intent. Least-connections tracks active connections, not necessarily CPU work. Flow hashing keeps packets of a flow together. One HTTP/2 connection can carry many active requests; one streaming connection can last hours. Confirm which algorithms your chosen product actually supports.</p>
   <p>Sticky sessions can hide local session state, but skew traffic and complicate failover. Prefer external or reconstructible state where appropriate. Consistent hashing can help cache locality, but changing membership still moves keys.</p>
   <h2>Health and lifecycle are part of the design</h2>
+  <figure class="net-figure"><img src="diagrams/failure-domains.svg" width="800" height="400" alt="A failed zone removes two VMs. Four survivors provide 2000 safe requests per second against demand of 2400; a load balancer cannot replace missing capacity."><figcaption>Load balancing spreads work. Redundancy and surviving capacity are separate requirements.</figcaption></figure>
+  <section class="widget net-lab" data-walkthrough aria-labelledby="drain-walk">
+    <h2 id="drain-walk">Watch a target drain</h2>
+    <p>Three targets A/B/C behind an HTTP proxy. Predict what happens to a 20-minute stream when A has a 60-second drain deadline. This models a proxy that stops assigning new requests to a draining target.</p>
+    <ol class="net-flow">
+      <li><strong>Serving: A, B, C</strong><code>new request → A / B / C</code><p>All targets are ready. Balancing operates on the product's unit of work: requests, connections or flows.</p></li>
+      <li><strong>A starts draining</strong><code>new request → B / C; existing stream → A</code><p>Remove A from new assignments first. Keep the process alive for existing work. Readiness and process liveness answer different questions.</p></li>
+      <li><strong>Survivors absorb the traffic</strong><code>900 rps ÷ 2 = 450 rps per survivor</code><p>If B and C are safe at only 400 rps each, the rollout overloads them. Planned maintenance needs spare capacity too.</p></li>
+      <li><strong>Deadline expires</strong><code>long stream → disconnect → bounded reconnect</code><p>The 20-minute stream cannot finish inside 60 seconds. Design resume tokens, idempotency and jittered reconnects; draining is not connection teleportation.</p></li>
+    </ol>
+  </section>
   <ol>
     <li>Register a target and wait until it is genuinely ready, including warm-up.</li>
     <li>Probe a cheap endpoint that reflects ability to serve; a TCP accept alone may miss application failure.</li>
@@ -46,5 +58,6 @@
 </script>
 <script src="lessons.js"></script>
 <script src="../course.js"></script>
+<script src="visuals.js"></script>
 </body>
 </html>

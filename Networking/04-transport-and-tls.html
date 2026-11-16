@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>4. TCP, UDP, HTTP and TLS | Networking fundamentals</title>
 <link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="visuals.css">
 </head>
 <body data-lesson="4">
 <main>
@@ -15,6 +16,17 @@
   <h2>Connections versus requests</h2>
   <p>TCP provides an ordered reliable byte stream, with retransmission, flow control and congestion control. A connection is commonly identified by source/destination IP and port plus protocol: the five-tuple. UDP carries datagrams without built-in ordered reliable delivery; applications may add those properties.</p>
   <p>HTTP/1.1 can reuse connections; HTTP/2 multiplexes streams on one TCP connection. Packet loss can still stall that TCP stream. HTTP/3 uses QUIC over UDP, with TLS integrated into QUIC. "UDP" does not automatically mean unencrypted or unreliable at the application layer. gRPC commonly uses HTTP/2; verify support on <em>both</em> legs of a proxy.</p>
+  <section class="widget net-lab" data-walkthrough aria-labelledby="tcp-walk">
+    <h2 id="tcp-walk">Read a TCP conversation</h2>
+    <p>Predict: does a TCP ACK prove the application saved your playlist? Sequence numbers below are simplified, with no TCP options or loss.</p>
+    <ol class="net-flow">
+      <li><strong>Client → server: SYN</strong><code>53000 → 443 | seq=100</code><p>The client requests a connection. Its ephemeral source port distinguishes this conversation from others to the same server.</p></li>
+      <li><strong>Server → client: SYN, ACK</strong><code>443 → 53000 | seq=900 ack=101</code><p>The server acknowledges the SYN, which consumes one sequence number, and announces its own starting sequence.</p></li>
+      <li><strong>Client → server: ACK, then bytes</strong><code>seq=101 ack=901; send 200 bytes</code><p>After the handshake, sending 200 bytes advances the client's next sequence to 301. For HTTPS these are TLS protocol bytes, not plaintext HTTP.</p></li>
+      <li><strong>Server acknowledges transport receipt</strong><code>ack=301: next byte expected</code><p>This confirms receipt by the peer TCP stack, not a database commit. Missing data can cause retransmission. Flow control protects the receiver; congestion control adapts to the network.</p></li>
+    </ol>
+  </section>
+  <figure class="net-figure"><img src="diagrams/tls.svg" width="800" height="410" alt="Client and proxy have one TCP/TLS connection. The proxy decrypts HTTP and opens or reuses a separate authenticated TLS connection to the backend."><figcaption>A 502 after client TLS succeeds can still be a failure of backend TCP or TLS. Inspect each leg independently.</figcaption></figure>
   <h2>Where does TLS end?</h2>
   <ul>
     <li><strong>Pass-through:</strong> encrypted bytes reach the backend. A transport balancer cannot route on the encrypted URL path.</li>
@@ -28,10 +40,12 @@
   <p>MTU is the largest packet a link carries without fragmentation at that layer. Tunnels reduce effective payload size; broken Path MTU Discovery can make small requests succeed while large responses stall. Allow required ICMP/ICMPv6 signaling according to policy rather than blocking all of it blindly.</p>
   <div class="hand"><h3>Do it by hand</h3><p>Your proxy has a 30-second idle timeout; the backend emits a stream update every 45 seconds. Why do clients disconnect? Would raising the total request deadline alone fix it?</p><details><summary>Show answer</summary><p>The quiet interval exceeds the proxy's idle timeout. Align idle settings across the path or use supported protocol heartbeats with margin. A total deadline is a different timer. Verify whether heartbeats actually reset each component's idle timer; behavior is product-specific.</p></details></div>
   <p>Primary reading: <a href="https://www.rfc-editor.org/rfc/rfc8446">TLS 1.3</a>, <a href="https://www.rfc-editor.org/rfc/rfc9114">HTTP/3</a>, <a href="https://www.rfc-editor.org/rfc/rfc8201">IPv6 Path MTU Discovery</a>.</p>
+  <p>Transport reading: <a href="https://www.rfc-editor.org/rfc/rfc9293">RFC 9293: TCP sequence numbers, acknowledgements and connection establishment</a>.</p>
   <section id="quiz"></section>
 </main>
 <script type="application/json" id="quiz-data">
 [
+ {"q":"A TCP ACK for request bytes proves...","options":["The peer TCP stack received those bytes","The database committed the operation","The application authorized the user"],"answer":0,"why":"Transport receipt is not application success. A timed-out write can still have committed, so retry semantics matter."},
  {"q":"Which transport does HTTP/3 use?","options":["QUIC over UDP","Only TCP","DNS"],"answer":0,"why":"QUIC provides secure transport over UDP for HTTP/3."},
  {"q":"Can a TLS pass-through balancer inspect an encrypted URL path?","options":["Yes, via SNI","No","Yes, via the TCP port"],"answer":1,"why":"SNI is a server name, not the URL. HTTP path inspection requires decryption."},
  {"q":"What must re-encryption include?","options":["Disabling certificate checks","A public backend IP","An explicit backend trust and hostname-validation policy"],"answer":2,"why":"Encryption without authenticating the intended backend leaves an important trust gap."}
@@ -39,5 +53,6 @@
 </script>
 <script src="lessons.js"></script>
 <script src="../course.js"></script>
+<script src="visuals.js"></script>
 </body>
 </html>
