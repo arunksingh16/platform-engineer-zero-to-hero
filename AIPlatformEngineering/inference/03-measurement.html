@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Build the lens before the knobs · Inference engineering</title>
+<meta name="description" content="Exact definitions for TTFT, inter-token latency and TPOT, why end-to-end means are uninterpretable, queue depth as a leading indicator, and the panel discipline.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="3">
+<main>
+  <span class="tag">Lesson 3 / Measurement</span>
+  <h1>Build the lens before the knobs</h1>
+  <p class="lead">You turned on a scheduler flag. Mean request latency on the dashboard fell 12%. Your lead asks whether it helped, and the honest answer is that you do not know — because a mean over a mixed workload can fall when the service gets worse, and rise when it gets better. Every optimisation in the rest of this course is unverifiable until this lesson is done.</p>
+  <div class="goal"><h3>By the end you can…</h3><p>Define TTFT, inter-token latency and TPOT precisely enough to implement them, explain why end-to-end latency confounds two different mechanisms, use queue depth as a leading indicator, and justify or delete every panel on your dashboard.</p></div>
+
+  <h2>1. Four metrics, and the identity that connects them</h2>
+  <p>Vague definitions are the reason two teams measuring the same service disagree. Pin them down:</p>
+  <table>
+    <tr><th>Metric</th><th>Definition</th><th>What it contains</th></tr>
+    <tr><td><strong>TTFT</strong><br>time to first token</td><td>Request arrival until the first output token reaches the client.</td><td>Queue wait, prefill, one decode step, and serialisation. A latency the user waits through with nothing on screen.</td></tr>
+    <tr><td><strong>ITL</strong><br>inter-token latency</td><td>The gap between consecutive output tokens. One value per gap, so a distribution per request.</td><td>Decode step time plus any scheduler stall. This is what stuttering looks like in numbers.</td></tr>
+    <tr><td><strong>TPOT</strong><br>time per output token</td><td>(end-to-end − TTFT) ÷ (output tokens − 1). The mean of one request's ITL values.</td><td>A per-request summary. Hides a single 400 ms stall inside an otherwise smooth stream.</td></tr>
+    <tr><td><strong>End-to-end</strong></td><td>Arrival until the last token.</td><td>Everything, including how long the answer happened to be.</td></tr>
+  </table>
+  <p>They are not independent. For a request producing <em>n</em> output tokens:</p>
+  <pre><code>end-to-end = TTFT + (n − 1) × TPOT</code></pre>
+  <p>Lesson 1's request: 578 ms + 199 × 18 ms = 4,160 ms. The identity is why end-to-end is the wrong thing to alert on. Watch what it does to a change that is unambiguously good for a streaming UI:</p>
+  <table>
+    <tr><th></th><th>TTFT</th><th>TPOT</th><th>End-to-end (n = 200)</th></tr>
+    <tr><td>Before</td><td>578 ms</td><td>18.0 ms</td><td>4,160 ms</td></tr>
+    <tr><td>After</td><td>289 ms</td><td>20.0 ms</td><td>4,269 ms</td></tr>
+  </table>
+  <p>First token arrives in half the time. End-to-end got <em>worse</em>. Both facts are real, and a single latency number cannot express them. Keep TTFT and ITL separate and the finding survives; collapse them and it is destroyed.</p>
+  <div class="callout"><h3>End-to-end has a second defect</h3><p>It scales with output length, which is a property of the question rather than the service. Cap <code>max_tokens</code> and mean end-to-end latency improves immediately while nothing whatsoever got faster. Any metric you can improve by truncating answers is not a performance metric.</p></div>
+
+  <h2>2. Percentiles, and the two things you may not do with them</h2>
+  <p>Report p50, p95 and p99 for TTFT and for ITL, separately. Means hide the tail that users actually feel, and in a queueing system the tail is where the mechanism lives. Two rules, both routinely broken:</p>
+  <ol>
+    <li><strong>Never average percentiles.</strong> The mean of three replicas' p95 values is not the fleet p95 and has no interpretation at all. Compute quantiles from summed histogram buckets instead — the <a href="../../Observability/03-time-series-labels.html">time series</a> and <a href="../../Observability/05-querying.html">querying</a> lessons cover the mechanics, and this course assumes them.</li>
+    <li><strong>Check that your buckets can express your target.</strong> A histogram quantile is an estimate interpolated inside a bucket. If the boundaries near your 1.5 s TTFT target are 1 s and 2.5 s, your p95 cannot distinguish passing from failing. Look at the actual bucket edges your engine exports before you write an SLO against them.</li>
+  </ol>
+  <p>Equally: a p95 needs enough samples to mean anything. From twenty requests you have a maximum, not a p95, and calling it one is how a benchmark loses an argument.</p>
+
+  <h2>3. The queue is the leading indicator</h2>
+  <p>Latency tells you that something already went wrong. Queue state tells you it is about to. Lesson 2's state machine exports exactly the counters you need — names vary by engine and version, but the quantities do not:</p>
+  <table>
+    <tr><th>Quantity</th><th>Reads as</th><th>What a change means</th></tr>
+    <tr><td>Running requests</td><td>The current effective batch size</td><td>Lesson 1 said throughput tracks this. Far below your memory limit while requests wait means a tuning problem, not a capacity problem.</td></tr>
+    <tr><td>Waiting requests</td><td>Admitted demand you cannot serve yet</td><td>Growing faster than it drains means you are past useful capacity. This is the autoscaling signal, not CPU.</td></tr>
+    <tr><td>KV cache utilisation</td><td>How close the block manager is to refusing admission</td><td>Sustained near 100% is the precondition for preemption.</td></tr>
+    <tr><td>Preemptions</td><td>Admitted work being thrown away and redone</td><td>Any non-zero rate invalidates a capacity measurement. Lesson 5 makes this a disqualifying condition.</td></tr>
+  </table>
+  <p>One piece of arithmetic makes these self-checking. Little's Law says the number of requests in a stable system equals arrival rate times time in system:</p>
+  <pre><code>in flight = arrival rate × end-to-end latency
+          = 4 req/s × 4.16 s = 16.6 requests</code></pre>
+  <p>So at four requests per second with lesson 1's latency you should observe about 17 requests running and waiting combined. Observe 60 and latency is still climbing — the system is not in steady state and nothing you measure right now is a capacity number. This also catches a broken load generator: if your client reports 4 req/s offered but the server only ever holds three requests, the client is the bottleneck, not the server.</p>
+
+  <h2>4. The panel discipline</h2>
+  <p>A dashboard is a set of claims about what matters. Build it by writing the definition and the decision <em>first</em>, and deleting any panel that cannot supply both. Four panels that pass:</p>
+  <table>
+    <tr><th>Panel</th><th>Definition</th><th>Decision it drives</th></tr>
+    <tr><td>TTFT p50/p95/p99</td><td>Histogram quantile over the engine's TTFT histogram, by model and replica pool.</td><td>Breach of the p95 target means investigate the queue, not the model.</td></tr>
+    <tr><td>ITL p50/p95/p99</td><td>Same, over inter-token latency.</td><td>A p99 far above p50 means scheduler stalls — check prefill chunking.</td></tr>
+    <tr><td>Running and waiting requests</td><td>Two raw gauges, not a ratio.</td><td>Waiting rising while running is flat and below the memory limit is a tuning bug. Both at the limit is a scale-out.</td></tr>
+    <tr><td>Preemption rate and KV utilisation</td><td>Counter rate, and the gauge as a percentage.</td><td>Non-zero preemption means stop load testing and reduce concurrency before recording anything.</td></tr>
+  </table>
+  <p>A panel that fails the test: "GPU utilisation". Lesson 2 explained why — it reports that a kernel was resident, which a memory-bound decode step satisfies while using a few percent of the compute roof. Keep achieved memory bandwidth if you can get it; delete the utilisation gauge, or at minimum stop letting anyone make capacity decisions from it.</p>
+  <p>Add cost per request to the same dashboard as soon as you have measured throughput. It is the one panel that makes every latency trade legible to people who do not read dashboards, and the planned lesson 9 derives it.</p>
+
+  <h2>5. Interrogate the metric: "we do 2,500 tokens per second"</h2>
+  <p>Four questions, and the claim rarely survives all four.</p>
+  <ol>
+    <li><strong>Input or output tokens?</strong> Lesson 1 showed they cost three orders of magnitude different amounts per token. A prefill-heavy mix inflates a combined figure enormously.</li>
+    <li><strong>At what concurrency and what token lengths?</strong> Throughput without a concurrency level is unanchored, and token lengths determine KV cache size and therefore the whole result. Fixed, stated lengths or it is not reproducible.</li>
+    <li><strong>Whose tokenizer?</strong> Two models that tokenise the same text into different counts cannot be compared in tokens per second — the unit differs. Compare requests per second, or normalise by characters, or state that the comparison is only valid within one tokenizer.</li>
+    <li><strong>Measured where?</strong> Server-side excludes network and client cost. Client-side includes a single-threaded Python client silently capping your measurement at its own throughput. Both are legitimate; conflating them is not.</li>
+  </ol>
+  <p>Ask these of your own numbers before someone else does. Lesson 5 turns the answers into a harness.</p>
+
+  <div class="hand">
+    <h3>Work it yourself</h3>
+    <p>Five requests from one replica, all the same model, all streaming. Nothing here is averaged for you.</p>
+    <table>
+      <tr><th>Request</th><th>TTFT</th><th>Output tokens</th><th>End-to-end</th></tr>
+      <tr><td>R1</td><td>0.40 s</td><td>50</td><td>1.30 s</td></tr>
+      <tr><td>R2</td><td>0.52 s</td><td>200</td><td>4.16 s</td></tr>
+      <tr><td>R3</td><td>2.10 s</td><td>40</td><td>2.85 s</td></tr>
+      <tr><td>R4</td><td>0.45 s</td><td>600</td><td>11.52 s</td></tr>
+      <tr><td>R5</td><td>0.48 s</td><td>60</td><td>1.58 s</td></tr>
+    </table>
+    <p>Compute TPOT for each request. Then: is this service healthy? Which request is the problem, what is wrong with it, and what would you report to a lead who only wants one number?</p>
+    <details><summary>Walk through an answer</summary>
+      <p><strong>TPOT</strong> = (end-to-end − TTFT) ÷ (tokens − 1): R1 18.4 ms, R2 18.3 ms, R3 19.2 ms, R4 18.5 ms, R5 18.6 ms.</p>
+      <p><strong>Decode is healthy.</strong> Five requests of wildly different lengths all generate at 18–19 ms per token. Whatever is wrong is not in decode.</p>
+      <p><strong>R3 is the problem,</strong> and only in TTFT: 2.10 s against about 0.45 s for everyone else, with a perfectly normal TPOT afterwards. A slow first token followed by a healthy stream is queue wait — lesson 2's <code>Waiting</code> state, or a preemption and re-admission. Confirm with the waiting-request gauge at that timestamp.</p>
+      <p><strong>What not to report:</strong> mean end-to-end is 4.28 s, which describes nothing. It is dominated by R4 simply having been asked for 600 tokens. Alert on that number and you will page someone every time a user asks a long question.</p>
+      <p><strong>What to report:</strong> "TTFT median 0.48 s with one outlier at 2.1 s; TPOT tight at 18–19 ms across all five. Decode is fine, admission is not. Five samples is too few for a p95 — I need a sweep before I give you a capacity number." The last sentence is the professional part.</p>
+    </details>
+  </div>
+
+  <h2>Sources and deeper reading</h2>
+  <ul>
+    <li><a href="https://docs.vllm.ai/en/latest/design/v1/metrics/">vLLM metrics design</a> — what each exported counter and histogram actually measures, including bucket boundaries.</li>
+    <li><a href="https://docs.vllm.ai/en/latest/examples/online_serving/prometheus_grafana/">vLLM with Prometheus and Grafana</a> — the stack to stand up before you need it under load.</li>
+    <li><a href="https://developer.nvidia.com/blog/llm-inference-benchmarking-fundamental-concepts/">LLM inference benchmarking: fundamental concepts</a> (NVIDIA) — the metric definitions this lesson follows.</li>
+    <li><a href="https://www.databricks.com/blog/llm-inference-performance-engineering-best-practices">LLM inference performance engineering</a> (Databricks) — the same metrics tied to serving decisions.</li>
+    <li><a href="https://modal.com/llm-almanac/how-to-benchmark">How to benchmark LLM engines</a> (Modal) — why you sweep request rate instead of picking one, and why the saturation point is discarded.</li>
+    <li><a href="../../Observability/02-metrics.html">Observability: metrics</a> and <a href="../../Observability/09-slos.html">SLOs</a> — histograms, quantiles and burn-rate alerting, which this lesson uses rather than repeats.</li>
+  </ul>
+  <p>Exported metric names and histogram buckets change between engine releases. Read the version you deploy rather than copying a dashboard JSON and trusting it.</p>
+  <p>Next: the lens exists. Point it at a real engine choice. <a href="04-sglang-vs-vllm.html">Make the serving decision →</a></p>
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+  {"q":"A change halves TTFT from 578 ms to 289 ms and raises TPOT from 18 ms to 20 ms. For a 200-token answer, what happens to end-to-end latency?","options":["It improves, because TTFT improved","It gets slightly worse, to 4,269 ms, even though first-token latency halved","It stays the same","It cannot be calculated"],"answer":1,"why":"End-to-end = TTFT + (n-1) x TPOT = 289 + 199 x 20 = 4,269 ms. A single latency number cannot express that the first token arrived twice as fast."},
+  {"q":"Three replicas report p95 TTFT of 1.2 s, 1.4 s and 3.0 s. What is the fleet p95?","options":["1.87 s, the mean of the three","3.0 s, the highest","Not computable from these values; compute the quantile from summed histogram buckets","1.4 s, the median"],"answer":2,"why":"Percentiles cannot be averaged or maxed into a fleet percentile. You need the underlying bucket counts summed across replicas, then the quantile computed once."},
+  {"q":"At 4 requests per second with 4.16 s end-to-end latency, you observe 60 requests in flight instead of the expected 17. What does that tell you?","options":["The service is efficient","The system is not in steady state, so no number measured now is a capacity figure","Little's Law does not apply to GPUs","Throughput has improved"],"answer":1,"why":"Little's Law gives in-flight = arrival rate x latency. A large excess means the queue is still growing, so latency has not settled and nothing measured during that period describes capacity."},
+  {"q":"Why does 'GPU utilisation 97%' fail the panel test?","options":["It is expensive to collect","It reports only that a kernel was resident, which a memory-bound decode step satisfies while using a small fraction of the compute roof","It is always wrong","It needs a histogram"],"answer":1,"why":"It supplies no defensible definition of saturation for this workload and drives no correct decision. Achieved memory bandwidth and the scheduler's own queue counters do."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+</body>
+</html>

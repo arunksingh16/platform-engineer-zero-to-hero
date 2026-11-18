@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>A curated inference-serving roadmap · Inference engineering</title>
+<meta name="description" content="A ten-week, session-by-session path through the primary sources on LLM inference serving, adapted from Time to First Token and mapped onto this course's lessons.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-page="roadmap"><main>
+  <span class="tag">Appendix / Curated path</span>
+  <h1>A curated inference-serving roadmap</h1>
+  <p class="lead">This course teaches four lessons in depth. The field is larger than that, and most of it is already written down well by the people who built it. What follows is a reading order through those primary sources, built around a single artifact: one OpenAI-compatible inference service that you deploy, instrument, load test, optimise and publish.</p>
+  <div class="goal"><h3>Attribution</h3><p>Adapted from <a href="https://github.com/patchy631/time-to-first-token">Time to First Token: Learn LLM Inference Serving by Shipping One Service</a>, used and modified under <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>. The week structure, source selection and ordering argument are theirs; the mapping onto this handbook's lessons, and the commentary, are ours.</p></div>
+
+  <h2>Why one service instead of seventeen experiments</h2>
+  <p>The alternative — a separate notebook per topic — spends most of its time on setup, and leaves you with nothing to show. One service that keeps growing gives the same coverage and ends as a reproducible benchmark with your name on it. Budget roughly 30 minutes a session, five sessions a week, two buffer days for catching up rather than for new material.</p>
+  <p>A 7–8B model needs about one 24 GB GPU, rented by the half hour and shut down between sessions. Week 1, most of week 3 and all of week 9 need no GPU at all, so batch your rentals around the build days. Exactly two sessions want an H100: the 1,000-concurrent test in week 5, and disaggregation in week 8 if you run it for real.</p>
+
+  <h2>The ordering argument</h2>
+  <p>This is the part worth reading even if you never follow the schedule. Five decisions drive the order, and they are the same ones that shaped this course's lessons.</p>
+  <table>
+    <tr><th>Decision</th><th>Why</th></tr>
+    <tr><td>Roofline first</td><td>Every later optimisation is a move on one plot. Without the model, the rest is a bag of tricks you cannot rank. This is <a href="01-roofline.html">lesson 1</a>.</td></tr>
+    <tr><td>Measurement before optimisation</td><td>Instrumentation lands in week 3 and load testing in week 5, before any tuning knob. Nothing after them is verifiable without them. This is <a href="03-measurement.html">lesson 3</a>.</td></tr>
+    <tr><td>Paging and batching are reading exercises</td><td>vLLM already implements both. Reading the block manager until the design is obvious teaches more than reimplementing it badly. This is <a href="02-scheduler.html">lesson 2</a>.</td></tr>
+    <tr><td>The router sits next to unit economics</td><td>A router that picks a backend by cost, latency and quality is the one component that forces a dollar figure and a latency budget into code.</td></tr>
+    <tr><td>Edge deployment is optional and last</td><td>ONNX Runtime, TensorRT-LLM and WebLLM are client-side and embedded runtimes. They share almost no operational surface with the datacentre stack.</td></tr>
+  </table>
+
+  <h2>The ten weeks</h2>
+  <p><strong>read</strong> sessions load context; <strong>build</strong> sessions produce output. Where a week is already covered by a lesson here, the lesson is the better starting point and the sources are the depth behind it.</p>
+
+  <h3>Week 1 · The mental model <span class="pill">lesson 1</span></h3>
+  <p><strong>Deliverable:</strong> a hand-derived arithmetic intensity figure for the model you will serve, and the ability to say which phase is bandwidth-bound and why.</p>
+  <ul>
+    <li><a href="https://horace.io/brrr_intro.html">Making Deep Learning Go Brrrr From First Principles</a> (Horace He) — compute, bandwidth and overhead regimes; operator fusion.</li>
+    <li><a href="https://www.youtube.com/watch?v=6OBtO9niT00">CS336 Lecture 5: GPUs</a> (Percy Liang, Tatsunori Hashimoto) — execution model, memory hierarchy, roofline. <a href="https://github.com/stanford-cs336/spring2025-lectures">Slides</a>.</li>
+    <li><a href="https://kipp.ly/transformer-inference-arithmetic/">Transformer Inference Arithmetic</a> (kipply) — the text equivalent.</li>
+    <li>Buffer: <a href="https://www.youtube.com/watch?v=fcgPYo3OtV0">CS336 Lecture 10: Inference</a>, then the prefill-versus-decode opening of the <a href="https://www.databricks.com/blog/llm-inference-performance-engineering-best-practices">Databricks post</a>.</li>
+  </ul>
+
+  <h3>Week 2 · vLLM: deploy it, then read its internals <span class="pill">lesson 2</span></h3>
+  <p><strong>Deliverable:</strong> an OpenAI-compatible endpoint serving a 7–8B model, plus your own notes explaining PagedAttention and the V1 scheduler from source.</p>
+  <ul>
+    <li><a href="https://blog.vllm.ai/2023/06/20/vllm.html">PagedAttention announcement</a> and the <a href="https://arxiv.org/abs/2309.06180">SOSP 2023 paper</a>'s block-table section.</li>
+    <li><em>build:</em> serve Llama-3.1-8B-Instruct or Qwen2.5-7B behind vLLM's OpenAI-compatible server. Save the launch command — you reuse it for ten weeks. <a href="https://modal.com/docs/examples/vllm_inference">Modal example</a>.</li>
+    <li><a href="https://www.youtube.com/watch?v=jmzIvQZCLZM">vLLM Office Hours: intro to vLLM V1</a> (Michael Goin), or the written <a href="https://blog.vllm.ai/2025/01/27/v1-alpha-release.html">V1 architecture post</a>.</li>
+    <li><a href="https://blog.vllm.ai/2025/09/05/anatomy-of-vllm.html">Inside vLLM</a> — scheduler and block manager sections.</li>
+    <li><em>build:</em> follow the block table code path in <a href="https://github.com/vllm-project/vllm">the repo</a> and pass lesson 2's three-sentence test.</li>
+  </ul>
+
+  <h3>Week 3 · Measurement infrastructure <span class="pill">lesson 3</span></h3>
+  <p><strong>Deliverable:</strong> a live dashboard showing TTFT, inter-token latency, throughput and queue depth on your own service.</p>
+  <ul>
+    <li><a href="https://docs.vllm.ai/en/latest/design/v1/metrics/">vLLM metrics design doc</a> — what the running, waiting and latency series actually measure.</li>
+    <li><em>build:</em> stand up the <a href="https://docs.vllm.ai/en/latest/examples/online_serving/prometheus_grafana/">Prometheus and Grafana stack</a>, import the dashboard, and confirm panels move under a trickle of load. Fix the scrape config now, not in week 5 under 1,000 concurrent requests.</li>
+    <li><a href="https://www.databricks.com/blog/llm-inference-performance-engineering-best-practices">Databricks performance engineering</a> and <a href="https://developer.nvidia.com/blog/llm-inference-benchmarking-fundamental-concepts/">NVIDIA benchmarking fundamentals</a>. Map every metric they define to a panel; panels without a definition get deleted.</li>
+    <li><a href="https://modal.com/llm-almanac/how-to-benchmark">How to benchmark LLM engines</a> (Modal) — why you sweep request rate, and why the saturation point gets discarded.</li>
+  </ul>
+
+  <h3>Week 4 · SGLang, RadixAttention and batching internals <span class="pill">lessons 2 and 4</span></h3>
+  <p><strong>Deliverable:</strong> an SGLang variant of the same service, and a first prefix-reuse comparison against vLLM.</p>
+  <ul>
+    <li><a href="https://lmsys.org/blog/2024-01-17-sglang/">RadixAttention and SGLang</a> — up to 5× throughput on prefix-heavy workloads, which tells you which workloads it wins on.</li>
+    <li><em>build:</em> deploy <a href="https://docs.sglang.io">SGLang</a> with the week 2 model on the same hardware and prompt, so the engine is the only variable.</li>
+    <li><a href="https://www.youtube.com/watch?v=Ny4xxErgFgQ">Efficient LLM inference with SGLang</a> (Lianmin Zheng) and the <a href="https://arxiv.org/abs/2312.07104">NeurIPS 2024 paper</a>.</li>
+    <li><a href="https://www.anyscale.com/blog/continuous-batching-llm-inference">Continuous batching</a>, then <a href="https://www.usenix.org/conference/osdi22/presentation/yu">Orca (OSDI 2022)</a> — iteration-level scheduling and the heavy-tailed length assumption.</li>
+    <li><a href="https://arxiv.org/abs/2403.02310">Sarathi-Serve</a> on chunked prefill and stall-free scheduling.</li>
+    <li>Buffer: run a shared-system-prompt workload against both engines and watch the TTFT gap.</li>
+  </ul>
+
+  <h3>Week 5 · Load testing to 1,000 concurrent</h3>
+  <p><strong>Deliverable:</strong> a scripted concurrency sweep past 1,000 concurrent requests with p50, p95 and p99, cross-checked by two independent tools.</p>
+  <ul>
+    <li><a href="https://developers.redhat.com/articles/2025/06/20/guidellm-evaluate-llm-deployments-real-world-inference">GuideLLM introduction</a>, then a <a href="https://github.com/vllm-project/guidellm">GuideLLM</a> sweep with fixed input and output token lengths. Fixed lengths determine KV cache size and therefore the entire result.</li>
+    <li><em>build:</em> <a href="https://docs.vllm.ai/en/latest/benchmarking/cli/"><code>vllm bench serve</code></a> on the same workload as a cross-check. Two tools disagreeing is information, not a problem.</li>
+    <li><em>build:</em> a <a href="https://github.com/triton-inference-server/perf_analyzer">genai-perf</a> sweep at 1, 2, 4 … 128. Find where throughput saturates while latency degrades; that knee is the only interesting point on the curve.</li>
+    <li><em>build:</em> rent an H100 for one session and push past 1,000 concurrent, watching KV cache utilisation and the waiting-request gauge for preemption.</li>
+  </ul>
+
+  <h3>Week 6 · Quantisation tradeoffs</h3>
+  <p><strong>Deliverable:</strong> FP8 and INT4/AWQ variants benchmarked against the FP16 baseline on both throughput and a quality proxy.</p>
+  <ul>
+    <li><a href="https://www.youtube.com/watch?v=TSc_BibWRhM">MIT 6.5940 Lecture 5: Quantization</a> (Song Han), then Lecture 6 for AWQ, GPTQ and SmoothQuant depth. <a href="https://hanlab.mit.edu/courses/2024-fall-65940">Course page</a>.</li>
+    <li>The quantisation section of <a href="https://lilianweng.github.io/posts/2023-01-10-inference-optimization/">Lilian Weng's survey</a>. Write down which method each engine you run actually implements.</li>
+    <li><em>build:</em> serve an AWQ or GPTQ checkpoint and an FP8 variant under the week 5 sweep. <a href="https://docs.vllm.ai/en/latest/features/quantization/">vLLM quantisation docs</a>.</li>
+    <li><em>build:</em> run a fixed eval set or perplexity proxy across FP16, FP8 and INT4. That table is the deliverable, not the speedup number.</li>
+  </ul>
+
+  <h3>Week 7 · Speculative decoding and KV eviction</h3>
+  <p><strong>Deliverable:</strong> a speculative decoding variant and a long-context eviction configuration, both benchmarked, including negative results.</p>
+  <ul>
+    <li><a href="https://docs.vllm.ai/en/latest/features/speculative_decoding/">Speculative decoding docs</a> for the method-selection table, then <a href="https://blog.vllm.ai/2024/10/17/spec-decode.html">vLLM's benchmark post</a>: up to 2.8× at low query rate, but a 1.4–1.8× slowdown at high query rate. The crossover is the finding, not the speedup.</li>
+    <li><a href="https://www.youtube.com/watch?v=9wNAgpX6z_4">GPU MODE Lecture 22: hacker's guide to speculative decoding in vLLM</a> (Cade Daniel) — proposers, scorers, verifiers, draft model worker.</li>
+    <li><a href="https://arxiv.org/abs/2309.17453">StreamingLLM</a> (ICLR 2024) — attention sinks and stability past very long contexts.</li>
+    <li><em>build:</em> find your own crossover point by measuring inter-token latency at both low and high query rate, then configure a long-context workload and an eviction strategy and measure memory and TTFT.</li>
+  </ul>
+
+  <h3>Week 8 · Disaggregated serving and Kubernetes</h3>
+  <p><strong>Deliverable:</strong> your service on Kubernetes with autoscaling driven by queue depth rather than CPU.</p>
+  <ul>
+    <li><a href="https://www.youtube.com/watch?v=WwJvecXOeUA">DistServe at OSDI 2024</a> (Yinmin Zhong) — prefill and decode separated across hardware. <a href="https://www.usenix.org/conference/osdi24/presentation/zhong-yinmin">Paper</a>.</li>
+    <li><a href="https://arxiv.org/abs/2311.18677">Splitwise</a> (ISCA 2024) — H100 for prefill, power-capped A100 for decode. Then <a href="https://docs.vllm.ai/en/latest/features/disagg_prefill/">vLLM disaggregated prefilling</a>.</li>
+    <li><a href="https://arxiv.org/abs/2407.00079">Mooncake</a> (FAST 2025) — KV-cache-centric serving in production. Then <a href="https://docs.sglang.io/docs/advanced_features/pd_disaggregation">SGLang PD disaggregation</a>; compare how each engine splits the phases.</li>
+    <li><em>build:</em> deploy with the <a href="https://github.com/vllm-project/production-stack">vLLM production stack</a> Helm charts, then scale on the waiting-request metric rather than CPU. The handbook's <a href="../../Kubernetes/06-keda.html">KEDA lesson</a> is the mechanism; <a href="https://developers.redhat.com/articles/2025/09/23/how-set-kserve-autoscaling-vllm-keda">this walkthrough</a> is the inference-specific wiring.</li>
+  </ul>
+
+  <h3>Week 9 · Unit economics and the router</h3>
+  <p><strong>Deliverable:</strong> a router that picks a backend by cost, latency and quality, plus per-request token budgeting with cost on the dashboard.</p>
+  <ul>
+    <li><a href="https://www.tensoreconomics.com/p/llm-inference-economics-from-first">LLM inference economics from first principles</a> — GPU-hour-to-token arithmetic, and why utilisation rather than price per hour drives cost.</li>
+    <li><em>build:</em> re-derive cost per million tokens for your own GPU using your week 5 throughput: hourly rate ÷ (peak tokens per second × 3600 × utilisation) × 1M.</li>
+    <li><a href="https://blog.character.ai/optimizing-ai-inference-at-character-ai-2/">Optimizing AI inference at Character.AI</a> — a reported 33× serving cost reduction, where every lever is one you studied in weeks 6 and 7.</li>
+    <li><em>build:</em> a thin router that picks cheap-small or expensive-large under a cost/latency/quality policy and logs the chosen path and its cost, then token-budgeting middleware that caps and accounts tokens per request.</li>
+  </ul>
+
+  <h3>Week 10 · Publish, then build the reading habit</h3>
+  <p><strong>Deliverable:</strong> a published repo and writeup with pinned versions and reproducible commands, plus a weekly research session on the calendar.</p>
+  <ul>
+    <li><em>build:</em> draft the writeup — hardware, model, exact token lengths, concurrency sweep, p50/p95/p99 for TTFT and ITL, throughput. Run the checklist below against it first.</li>
+    <li><em>build:</em> add quantisation, speculative decoding and KV eviction as labelled variants with reproducible commands and pinned versions. Publish.</li>
+    <li>Set up the habit: <a href="https://arxiv.org/list/cs.DC/recent">arXiv cs.DC</a>, <a href="https://mlsys.org">MLSys</a>, OSDI and NeurIPS efficiency tracks. One 30-minute session a week: one paper's abstract, method figure and evaluation. Not the whole paper.</li>
+    <li>Optional edge sampler: <a href="https://onnxruntime.ai">ONNX Runtime</a>, <a href="https://github.com/NVIDIA/TensorRT-LLM">TensorRT-LLM</a>, <a href="https://webllm.mlc.ai">WebLLM</a>. These are client-side runtimes, not an extension of what you built.</li>
+  </ul>
+
+  <h2>Before you publish a benchmark</h2>
+  <p>These are the mistakes that get public inference benchmarks taken apart. Read them in week 5; apply them in week 10.</p>
+  <ul>
+    <li>Sweep the request rate. A single concurrency level is an anecdote.</li>
+    <li>Report exact input and output token lengths. KV cache size, and therefore throughput, depends entirely on them.</li>
+    <li>Report p50, p95 and p99. Means hide the tail that users feel.</li>
+    <li>Keep TTFT and inter-token latency separate. Collapsing prefill and decode into one number destroys the finding.</li>
+    <li>Do not measure at the saturation point where the server is preempting. Report the knee, not the collapse.</li>
+    <li>Avoid synthetic uniform-length traffic. Uniform lengths hide the heavy tail that makes continuous batching matter.</li>
+    <li>Account for tokenizer differences between engines before comparing tokens per second.</li>
+    <li>Pin engine versions and publish exact commands, so a critic can reproduce rather than speculate.</li>
+  </ul>
+
+  <h2>Decision points</h2>
+  <p>Moments where following the schedule blindly is the wrong move.</p>
+  <table>
+    <tr><th>If</th><th>Then</th></tr>
+    <tr><td><strong>Week 5.</strong> TTFT spikes and the waiting-request count climbs before you reach target concurrency.</td><td>The server is preempting. Stop and tune the maximum sequence count, GPU memory fraction and chunked prefill first. A run measured at the preemption point is not publishable.</td></tr>
+    <tr><td><strong>Week 6.</strong> INT4 costs more than 1–2% on your quality proxy for the throughput it returns.</td><td>Keep FP16 or FP8 as the default. Treat INT4 as a memory-pressure lever, not a throughput default.</td></tr>
+    <tr><td><strong>Week 7.</strong> Speculative decoding slows you down at your real request rate.</td><td>Expected. Gains appear at low query rate and vanish when the GPU is compute-saturated. Publish the crossover point; it is more useful than the speedup.</td></tr>
+    <tr><td><strong>Week 8.</strong> Kubernetes starts eating whole sessions on cluster plumbing.</td><td>Use a managed cluster, or fall back to single-node Docker plus the autoscaling reading. The signal matters more than a bespoke cluster.</td></tr>
+  </table>
+
+  <h2>Reference</h2>
+  <table>
+    <tr><th>Paper</th><th>Venue</th><th>Topic</th></tr>
+    <tr><td><a href="https://arxiv.org/abs/2309.06180">PagedAttention / vLLM</a></td><td>SOSP 2023</td><td>KV cache paging</td></tr>
+    <tr><td><a href="https://www.usenix.org/conference/osdi22/presentation/yu">Orca</a></td><td>OSDI 2022</td><td>Continuous batching</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2312.07104">SGLang</a></td><td>NeurIPS 2024</td><td>RadixAttention, prefix reuse</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2403.02310">Sarathi-Serve</a></td><td>OSDI 2024</td><td>Chunked prefill</td></tr>
+    <tr><td><a href="https://www.usenix.org/conference/osdi24/presentation/zhong-yinmin">DistServe</a></td><td>OSDI 2024</td><td>Prefill/decode disaggregation</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2311.18677">Splitwise</a></td><td>ISCA 2024</td><td>Phase splitting across GPU types</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2407.00079">Mooncake</a></td><td>FAST 2025</td><td>KV-cache-centric serving</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2309.17453">StreamingLLM</a></td><td>ICLR 2024</td><td>Attention sinks, long context</td></tr>
+    <tr><td><a href="https://arxiv.org/abs/2401.15077">EAGLE</a></td><td>arXiv</td><td>Speculative sampling</td></tr>
+  </table>
+  <p>For GPTQ, AWQ, SmoothQuant, LLM.int8(), Medusa, H2O, SnapKV and the FlashAttention family, use <a href="https://lilianweng.github.io/posts/2023-01-10-inference-optimization/">Lilian Weng's survey</a> and the <a href="https://developer.nvidia.com/blog/mastering-llm-techniques-inference-optimization/">NVIDIA optimisation survey</a>, which cite them directly. Search exact titles rather than guessing arXiv identifiers.</p>
+  <table>
+    <tr><th>Tool</th><th>Use</th></tr>
+    <tr><td><a href="https://github.com/vllm-project/vllm">vLLM</a></td><td>Primary serving engine</td></tr>
+    <tr><td><a href="https://docs.sglang.io">SGLang</a></td><td>Prefix-reuse comparison</td></tr>
+    <tr><td><a href="https://github.com/vllm-project/guidellm">GuideLLM</a></td><td>SLO-aware rate sweeps</td></tr>
+    <tr><td><a href="https://github.com/triton-inference-server/perf_analyzer">genai-perf</a></td><td>TTFT and ITL measurement</td></tr>
+    <tr><td><a href="https://github.com/ray-project/llmperf">LLMPerf</a></td><td>Hosted endpoint benchmarking</td></tr>
+    <tr><td><a href="https://github.com/vllm-project/production-stack">production-stack</a></td><td>Kubernetes deployment</td></tr>
+  </table>
+  <p>Courses and series worth following: <a href="https://cs336.stanford.edu/spring2025/">Stanford CS336</a> (lectures 5, 6, 7–8 and 10), <a href="https://hanlab.mit.edu/courses/2024-fall-65940">MIT 6.5940 EfficientML.ai</a>, <a href="https://www.youtube.com/@vllm-project">vLLM Office Hours</a>, <a href="https://www.youtube.com/@GPUMODE">GPU MODE</a>, and the <a href="https://modal.com/llm-almanac/summary">Modal LLM Almanac</a>.</p>
+
+  <h2>How to read the numbers quoted above</h2>
+  <p>Every performance figure on this page is the source's own claim from its paper or blog, not something reproduced here. Treat each as the number that source is willing to defend, not as ground truth for your hardware. Cost per million tokens and GPU hourly rates move fast; the economics reading is valuable for its method, and every number should be re-derived against your own hardware. Links were checked in November 2026 — vLLM in particular serves its blog at two URL shapes and its docs change with versions, so search the exact title rather than editing a path that 404s.</p>
+  <nav class="nav" aria-label="Course navigation"><a href="index.html">← All lessons</a><a class="next" href="01-roofline.html">Start lesson 1 →</a></nav>
+</main></body>
+</html>

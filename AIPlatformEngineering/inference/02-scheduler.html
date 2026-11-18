@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Read the scheduler, do not rebuild it · Inference engineering</title>
+<meta name="description" content="Paged KV blocks, continuous batching, chunked prefill, preemption and prefix reuse: how a serving engine's scheduler produces the batch size the roofline model demands.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="2">
+<main>
+  <span class="tag">Lesson 2 / Engine internals</span>
+  <h1>Read the scheduler, do not rebuild it</h1>
+  <p class="lead">Monday morning, p95 time to first token has doubled. Nothing was deployed. The model, the engine version and the replica count are unchanged. GPU utilisation reads 97%, exactly as it did last week. Aggregate throughput is flat. Your dashboard is telling you the truth and you still cannot see the problem, because the problem is in the scheduler and you have never read it.</p>
+  <div class="goal"><h3>By the end you can…</h3><p>Explain from an engine's design why paged KV memory cuts waste from 60–80% to under 4%, why admission happens every iteration, what chunked prefill trades away, and what preemption costs — and diagnose the opening incident.</p></div>
+
+  <h2>1. Lesson 1 asked for a big batch. Something has to produce it</h2>
+  <p>Lesson 1 ended with a number: 213 concurrent requests of 2,000 tokens is what fits in an A100's spare memory, and decode throughput depends almost entirely on getting near it. That number is not something the GPU gives you. It is the output of two pieces of software:</p>
+  <ul>
+    <li>A <strong>block manager</strong> that decides whether a request's KV cache can be allocated at all.</li>
+    <li>A <strong>scheduler</strong> that decides, on every forward pass, which admitted requests are in it.</li>
+  </ul>
+  <p>Both are a few thousand lines of ordinary Python in vLLM and SGLang. Reading them is the single highest-return hour in this course, and it is the reason this lesson does not ask you to implement any of it.</p>
+
+  <h2>2. KV memory is a memory-allocator problem</h2>
+  <p>Suppose you allocate each request a contiguous region large enough for its maximum possible length — the obvious implementation. With an 8,192-token limit and a typical request that actually uses 2,000, three quarters of every reservation is dead. Add requests of mixed sizes arriving and leaving and you also get classic external fragmentation: free memory that exists but not in one usable piece.</p>
+  <p>The PagedAttention work measured exactly this on the systems that preceded it and reported <strong>60–80% of KV memory wasted</strong> on fragmentation and over-reservation. Read that as a batch-size figure rather than a tidiness figure: wasting 70% of your KV memory means roughly a third of the concurrency, which lesson 1 showed is the only lever decode has.</p>
+  <p>The fix is the one operating systems settled on decades ago. Carve KV memory into fixed-size <strong>blocks</strong> — 16 tokens each in vLLM's default configuration — and give every request a <strong>block table</strong> mapping its logical token positions to physical blocks that need not be adjacent. Attention kernels are rewritten to follow the table instead of assuming contiguity.</p>
+  <pre><code>Request A logical: [0..15][16..31][32..47]
+Block table:          #104    #7      #88        ← scattered, deliberately
+
+Physical KV blocks: #7  #88  #104 ... interleaved with every other request
+</code></pre>
+  <p>Now the only waste is the unfilled remainder of each request's last block. Work it out with lesson 1's figures: one block is 16 tokens × 128 KB = 2 MB, an average request wastes half of one, and 213 requests therefore waste about 213 MB out of 56 GB of KV cache — under half a percent. That is where the published "under 4%" claim comes from, and you can now derive it rather than quote it.</p>
+  <div class="callout"><h3>The indirection buys a second thing</h3><p>Once a request's tokens are described by a table of block pointers, two requests can point at the <em>same</em> physical block. That makes prefix sharing and copy-on-write for parallel samples a bookkeeping change rather than a new subsystem. Section 6 returns to this.</p></div>
+
+  <h2>3. The batch is rebuilt on every forward pass</h2>
+  <p>The second idea is older than paging and just as important. Output lengths are heavily skewed: in a coding assistant, most answers are a few dozen tokens and a few are many hundreds. Hold a batch fixed until all members finish and the arithmetic is brutal — a batch of 32 whose longest member runs 500 steps spends most of those steps computing padding for slots that finished at step 40.</p>
+  <p><strong>Continuous batching</strong>, introduced as iteration-level scheduling in Orca, makes admission a per-iteration decision. A request that emits its stop token releases its blocks immediately and the next waiting request takes the slot on the very next pass. The GPU stops idling between requests, and the effective batch stays near the memory limit instead of decaying toward one.</p>
+
+  <figure class="diagram" data-hint="Hover a transition for its note · full screen for the cards">
+    <iframe src="diagrams/request-lifecycle.html" title="Lifecycle: the states a request moves through inside the scheduler" loading="lazy"></iframe>
+    <figcaption><strong>1. The states a request moves through, and the two that matter operationally.</strong> Admission is gated on free KV blocks, not on CPU. Preemption throws away work that was already done.
+      <pre><code>Waiting ──each step──▶ Admit? ──blocks free──▶ Prefilling ──last chunk──▶ Decoding ──stop──▶ Finished
+   ▲                      │                                                    │
+   │◀─── no blocks ───────┘                      ┌── prefix cached ────────────┘ (skips prefill)
+   │                                             │
+   └◀── re-queued ── Preempted ◀── KV pressure ──┘</code></pre>
+    </figcaption>
+  </figure>
+
+  <h2>4. Chunked prefill, and the trade it makes on your behalf</h2>
+  <p>Here is the collision. Lesson 1 measured a 2,000-token prefill at roughly 380 ms of solid compute. A decode step is 18 ms. If a scheduler lets that prefill take a whole forward pass to itself, every other request in the batch — possibly two hundred of them — waits 380 ms for its next token. Users do not experience that as latency; they experience it as the answer freezing mid-sentence.</p>
+  <p><strong>Chunked prefill</strong> splits a long prompt into pieces of a few hundred tokens and mixes a piece with the decode work of other requests in the same pass. The stall becomes bounded and small. This is the stall-free scheduling idea from Sarathi-Serve, and it is now the default in both vLLM and SGLang.</p>
+  <table>
+    <tr><th>Scheduling policy</th><th>Time to first token</th><th>Inter-token latency</th><th>Suits</th></tr>
+    <tr><td>Prefill-prioritising</td><td>Best: a new request starts immediately</td><td>Worst: long prompts stall everyone mid-stream</td><td>Short prompts, batch jobs, no streaming UI</td></tr>
+    <tr><td>Decode-prioritising</td><td>Worst: new requests wait behind active ones</td><td>Best: existing streams never stutter</td><td>Long-running generations, strict streaming targets</td></tr>
+    <tr><td>Chunked prefill (default)</td><td>Slightly worse than prefill-first</td><td>Near decode-first, with a bounded stall</td><td>Mixed interactive traffic — almost everyone</td></tr>
+  </table>
+  <p>There is no setting that is best at both. The scheduler is spending one latency to buy the other, and the only question is which one your users feel. That is a product decision wearing a flag's clothing.</p>
+  <div class="goal"><h3>Now diagnose Monday morning</h3><p>Nothing was deployed, so look at the input. The p95 input length has grown from 800 tokens to 3,500 — the team started pasting whole files instead of snippets. Prefill work per request rose more than fourfold, so a larger share of every forward pass goes to prefill chunks, admission slows, and requests sit in <code>Waiting</code> longer. Queue time is counted inside time to first token, so TTFT doubles. Aggregate throughput is flat because the GPU is doing exactly as much work as before, just more of it on input. And GPU utilisation could never have shown this: it was already 97%.</p><p>The confirming measurement is input token length percentiles alongside <code>num_requests_waiting</code>. The fix is a capacity decision, not a flag.</p></div>
+
+  <h2>5. Preemption: the scheduler throwing away your work</h2>
+  <p>Admission can succeed and later become untenable. Sequences grow as they decode, so a batch that fit at step 1 may not fit at step 300. When the block manager runs out, the scheduler picks victims and reclaims their blocks. Two recovery strategies exist:</p>
+  <ul>
+    <li><strong>Recompute</strong> — discard the KV cache and prefill the request again from scratch when it is re-admitted. Cheap in memory, pays the full prefill cost twice.</li>
+    <li><strong>Swap</strong> — copy the blocks out to host memory and back. Pays PCIe bandwidth instead, which lesson 1's framing tells you is roughly an order of magnitude worse than HBM.</li>
+  </ul>
+  <p>Either way, work that was already done is done again. A victim request's latency roughly doubles, and because victims are usually the longest-running requests, the damage lands squarely in your p99. Preemption is also the single most common reason a published inference benchmark is wrong: the author pushed concurrency until the server was thrashing and reported the resulting number as capacity. Lesson 3 makes it a dashboard panel and lesson 5 makes it a disqualifying condition.</p>
+
+  <h2>6. Two designs for reusing a prefix</h2>
+  <p>If two requests begin with the same 1,500 tokens of system prompt and source file, the second one's prefill for that span is pure waste — the key and value vectors are a deterministic function of the tokens before them. Both engines exploit this, differently, and the difference is instructive rather than decisive.</p>
+  <table>
+    <tr><th></th><th>Block-level automatic prefix caching</th><th>RadixAttention</th></tr>
+    <tr><td>Granularity</td><td>The fixed block. A prefix is reused in whole-block units; a partial block at the boundary is recomputed.</td><td>A radix tree keyed on token sequences, so reuse follows the actual shared span.</td></tr>
+    <tr><td>Matching</td><td>Hash of a block's token contents plus its position, so identity is cheap to check.</td><td>Tree walk to the longest matching prefix, with LRU eviction of cold branches.</td></tr>
+    <tr><td>Scheduling</td><td>Independent of the cache: admission order does not try to group cache-sharing requests.</td><td>Cache-aware: requests sharing a branch can be scheduled together to keep it resident.</td></tr>
+    <tr><td>Reported effect</td><td>Prefill skipped for matched blocks.</td><td>Up to 5× throughput on prefix-heavy workloads, with no noticeable overhead when there are no hits.</td></tr>
+  </table>
+  <p>Three things stay true in both designs, and all three are failure modes you will meet:</p>
+  <ol>
+    <li><strong>The prefix must be a prefix.</strong> Put a timestamp or a request ID at the <em>start</em> of your prompt and reuse drops to zero. Move it to the end and nothing is lost. This is the cheapest serving win available and teams give it away constantly.</li>
+    <li><strong>The cache is per replica.</strong> Route the follow-up request to a different pod and it recomputes. Cache-aware routing is a load-balancer feature, which the <a href="../infrastructure/07-inference.html">inference fleet lesson</a> covers.</li>
+    <li><strong>It only helps prefill.</strong> A workload spending 87% of its wall clock in decode cannot be rescued by prefix caching, however perfect the hit rate. Lesson 1's waterfall is the argument.</li>
+  </ol>
+
+  <h2>7. Interrogate the metric: "GPU utilisation is 97%"</h2>
+  <p>This is the most misleading number on an inference dashboard, and the opening incident turned on it.</p>
+  <table>
+    <tr><th>What people read it as</th><th>What it actually is</th></tr>
+    <tr><td>"The GPU is nearly saturated, so we need more GPUs."</td><td>The fraction of sampled time during which at least one kernel was resident on the device. A single tiny kernel looping forever reads as 100%.</td></tr>
+  </table>
+  <p>Lesson 1 explains why this is nearly useless here: a memory-bound decode step keeps a kernel resident for its whole duration while the arithmetic units idle waiting on HBM. 97% utilisation is compatible with using 3% of the compute roof. The questions worth asking instead:</p>
+  <ul>
+    <li><strong>Achieved memory bandwidth</strong> against the datasheet figure — for decode, this is the real saturation measure.</li>
+    <li><strong>Model FLOPs utilisation</strong> against dense peak — for prefill, the same.</li>
+    <li><strong>The scheduler's own counters</strong>: running and waiting request counts, KV cache usage, preemption count. These are facts about the queue, and no device-level metric can substitute for them.</li>
+  </ul>
+  <p>Lesson 3 turns that list into panels, and deletes the ones that cannot be defined.</p>
+
+  <div class="hand">
+    <h3>Read the code, then pass the three-sentence test</h3>
+    <p>Reading beats reimplementing here, but only if you read with a question. Pick one engine and answer each of these from the source, not from a blog post:</p>
+    <ol>
+      <li>Follow one request from arrival to its first forward pass. Which object owns the block table, and at what point are physical blocks actually reserved?</li>
+      <li>Find the decision that admits a request into the next batch. What exactly is compared against what? Write the condition down as an inequality.</li>
+      <li>Find the preemption path. Which request is chosen as the victim, and does your engine recompute or swap by default?</li>
+      <li>Find where a prefix cache hit is detected. What is hashed or matched, and what invalidates it?</li>
+    </ol>
+    <p>The test: explain in three sentences how a request's blocks get looked up during attention. If you cannot, you have read about the design rather than read it — go back to the block table.</p>
+    <details><summary>What a good answer to question 2 looks like</summary><p>Stated as an inequality rather than a feeling: the scheduler admits the next waiting request only while the blocks its current token count requires, rounded up to the block size, are available in the free pool — and, under chunked prefill, only while the total tokens already committed to this pass stay under the per-pass token budget. Two separate limits, one on memory and one on compute per step, and either can be the binding one. If you tuned a flag without knowing which, you were guessing.</p></details>
+  </div>
+
+  <h2>Sources and deeper reading</h2>
+  <p>Read the paper for the mechanism and the code for the truth. Blogs simplify, usually in the direction that makes the design sound cleaner than it is.</p>
+  <ul>
+    <li><a href="https://blog.vllm.ai/2023/06/20/vllm.html">vLLM and PagedAttention</a> and the <a href="https://arxiv.org/abs/2309.06180">SOSP 2023 paper</a> — the fragmentation measurement and the block table design.</li>
+    <li><a href="https://blog.vllm.ai/2025/09/05/anatomy-of-vllm.html">Inside vLLM: anatomy of a high-throughput inference system</a> — scheduler and block manager, written against the code.</li>
+    <li><a href="https://blog.vllm.ai/2025/01/27/v1-alpha-release.html">vLLM V1 architecture</a> and the <a href="https://github.com/vllm-project/vllm">source</a> — where to start reading.</li>
+    <li><a href="https://www.usenix.org/conference/osdi22/presentation/yu">Orca (OSDI 2022)</a> and <a href="https://www.anyscale.com/blog/continuous-batching-llm-inference">continuous batching explained</a> — iteration-level scheduling and the heavy-tailed length assumption behind it.</li>
+    <li><a href="https://arxiv.org/abs/2403.02310">Sarathi-Serve (OSDI 2024)</a> — chunked prefill and stall-free scheduling, including the TTFT/ITL trade in measured form.</li>
+    <li><a href="https://lmsys.org/blog/2024-01-17-sglang/">RadixAttention and SGLang</a> and the <a href="https://arxiv.org/abs/2312.07104">NeurIPS 2024 paper</a> — tree-structured reuse and cache-aware scheduling.</li>
+    <li><a href="https://docs.vllm.ai/en/stable/features/automatic_prefix_caching/">vLLM automatic prefix caching</a> — the operational rules for when reuse happens.</li>
+  </ul>
+  <p>Performance figures quoted here are the sources' own claims, not independently reproduced. Defaults such as the 16-token block size are configurable and change between releases; check the version you deploy.</p>
+  <p>Next: you have diagnosed one incident by reasoning. Doing it reliably needs instrumentation. <a href="03-measurement.html">Build the lens →</a></p>
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+  {"q":"Why does splitting KV memory into fixed-size blocks cut waste from 60-80% to a few percent?","options":["Blocks compress the key and value vectors","The only waste left is the unfilled remainder of each request's last block, instead of a whole worst-case reservation per request","Blocks are stored on the host instead of the GPU","It removes the need for a KV cache"],"answer":1,"why":"A block table lets a request's tokens live in scattered blocks, so nothing is reserved for a length the request may never reach. The leftover is bounded by one partial block each."},
+  {"q":"A 2,000-token prefill takes about 380 ms and a decode step about 18 ms. What does chunked prefill buy?","options":["Lower time to first token for the new request","A bounded stall for every other request's stream, at a small cost to the new request's first token","Less KV memory","Higher aggregate throughput in every case"],"answer":1,"why":"Letting the prefill own a whole pass would freeze every other stream for 380 ms. Chunking mixes it with decode work, trading a little TTFT for stable inter-token latency."},
+  {"q":"GPU utilisation reads 97% while p95 TTFT doubles and throughput stays flat. What is the most useful next measurement?","options":["Add replicas and re-measure","Input token length percentiles alongside the waiting-request count","GPU temperature","Model accuracy on an eval set"],"answer":1,"why":"Utilisation only reports that a kernel was resident. Longer prompts shift work into prefill and lengthen the queue, and queue time is inside TTFT, so the input distribution and queue depth are what expose it."},
+  {"q":"Your prompts share a 1,500-token system prompt but start with a unique request ID. What happens to prefix reuse?","options":["It works normally; the ID is small","It drops to zero, because the shared span is no longer a prefix","It only works on SGLang","It doubles the KV cache"],"answer":1,"why":"Reuse is matched from the start of the sequence. A unique leading token invalidates everything after it. Moving the ID to the end of the prompt costs nothing and restores the hit."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+</body>
+</html>

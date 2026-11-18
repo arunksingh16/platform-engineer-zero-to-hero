@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="description" content="Learn AI infrastructure design, sizing and operations in ten interactive lessons, plus a SGLang versus vLLM decision lesson and curated engine guides.">
+<meta name="description" content="Two interactive courses: AI infrastructure design, sizing and operations, and inference engineering from the roofline model to a measured serving decision.">
 <title>AI Platform Engineering | The platform handbook</title>
 <link rel="stylesheet" href="../style.css">
 </head>
@@ -16,39 +16,28 @@
 <main id="main">
   <section class="hero" aria-labelledby="hero-title">
     <div>
-      <span class="eyebrow">Decisions and resources / AI platform engineering</span>
+      <span class="eyebrow">Two courses / AI platform engineering</span>
       <h1 id="hero-title">Understand the workload. Then choose the tools.</h1>
-      <p class="lead">Design the infrastructure behind training and inference, make a measured serving-engine decision, then explore focused SGLang and vLLM guides.</p>
-      <p class="hero-note">The infrastructure course and decision lesson are here in the handbook. The external guides below are maintained by their respective authors.</p>
+      <p class="lead">Design the infrastructure behind training and inference, then go inside a single inference replica: derive where its time goes, read the scheduler that produces its throughput, and measure a change in a way a critic can reproduce.</p>
+      <p class="hero-note">One course designs the fleet. The other engineers what runs inside it.</p>
     </div>
   </section>
 
   <section aria-labelledby="infrastructure-title">
-    <div class="section-heading"><div><span class="eyebrow">Interactive course / 10 lessons</span><h2 id="infrastructure-title">AI infrastructure at scale.</h2></div></div>
-    <a class="deep-dive" href="infrastructure/index.html"><span class="eyebrow">For Kubernetes engineers new to GPUs</span><strong>Design, size and operate training and inference environments.</strong><span>Accelerators, memory budgets, distributed training, cluster topology, storage, inference fleets and capacity planning—with interactive explorers and two design capstones. →</span></a>
+    <div class="section-heading"><div><span class="eyebrow">Interactive course / 10 lessons</span><h2 id="infrastructure-title">AI infrastructure at scale.</h2></div><p>For Kubernetes engineers new to GPUs. Design, size and operate training and inference environments.</p></div>
+    <a class="deep-dive" href="infrastructure/index.html"><span class="eyebrow">Start here if GPUs are new to you</span><strong>Accelerators, memory budgets, parallelism, topology and capacity.</strong><span>From GPU fundamentals to training clusters, inference fleets, capacity calculators and two design capstones. →</span></a>
   </section>
 
-  <section aria-labelledby="pilot-title">
-    <div class="section-heading"><div><span class="eyebrow">Pilot lesson</span><h2 id="pilot-title">Think through the serving decision.</h2></div></div>
-    <a class="deep-dive" href="01-sglang-vs-vllm.html"><span class="eyebrow">Scenario / SGLang versus vLLM</span><strong>Which engine would you put in production?</strong><span>Why serving engines exist, where their capabilities overlap, and how latency, workload and operating cost determine the choice. →</span></a>
-  </section>
-
-  <section aria-labelledby="resources-title">
-    <div class="section-heading"><div><span class="eyebrow">Recommended reading</span><h2 id="resources-title">Explore the learning paths.</h2></div><p>Choose a topic to open its full guide on the external site.</p></div>
+  <section id="inference" aria-labelledby="inference-title">
+    <div class="section-heading"><div><span class="eyebrow">Interactive course / 4 lessons + curated roadmap</span><h2 id="inference-title">Inference engineering.</h2></div><p>The rare platform problem where you can calculate the bottleneck before you spend anything.</p></div>
+    <a class="deep-dive" href="inference/index.html"><span class="eyebrow">Measure, then tune</span><strong>Roofline, engine internals, measurement, and the serving decision.</strong><span>Derive your own arithmetic intensity, read the block manager and scheduler, build a dashboard you can defend, then choose between SGLang and vLLM on evidence. →</span></a>
     <div class="grid3 course-grid">
-      <article class="card course-card platform-card" id="sglang">
-        <div class="card-top"><span class="platform-label">LLM INFERENCE</span><span class="tag">SGLang</span></div>
-        <h3>SGLang</h3>
-        <p>A learning path for understanding SGLang and its serving ecosystem, published by Datawhale China.</p>
-        <div class="card-bottom"><span>External learning path</span><a href="https://datawhalechina.github.io/zero-to-sglang/eng/" target="_blank" rel="noopener noreferrer">Read Zero to SGLang ↗</a></div>
-      </article>
-      <article class="card course-card platform-card" id="vllm">
-        <div class="card-top"><span class="platform-label">LLM INFERENCE</span><span class="tag">vLLM</span></div>
-        <h3>vLLM</h3>
-        <p>A practical learning path for vLLM, published by AI Engineering from Scratch.</p>
-        <div class="card-bottom"><span>External learning path</span><a href="https://aiengineeringfromscratch.com/manual-vllm-101" target="_blank" rel="noopener noreferrer">Read vLLM 101 ↗</a></div>
-      </article>
+      <article class="card"><h3><a href="inference/01-roofline.html">Where the time actually goes</a></h3><p>Why decode waits on memory bandwidth while prefill waits on arithmetic — and why buying more FLOPs cannot fix a chat workload.</p></article>
+      <article class="card"><h3><a href="inference/02-scheduler.html">Read the scheduler</a></h3><p>Paged KV blocks, continuous batching, chunked prefill and preemption, derived rather than quoted.</p></article>
+      <article class="card"><h3><a href="inference/03-measurement.html">Build the lens first</a></h3><p>TTFT, inter-token latency and queue depth, with the panels that cannot be defined deleted.</p></article>
+      <article class="card"><h3><a href="inference/04-sglang-vs-vllm.html">SGLang or vLLM</a></h3><p>Follow a coding-assistant team from a working demo to a measured, defensible serving decision.</p></article>
     </div>
+    <p><a href="inference/roadmap.html">Or follow the curated ten-week roadmap of primary sources →</a></p>
   </section>
 
   <footer class="site-footer"><a href="../index.html#ai-platform-engineering">← Back to AI platform engineering</a><a href="../index.html">The platform handbook</a></footer>

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "09da1930-6f14-4471-bdfa-a1d520de8606",
+  "status": "current",
+  "command": "deliver",
+  "type": "workflow",
+  "input": "/Users/arun.singh/mybin/LearnContent/platform-engineer-zero-to-hero/.archify/workflow-burnrate-20261118-140500/candidate.json",
+  "output": "/Users/arun.singh/mybin/LearnContent/platform-engineer-zero-to-hero/Observability/diagrams/burn-rate-alerting.html",
+  "specification": {
+    "sha256": "ed0a4cbfdea973f1b367d4a7745d3edd793f17c8089f54b14ece76ba383c39ec",
+    "bytes": 5882
+  },
+  "artifact": {
+    "sha256": "66cd86c12759e30be52169a7a8fe806f0c68c8ef571126322866eb6497c5e6a9",
+    "bytes": 852545
+  }
+}

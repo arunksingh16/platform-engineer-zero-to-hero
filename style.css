@@ -75,6 +75,26 @@ tr:last-child th,tr:last-child td{border-bottom:none}
 .callout h3{color:var(--note)}
 .hand h3{color:var(--good)}
 
+/* an embedded explorable diagram. the iframe is the diagram; course.js adds the bar */
+figure.diagram{background:var(--card);border:1px solid var(--line);border-radius:var(--r-panel);
+  margin:22px 0;padding:0;overflow:hidden;box-shadow:var(--shadow)}
+/* tall diagrams set --diagram-h on the figure; everything else takes the default */
+figure.diagram iframe{display:block;width:100%;height:var(--diagram-h,clamp(420px,68vh,680px));border:0}
+/* the prose column is 850px; a diagram reads better wider, so let it escape it */
+@media(min-width:1000px){figure.diagram{width:min(1180px,calc(100vw - 56px));margin-left:50%;transform:translateX(-50%)}}
+figure.diagram figcaption{padding:13px 18px;border-top:1px solid var(--line);font-size:.95rem}
+figure.diagram figcaption>:first-child{margin-top:0}
+figure.diagram figcaption pre{margin:12px 0 0}
+.diagram-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;
+  padding:9px 12px 9px 16px;border-bottom:1px solid var(--line);background:var(--paper);
+  font:.8rem var(--mono);color:var(--muted)}
+.diagram-bar button{padding:5px 12px;font-size:.8rem}
+/* full screen hands the whole viewport to the diagram and hides the chrome */
+figure.diagram:fullscreen{border-radius:0;border:0;display:flex;flex-direction:column;background:var(--card);
+  width:100%;margin-left:0;transform:none}
+figure.diagram:fullscreen iframe{flex:1;height:auto}
+figure.diagram:fullscreen figcaption{display:none}
+
 /* the one bold device: interactive widgets sit on graph paper */
 .widget{padding:19px;
   background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);

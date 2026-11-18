@@ -76,6 +76,17 @@
     <tr><td>Page</td><td>6</td><td>6 h</td><td>30 min</td><td>5%</td></tr>
     <tr><td>Ticket</td><td>1</td><td>3 days</td><td>6 h</td><td>10%</td></tr>
   </table>
+  <figure class="diagram" style="--diagram-h:clamp(560px,88vh,940px)" data-hint="Hover a step for its arithmetic · full screen for the notes">
+    <iframe src="diagrams/burn-rate-alerting.html" title="Workflow: multi-window burn-rate alert evaluation" loading="lazy"></iframe>
+    <figcaption><strong>Three independent rules, each an AND of two windows.</strong> They run in parallel on the same SLI — this is not a fallthrough chain. Reach the right-hand column only if <em>both</em> of that row's windows are over the threshold.
+      <pre><code>                     ┌─ 1 h ≥ 14.4×  AND  5 m ≥ 14.4×  →  page   (2% of budget)
+SLI ──▶ burn rate ───┼─ 6 h ≥ 6×     AND  30 m ≥ 6×     →  page   (5% of budget)
+                     └─ 3 d ≥ 1×     AND  6 h ≥ 1×      →  ticket (10% of budget)
+
+budget consumed = burn rate × (window ÷ 30 days)</code></pre>
+    </figcaption>
+  </figure>
+
   <p>Both windows must exceed the threshold: the long window shows it's serious, the short window shows it's still happening (so it clears quickly once fixed). A burn-rate value alone is not enough to decide whether to page; the alert also evaluates the configured windows. These thresholds are examples, not universal policy. In PromQL this is built from <code>rate()</code> and <code>sum</code> from lesson 5 over your SLI counters.</p>
 
   <h2>🎓 You made it — what to learn next</h2>

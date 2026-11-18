@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Inference engineering · The platform handbook</title>
+<meta name="description" content="Learn to serve LLM inference in production: the roofline model, engine internals, measurement that survives review, and the serving-engine decision.">
+<link rel="stylesheet" href="../../style.css"></head>
+<body data-page="index"><main>
+<span class="tag">4 lessons / Measure, then tune</span>
+<h1>Inference engineering</h1>
+<p class="lead">An inference service is the rare platform where the bottleneck is physics you can calculate in advance. Before you touch a tuning flag, you can work out on paper which phase of a request waits on memory bandwidth, which waits on arithmetic, and therefore which optimisations can possibly help you.</p>
+<div class="goal"><h3>Your outcome</h3><p>Derive your own arithmetic intensity figure, explain an engine's scheduler from its design rather than its marketing, measure a change in a way a critic can reproduce, and defend an engine choice with evidence.</p></div>
+
+<h2>Why this order</h2>
+<p>The sequence is deliberate, and it is not the order these topics usually get listed in.</p>
+<div class="grid3">
+  <article class="card"><h3>Roofline first</h3><p>Every later optimisation is a move on one plot. Quantisation attacks bandwidth-bound decode. Batching raises arithmetic intensity toward the compute roof. Speculative decoding spends cheap FLOPs to avoid sequential memory loads. Without this model the rest is a bag of tricks.</p></article>
+  <article class="card"><h3>Measurement before knobs</h3><p>Instrumentation arrives before quantisation, speculative decoding or disaggregation. Nothing after it is verifiable without it, and a credible public benchmark is mostly a credible measurement harness with a model attached.</p></article>
+  <article class="card"><h3>Read, do not reimplement</h3><p>Paged attention and continuous batching already exist in vLLM and SGLang. Reading the block manager until you can explain from its design why memory waste drops below 4% teaches more than rebuilding it badly.</p></article>
+</div>
+
+<h2>Before you begin</h2>
+<p>You should be comfortable with Python, with transformers at the architecture level, and with a command line. No CUDA, kernel or serving background is assumed. Bring a calculator: several lessons ask you to produce your own number rather than read one.</p>
+<p>Three handbook tracks sit underneath this one and are not re-taught here:</p>
+<ul>
+  <li><a href="../infrastructure/index.html">AI infrastructure at scale</a> — accelerator selection, memory budgets and <a href="../infrastructure/07-inference.html">inference fleet sizing</a>: replicas, routing, cold starts and capacity. This course works inside one replica; that one designs the fleet around it.</li>
+  <li><a href="../../Observability/index.html">Observability</a> — histograms, quantiles, labels and SLOs. Lesson 3 uses them rather than re-explaining them.</li>
+  <li><a href="../../Kubernetes/05-hpa.html">Kubernetes autoscaling</a> and <a href="../../Kubernetes/06-keda.html">KEDA</a> — the mechanism that will eventually scale this service on queue depth instead of CPU.</li>
+</ul>
+
+<h2>Learning path</h2><ol class="lessons" id="lessons"></ol>
+<noscript><p>JavaScript enables quizzes and saved progress. Every lesson explanation remains readable:</p><ol>
+<li><a href="01-roofline.html">Where the time actually goes</a></li><li><a href="02-scheduler.html">Read the scheduler, do not rebuild it</a></li><li><a href="03-measurement.html">Build the lens before the knobs</a></li><li><a href="04-sglang-vs-vllm.html">SGLang or vLLM: make the serving decision</a></li></ol></noscript>
+
+<h2>Still to be written</h2>
+<p class="muted">These lessons are planned, not published. They are listed so the shape of the track is visible, and they are deliberately not linked until they exist.</p>
+<div class="grid3">
+  <article class="card"><h3>05 · Benchmarks that survive review</h3><p>Sweeping request rate rather than picking one, reporting the knee instead of the collapse, and the checklist that stops a public benchmark being taken apart.</p></article>
+  <article class="card"><h3>06 · Quantisation tradeoffs</h3><p>FP8 and INT4 against an FP16 baseline on both throughput and a quality proxy, and when a smaller number is a memory lever rather than a speed lever.</p></article>
+  <article class="card"><h3>07 · Speculative decoding and KV eviction</h3><p>Finding your own crossover point, where gains invert under load, and what long context does to an eviction policy.</p></article>
+  <article class="card"><h3>08 · Disaggregated serving</h3><p>Lesson 1's prefill and decode asymmetry becomes an architecture, then the autoscaling signal that actually tracks demand.</p></article>
+  <article class="card"><h3>09 · Unit economics and the router</h3><p>Cost per million tokens from your own measured throughput, and a router that puts a dollar figure and a latency budget into code.</p></article>
+</div>
+
+<h2>Follow a full curriculum</h2>
+<a class="deep-dive" href="roadmap.html"><span class="eyebrow">Appendix / Curated 10-week path</span><strong>A session-by-session roadmap of primary sources.</strong><span>Papers, lectures and docs in a defensible order, adapted from Time to First Token. Mapped onto the lessons above. →</span></a>
+
+<h2>Further reading on the engines</h2>
+<div class="grid3 course-grid">
+  <article class="card course-card platform-card" id="vllm">
+    <div class="card-top"><span class="platform-label">LLM INFERENCE</span><span class="tag">vLLM</span></div>
+    <h3>vLLM 101</h3>
+    <p>A practical learning path for vLLM, published by AI Engineering from Scratch.</p>
+    <div class="card-bottom"><span>External learning path</span><a href="https://aiengineeringfromscratch.com/manual-vllm-101" target="_blank" rel="noopener noreferrer">Read vLLM 101 ↗</a></div>
+  </article>
+  <article class="card course-card platform-card" id="sglang">
+    <div class="card-top"><span class="platform-label">LLM INFERENCE</span><span class="tag">SGLang</span></div>
+    <h3>Zero to SGLang</h3>
+    <p>A learning path for SGLang and its serving ecosystem, published by Datawhale China.</p>
+    <div class="card-bottom"><span>External learning path</span><a href="https://datawhalechina.github.io/zero-to-sglang/eng/" target="_blank" rel="noopener noreferrer">Read Zero to SGLang ↗</a></div>
+  </article>
+</div>
+
+<h2>How to use this in an interview</h2>
+<p>State the workload and the service targets first: model, input and output token lengths, arrival rate, and the latency you are allowed to spend. Then derive, out loud, which phase your bottleneck is in. Name the measurement that would confirm it and the one that would refute it. Quote numbers as either measured on named hardware or hand-derived, and never blur the two. Describe production experience separately and honestly from lab work.</p>
+</main><script src="lessons.js"></script><script src="../../course.js"></script></body></html>

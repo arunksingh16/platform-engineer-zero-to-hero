@@ -45,6 +45,44 @@ const store = {
   skip.href = "#main";
   skip.textContent = "Skip to content";
   document.body.prepend(skip);
+  // Embedded diagrams. The iframe already works; this only adds the full-screen control.
+  document.querySelectorAll("figure.diagram").forEach((fig) => {
+    const frame = fig.querySelector("iframe");
+    if (!frame) return;
+    const enter = fig.requestFullscreen || fig.webkitRequestFullscreen;
+    const bar = document.createElement("div");
+    bar.className = "diagram-bar";
+    const hint = document.createElement("span");
+    hint.textContent = fig.dataset.hint || "Interactive — hover an element for its detail";
+    bar.appendChild(hint);
+
+    if (enter) {
+      const zoom = document.createElement("button");
+      zoom.type = "button";
+      zoom.textContent = "⤢ Full screen";
+      zoom.onclick = () => {
+        const exit = document.exitFullscreen || document.webkitExitFullscreen;
+        const current = document.fullscreenElement || document.webkitFullscreenElement;
+        if (current === fig) exit.call(document);
+        else Promise.resolve(enter.call(fig)).catch(() => window.open(frame.src, "_blank", "noopener"));
+      };
+      fig.addEventListener("fullscreenchange", () => {
+        const current = document.fullscreenElement || document.webkitFullscreenElement;
+        zoom.textContent = current === fig ? "✕ Exit full screen" : "⤢ Full screen";
+      });
+      bar.appendChild(zoom);
+    } else {
+      // no element full-screen support (notably iOS Safari): a new tab is the honest fallback
+      const open = document.createElement("a");
+      open.href = frame.src;
+      open.target = "_blank";
+      open.rel = "noopener";
+      open.textContent = "Open in a new tab ↗";
+      bar.appendChild(open);
+    }
+    fig.prepend(bar);
+  });
+
   const done = store.get();
 
   // Index page: render lesson list

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "966ac9e5-52bb-4a6d-9609-8494436c003b",
+  "status": "current",
+  "command": "deliver",
+  "type": "waterfall",
+  "input": "/Users/arun.singh/mybin/LearnContent/platform-engineer-zero-to-hero/.archify/waterfall-request-time-20261118-120000/candidate.json",
+  "output": "/Users/arun.singh/mybin/LearnContent/platform-engineer-zero-to-hero/AIPlatformEngineering/inference/diagrams/request-time.html",
+  "specification": {
+    "sha256": "249f32e0fba4bf46d2a16bf220579049f1184c78157b638acde5056ca7dff4c5",
+    "bytes": 3384
+  },
+  "artifact": {
+    "sha256": "2772802e1d7fbff4208734c4ccfe4dff45e8234a2eca763cac55537dbfc17b78",
+    "bytes": 839351
+  }
+}

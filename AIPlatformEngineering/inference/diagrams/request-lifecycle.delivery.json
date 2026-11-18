@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "075dd24e-e3cf-43a4-ab38-5d06c5b75b11",
+  "status": "current",
+  "command": "deliver",
+  "type": "lifecycle",
+  "input": "/Users/arun.singh/mybin/LearnContent/platform-engineer-zero-to-hero/.archify/lifecycle-request-states-20261118-120500/candidate.json",
+  "output": "/Users/arun.singh/mybin/LearnContent/platform-engineer-zero-to-hero/AIPlatformEngineering/inference/diagrams/request-lifecycle.html",
+  "specification": {
+    "sha256": "2aba3e265eb0cf0c53b7751de328f3153b67334580bf2cfd34fd84f9d76124f1",
+    "bytes": 4961
+  },
+  "artifact": {
+    "sha256": "9f858c9e74c657281b27eea433d22d7deece8d106a1a4b185e5d1df246414866",
+    "bytes": 844171
+  }
+}

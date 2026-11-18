@@ -1,6 +1,6 @@
 # Platform Engineering: Zero to Hero
 
-A practical, self-guided learning path for platform engineering. Ten published tracks cover Networking fundamentals, Kubernetes fundamentals, Kubernetes production engineering, CNI networking, Ingress/gateways/service mesh, OpenShift, AKS, Observability, Code analysis and AI infrastructure. Other topics below remain roadmap items rather than published lessons.
+A practical, self-guided learning path for platform engineering. Eleven published tracks cover Networking fundamentals, Kubernetes fundamentals, Kubernetes production engineering, CNI networking, Ingress/gateways/service mesh, OpenShift, AKS, Observability, Code analysis, AI infrastructure and inference engineering. Other topics below remain roadmap items rather than published lessons.
 Access github pages - https://arunksingh16.github.io/platform-engineer-zero-to-hero
 
 ## Courses
@@ -17,7 +17,8 @@ Access github pages - https://arunksingh16.github.io/platform-engineer-zero-to-h
 | Kubernetes platforms: OpenShift for senior SREs | Available | Operator-managed architecture, installation, MachineConfig and updates, OLM, OAuth and SCCs, OVN-Kubernetes, routers, storage, multi-tenancy, etcd and operations, fleet management |
 | Kubernetes platforms: AKS production operations | Available | Ownership, node pools, Entra/workload identity, Azure CNI and IP budgeting, ingress/egress/DNS, autoscaling, upgrades, CSI storage, recovery and incident response |
 | Kubernetes platforms: EKS | Planned | AWS specifics layered on the vendor-neutral course; lessons are not published yet |
-| [AI platform engineering](AIPlatformEngineering/index.html) | Available + curated resources | 10-lesson AI infrastructure course, SGLang versus vLLM decision lesson, and external engine learning paths |
+| [AI platform engineering](AIPlatformEngineering/index.html) | Available | 10-lesson AI infrastructure course |
+| [Inference engineering](AIPlatformEngineering/inference/index.html) | Available | 4 lessons: roofline and arithmetic intensity, paged KV blocks and the scheduler, measurement, and the SGLang versus vLLM decision; plus a curated ten-week roadmap of primary sources |
 | Infrastructure foundations | Partially available | Networking is published above; Linux, Git, and containers remain planned |
 | Platform systems | Planned | Cloud fundamentals, infrastructure as code, and CI/CD |
 | Reliability and operations | Planned | Site reliability engineering, incident response, and production operations |
@@ -72,9 +73,13 @@ Kubernetes/                Course
   openshift/               Platform track: OpenShift for senior SREs (15 lessons)
   aks/                     Platform track: AKS production operations (9 lessons)
   eks/                     Planned platform track (directory not yet created)
-AIPlatformEngineering/     Serving-engine decision lesson and curated engine guides
+AIPlatformEngineering/     Collection index for the two AI courses
+  01-sglang-vs-vllm.html  Redirect stub; the lesson moved to inference/04-...
   infrastructure/         10 lessons: AI infrastructure design, sizing and operations
     diagrams/             Editable SVG cluster and inference-fleet diagrams
+  inference/              4 lessons: roofline, scheduler, measurement, engine choice
+    roadmap.html          Curated 10-week path of primary sources (CC BY 4.0)
+    diagrams/             Self-contained interactive waterfall and lifecycle pages
 ```
 
 Courses nest. A child course is just a course one level deeper: it gets its own
@@ -174,6 +179,25 @@ The [AKS course](Kubernetes/aks/index.html) uses Standard as its baseline and
 flags Automatic-specific differences. Its IP calculator is a bounded planning
 model, not a subnet recommendation; inspection examples do not create Azure
 resources.
+
+Primary references for Inference engineering, with every figure in the lessons
+either hand-derived from these or explicitly labelled as invented:
+
+- [Making Deep Learning Go Brrrr From First Principles](https://horace.io/brrr_intro.html) — compute, bandwidth and overhead regimes
+- [Transformer Inference Arithmetic](https://kipp.ly/transformer-inference-arithmetic/) — the same derivations with more terms kept
+- [PagedAttention / vLLM, SOSP 2023](https://arxiv.org/abs/2309.06180) — the 60–80% fragmentation measurement and the block table
+- [Orca, OSDI 2022](https://www.usenix.org/conference/osdi22/presentation/yu) — iteration-level scheduling
+- [Sarathi-Serve, OSDI 2024](https://arxiv.org/abs/2403.02310) — chunked prefill and the TTFT/ITL trade
+- [SGLang, NeurIPS 2024](https://arxiv.org/abs/2312.07104) — RadixAttention and cache-aware scheduling
+- [vLLM metrics design](https://docs.vllm.ai/en/latest/design/v1/metrics/) and [NVIDIA benchmarking fundamentals](https://developer.nvidia.com/blog/llm-inference-benchmarking-fundamental-concepts/) — the metric definitions used in lesson 3
+
+The [curated roadmap](AIPlatformEngineering/inference/roadmap.html) is adapted
+from [Time to First Token](https://github.com/patchy631/time-to-first-token) and
+used under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); the week
+structure and source selection are that project's, the mapping onto these
+lessons is ours. Performance claims quoted from papers and vendor blogs are
+those sources' own and are not independently reproduced here. GPU specifications
+are dense BF16 datasheet figures reviewed in November 2026.
 
 ## License
 

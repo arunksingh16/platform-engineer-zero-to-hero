@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "1e6b4674-700b-4271-9b39-ad1ca508ac20",
+  "status": "current",
+  "command": "deliver",
+  "type": "dataflow",
+  "input": "/Users/arun.singh/mybin/LearnContent/platform-engineer-zero-to-hero/.archify/dataflow-tsdb-20261118-140000/candidate.json",
+  "output": "/Users/arun.singh/mybin/LearnContent/platform-engineer-zero-to-hero/Observability/diagrams/tsdb-write-path.html",
+  "specification": {
+    "sha256": "758d0bc27026bb37044847f980e528d544129ba1072200205335370bf46557d9",
+    "bytes": 4452
+  },
+  "artifact": {
+    "sha256": "06ca1c86b11e954a4fadf3922f3536566dabf754ef065b5621bd0833b3f7f749",
+    "bytes": 839785
+  }
+}

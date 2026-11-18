@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Where the time actually goes · Inference engineering</title>
+<meta name="description" content="Derive arithmetic intensity for a decode step and a prefill pass, find the hardware ridge point, and learn which phase is bandwidth-bound and why.">
+<link rel="stylesheet" href="../../style.css">
+</head>
+<body data-lesson="1">
+<main>
+  <span class="tag">Lesson 1 / The mental model</span>
+  <h1>Where the time actually goes</h1>
+  <p class="lead">Your 8B endpoint streams about 37 tokens per second to a single user on a 24 GB GPU. A colleague proposes a card with three times the arithmetic throughput and the same memory bandwidth. Will it help? You can answer that on paper, before anyone spends a rupee, and the calculation takes about five minutes.</p>
+  <div class="goal"><h3>By the end you can…</h3><p>Derive the arithmetic intensity of a decode step and a prefill pass for your own model, compare it against your GPU's ridge point, and say which phase is bandwidth-bound and why — then predict which optimisations can possibly help.</p></div>
+
+  <h2>1. One request, two completely different workloads</h2>
+  <p>A single completion is not one piece of work. It is one pass over the input followed by hundreds of tiny sequential passes, and those two halves stress opposite parts of the machine.</p>
+  <ul>
+    <li><strong>Prefill</strong> reads the whole prompt at once. Every input token is available simultaneously, so the GPU does one large matrix multiply per layer over all of them. Lots of arithmetic.</li>
+    <li><strong>Decode</strong> produces one token, appends it to the input, and does it again. Token <em>n+1</em> cannot start before token <em>n</em> exists, so each step is a tall thin matrix multiply over a single position. Almost no arithmetic, and the entire model has to be read from memory to do it.</li>
+  </ul>
+  <p>The <strong>KV cache</strong> is what stops decode re-reading the whole prompt every step: the key and value vectors each token produced are kept so attention can look back at them without recomputing. Treat it as working notes the engine keeps per in-flight request. They are not free — they occupy GPU memory and they have to be read back every step.</p>
+
+  <figure class="diagram" data-hint="Hover a span for its derivation · full screen for the cards">
+    <iframe src="diagrams/request-time.html" title="Execution waterfall: where one inference request's time goes" loading="lazy"></iframe>
+    <figcaption><strong>1. One request on an A100-80GB-class GPU, 2,000 input and 200 output tokens.</strong> Hand-derived, not measured. Decode is 87% of the wall clock, and TTFT and inter-token latency are produced by different mechanisms.
+      <pre><code>  0 ms ├─ queue             180 ms  ▓▓
+180 ms ├─ prefill (1 pass)  380 ms  ▓▓▓▓
+560 ├──── decode (200 passes) ───── 3600 ms  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
+       │   └ step 1 at 578 ms = time to first token
+       │   └ 18 ms per step  = inter-token latency
+4160 ms ┴─ stop token</code></pre>
+    </figcaption>
+  </figure>
+
+  <h2>2. The only calculation you need</h2>
+  <p><strong>Arithmetic intensity</strong> is the ratio of work done to data moved, in FLOP per byte:</p>
+  <pre><code>intensity = floating point operations / bytes moved between HBM and the compute units</code></pre>
+  <p>Compare it against your hardware's <strong>ridge point</strong>: peak FLOP per second divided by peak bytes per second. Below the ridge, you are waiting on memory and extra arithmetic capacity is wasted. Above it, you are waiting on arithmetic and extra bandwidth is wasted. That is the whole roofline model.</p>
+  <p>Take an 8B model in bf16 — 8.03 billion parameters at 2 bytes each, so <strong>16 GB of weights</strong>. Use the Llama-3.1-8B shape: 32 layers, 8 key/value heads after grouped-query attention, head dimension 128. Its KV cache costs</p>
+  <pre><code>2 (K and V) × 8 heads × 128 dim × 2 bytes × 32 layers = 131,072 bytes = 128 KB per token</code></pre>
+  <p>So a 2,000-token context is 256 MB of KV cache for <em>one</em> request. Hold on to that number; it decides almost everything later.</p>
+
+  <h3>Decode, one request at a time</h3>
+  <p>A forward pass costs roughly two FLOPs per parameter per token (one multiply, one add). For a single token:</p>
+  <table>
+    <tr><th>Quantity</th><th>Value</th><th>Where it comes from</th></tr>
+    <tr><td>Arithmetic</td><td>16.1 GFLOP</td><td>2 × 8.03B parameters × 1 token</td></tr>
+    <tr><td>Bytes moved</td><td>16.26 GB</td><td>16 GB of weights, read in full, plus 0.26 GB of KV cache read back</td></tr>
+    <tr><td><strong>Intensity</strong></td><td><strong>≈ 1 FLOP/byte</strong></td><td>16.1 GFLOP ÷ 16.26 GB</td></tr>
+  </table>
+  <p>One FLOP per byte. Now the ridge points, using vendor datasheet dense BF16 figures:</p>
+  <table>
+    <tr><th>GPU</th><th>Memory</th><th>Bandwidth</th><th>Dense BF16</th><th>Ridge point</th><th>Decode floor, 8B</th></tr>
+    <tr><td>A10G</td><td>24 GB</td><td>600 GB/s</td><td>125 TFLOP/s</td><td>208 FLOP/byte</td><td>27 ms → 37 tok/s</td></tr>
+    <tr><td>L40S</td><td>48 GB</td><td>864 GB/s</td><td>362 TFLOP/s</td><td>419 FLOP/byte</td><td>19 ms → 53 tok/s</td></tr>
+    <tr><td>A100 80GB SXM</td><td>80 GB</td><td>2,039 GB/s</td><td>312 TFLOP/s</td><td>153 FLOP/byte</td><td>8.0 ms → 125 tok/s</td></tr>
+    <tr><td>H100 SXM</td><td>80 GB</td><td>3,350 GB/s</td><td>989 TFLOP/s</td><td>295 FLOP/byte</td><td>4.9 ms → 206 tok/s</td></tr>
+  </table>
+  <p>The decode floor is simply 16.26 GB divided by the bandwidth: the time to stream the weights once, which you cannot go faster than. Single-stream decode runs at roughly <strong>1 FLOP per byte against a ridge of 150 to 420</strong> — two to three orders of magnitude under the roof. The compute units are idle, waiting for weights to arrive.</p>
+  <div class="callout"><h3>Now answer the opening question</h3><p>Three times the arithmetic throughput, same 600 GB/s of bandwidth. Decode's floor is 16.26 GB ÷ 600 GB/s = 27 ms per token whatever the FLOPs are, so single-user streaming stays at about 37 tokens per second. Prefill would get faster. For a chat workload that spends 87% of its wall clock in decode, you would be paying for a roof you never reach.</p></div>
+
+  <h3>Prefill, the same model</h3>
+  <p>Now process 2,000 input tokens in one pass. The weights are still read once, but every one of them is used 2,000 times over:</p>
+  <table>
+    <tr><th>Quantity</th><th>Value</th></tr>
+    <tr><td>Arithmetic</td><td>2 × 8.03B × 2,000 tokens = 32.1 TFLOP</td></tr>
+    <tr><td>Bytes moved</td><td>16 GB of weights, plus 0.26 GB of KV written</td></tr>
+    <tr><td><strong>Intensity</strong></td><td><strong>≈ 1,970 FLOP/byte</strong></td></tr>
+  </table>
+  <p>Nearly two thousand FLOP per byte, against ridges of 153 to 419. Prefill sits comfortably above every roof in that table: it is <strong>compute-bound</strong>. Its floor on an A100 is 32.1 TFLOP ÷ 312 TFLOP/s = 103 ms, and the 380 ms in the diagram above reflects achieving roughly a quarter of peak, which is an ordinary result for a single 2,000-token prefill.</p>
+  <p>Two phases, three orders of magnitude apart in intensity, sharing one GPU. Every architectural idea in the rest of this course follows from that sentence.</p>
+
+  <h2>3. The lever that moves decode: batch size</h2>
+  <p>Decode is bandwidth-bound because 16 GB of weights were read to produce a single token. Read them once and produce 64 tokens — one for each of 64 concurrent requests — and the arithmetic grows 64-fold while the weight traffic does not change at all. Batching is not a throughput trick bolted on the side; it is the <em>only</em> way to raise decode's intensity.</p>
+  <pre><code>intensity(B) = (2 × P × B) / (2 × P + B × L × 128KB)
+                   arithmetic        weights   KV read back
+
+P = 8.03e9 parameters, B = batch size, L = context length in tokens</code></pre>
+  <p>With a 2,000-token context:</p>
+  <table>
+    <tr><th>Batch size</th><th>Arithmetic</th><th>Bytes moved</th><th>Intensity</th><th>Versus A100's ridge of 153</th></tr>
+    <tr><td>1</td><td>16 GFLOP</td><td>16.3 GB</td><td>1.0</td><td>memory-bound by 150×</td></tr>
+    <tr><td>8</td><td>129 GFLOP</td><td>18.1 GB</td><td>7.1</td><td>memory-bound by 22×</td></tr>
+    <tr><td>64</td><td>1.03 TFLOP</td><td>32.8 GB</td><td>31</td><td>memory-bound by 5×</td></tr>
+    <tr><td>213 (the most that fits)</td><td>3.43 TFLOP</td><td>71.8 GB</td><td>48</td><td>still memory-bound by 3×</td></tr>
+  </table>
+  <p>Look at the bytes column. KV traffic grows with the batch while weight traffic does not, so by batch 64 the KV cache is moving more bytes than the weights are. Push the batch to infinity and the weight term vanishes, leaving a hard ceiling:</p>
+  <pre><code>ceiling = 2 × P / (L × 128KB) = 16.1 GFLOP / 0.262 GB = 61 FLOP/byte</code></pre>
+  <p><strong>At a 2,000-token context, no batch size on an A100 can reach the compute roof.</strong> The ceiling is 61 and the ridge is 153. And you cannot reach 61 either: 80 GB at 90% utilisation leaves 56 GB for KV after the weights, which is 213 requests of 256 MB. That number — not a core count — is your concurrency limit.</p>
+  <p>Change the context length and the conclusion inverts. At 256 tokens the KV cost per request drops to 33 MB, the ceiling rises to 480 FLOP/byte, and a batch of 512 fits comfortably and runs at 248 FLOP/byte — <em>above</em> the A100 ridge, genuinely compute-bound. Short prompts and long prompts are different engineering problems on the same hardware.</p>
+  <div class="callout"><h3>What the arithmetic deliberately ignores</h3><p>Attention FLOPs, which grow with context and matter at long sequence lengths. Activations and workspace. Non-matmul work, kernel launch overhead and Python. The assumption that each weight and each KV entry is read exactly once per step, which a real cache hierarchy does not honour exactly. This model tells you which regime you are in and roughly how far from the roof. It does not predict your throughput — that is lesson 3's job.</p></div>
+
+  <h2>4. Interrogate the metric before you quote it</h2>
+  <p>"We get 2,400 tokens per second" is not yet a fact. Ask which number it is:</p>
+  <table>
+    <tr><th>Metric</th><th>What it means</th><th>What it hides</th></tr>
+    <tr><td>Per-request tokens/second</td><td>How fast one answer streams. The reciprocal of inter-token latency.</td><td>How many users you can serve. Highest at batch size 1, which is the least economic way to run.</td></tr>
+    <tr><td>Aggregate output tokens/second</td><td>What the GPU produces in total. This is the number that divides into cost per million tokens.</td><td>That it rose because the batch grew, which made every individual user wait longer.</td></tr>
+    <tr><td>Total tokens/second</td><td>Input and output counted together.</td><td>Everything. A prefill-heavy workload inflates it enormously against a decode-heavy one.</td></tr>
+  </table>
+  <p>These move in opposite directions. Raising the batch improves aggregate throughput and degrades per-request latency, every time. A single tokens-per-second figure with no concurrency level, no token lengths and no statement of which of the three it is cannot be compared with anything.</p>
+
+  <h2>5. Which optimisation attacks which regime</h2>
+  <p>You now have enough to place the rest of the field, which is the real payoff of this lesson.</p>
+  <table>
+    <tr><th>Technique</th><th>What it changes on the plot</th><th>Where it is covered</th></tr>
+    <tr><td>Continuous batching</td><td>Raises decode intensity toward the roof by amortising one weight read over many requests.</td><td>Lesson 2</td></tr>
+    <tr><td>Paged KV cache</td><td>Fits more requests in the same memory, which raises the batch size you can reach at all.</td><td>Lesson 2</td></tr>
+    <tr><td>Prefix caching</td><td>Removes prefill arithmetic entirely for a repeated prompt. Does nothing for decode.</td><td>Lessons 2 and 4</td></tr>
+    <tr><td>Weight quantisation</td><td>Moves fewer bytes per decode step. 8 GB instead of 16 GB halves the floor.</td><td>Lesson 6 (planned)</td></tr>
+    <tr><td>KV quantisation and eviction</td><td>Attacks the KV term that set the 61 FLOP/byte ceiling above.</td><td>Lesson 7 (planned)</td></tr>
+    <tr><td>Speculative decoding</td><td>Spends FLOPs — which are free in a memory-bound regime — to verify several tokens per weight read.</td><td>Lesson 7 (planned)</td></tr>
+    <tr><td>Prefill/decode disaggregation</td><td>Stops a compute-bound phase and a bandwidth-bound phase competing for one GPU.</td><td>Lesson 8 (planned)</td></tr>
+  </table>
+  <p>Notice what is missing: nothing on that list is "buy more FLOPs". For a decode-dominated service that is the one lever the physics refuses.</p>
+
+  <div class="hand">
+    <h3>Work it yourself</h3>
+    <p>Do this for the model you actually intend to serve — the point is producing your own figure, not re-reading mine. Find its parameter count, layer count, KV head count and head dimension in its <code>config.json</code>, then answer:</p>
+    <ol>
+      <li>Weight bytes at your serving precision, and the decode floor in milliseconds on your GPU.</li>
+      <li>KV bytes per token, and how many requests at your real context length fit in the memory left over.</li>
+      <li>Decode intensity at batch 1 and at that maximum batch, against your GPU's ridge point.</li>
+      <li>Prefill intensity at your p50 input length. Is it above or below the ridge?</li>
+    </ol>
+    <details><summary>A worked check with different inputs</summary><p>Qwen2.5-7B-shaped: 7.6B parameters, 28 layers, 4 KV heads, head dimension 128, served in bf16 on one A10G.</p><ul><li>Weights: 7.6e9 × 2 = 15.2 GB. Decode floor: 15.2 ÷ 600 GB/s ≈ 25 ms, so about 39 tokens per second to a single user, before any overhead.</li><li>KV per token: 2 × 4 × 128 × 2 × 28 = 57,344 bytes ≈ 56 KB — less than half the Llama-3.1-8B figure, because four KV heads instead of eight.</li><li>24 GB at 90% leaves 21.6 GB; minus 15.2 GB of weights is 6.4 GB for KV, which is 6.4e9 ÷ (2,000 × 57,344) ≈ 55 requests at 2,000 tokens.</li><li>Intensity at batch 55: (2 × 7.6e9 × 55) ÷ (15.2 + 55 × 0.057) GB = 836 GFLOP ÷ 18.4 GB ≈ 45 FLOP/byte, against the A10G ridge of 208. Memory-bound by more than 4×, even full.</li></ul><p>The lesson from the comparison: the KV head count changed the concurrency limit far more than the parameter count did. Attention shape is a serving decision, not just a modelling one.</p></details>
+  </div>
+
+  <h2>Sources and deeper reading</h2>
+  <p>The two canonical first-principles treatments, then the text that does the same arithmetic for transformers specifically.</p>
+  <ul>
+    <li><a href="https://horace.io/brrr_intro.html">Making Deep Learning Go Brrrr From First Principles</a> (Horace He) — the compute, bandwidth and overhead regimes, and why adding FLOPs does nothing to a bandwidth-bound kernel.</li>
+    <li><a href="https://www.youtube.com/watch?v=6OBtO9niT00">Stanford CS336 Lecture 5: GPUs</a> (Percy Liang, Tatsunori Hashimoto) — execution model, memory hierarchy, roofline. <a href="https://github.com/stanford-cs336/spring2025-lectures">Slides</a>.</li>
+    <li><a href="https://kipp.ly/transformer-inference-arithmetic/">Transformer Inference Arithmetic</a> (kipply) — the text version of this lesson's derivations, with more terms kept.</li>
+    <li><a href="https://www.databricks.com/blog/llm-inference-performance-engineering-best-practices">LLM inference performance engineering</a> (Databricks) — the prefill versus decode framing applied to serving decisions.</li>
+    <li><a href="https://www.youtube.com/watch?v=fcgPYo3OtV0">CS336 Lecture 10: Inference</a> — the same model, extended to batching and serving.</li>
+  </ul>
+  <p>Hardware figures above are vendor datasheet dense BF16 numbers, reviewed November 2026. Sparsity-enabled figures are typically quoted at double the dense rate; using them here would flatter the compute roof. Re-check your own SKU: bandwidth varies between PCIe and SXM variants of the same chip.</p>
+  <p>Next: the batch size this lesson says you need is produced by a scheduler, and the memory limit is enforced by a block manager. <a href="02-scheduler.html">Read how both work →</a></p>
+  <section id="quiz"></section>
+</main>
+<script type="application/json" id="quiz-data">
+[
+  {"q":"A single decode step on an 8B bf16 model moves about 16 GB and performs about 16 GFLOP. What does that tell you?","options":["The GPU is arithmetic-limited, so more FLOPs will help","At roughly 1 FLOP per byte it is far below any ridge point, so it is memory-bandwidth-bound","The model is too large for the GPU","Nothing without a benchmark"],"answer":1,"why":"One FLOP per byte against a ridge of 150-420 means the compute units are idle waiting on weight traffic. Extra arithmetic capacity cannot be used."},
+  {"q":"Prefill on 2,000 input tokens reaches about 1,970 FLOP per byte. Why is it so different from decode?","options":["Prefill skips the KV cache entirely","The weights are read once but used for every one of the 2,000 tokens, so arithmetic scales while weight traffic does not","Prefill runs on different hardware units","Prefill uses lower precision"],"answer":1,"why":"All input tokens are available at once, so one weight read serves 2,000 positions. That is what puts prefill above the compute roof while decode sits far below it."},
+  {"q":"You raise the batch size from 1 to 64 and aggregate output tokens per second climbs sharply. What also happened?","options":["Per-request inter-token latency got worse, because each user now shares each forward pass","Nothing else; batching is free","The KV cache got smaller","Prefill became memory-bound"],"answer":0,"why":"Aggregate throughput and per-request latency move in opposite directions under batching. Quoting the first without the second hides the cost users actually feel."},
+  {"q":"At a 2,000-token context the decode intensity ceiling works out to 61 FLOP per byte while the A100 ridge is 153. What follows?","options":["The calculation must be wrong","Batching alone cannot make decode compute-bound at that context length, so the remaining levers are ones that move fewer bytes","You should buy a GPU with more FLOPs","Context length does not affect the regime"],"answer":1,"why":"KV traffic grows with the batch and caps the intensity below the ridge. That is why weight and KV quantisation, eviction and speculative decoding are the levers that remain."}
+]
+</script>
+<script src="lessons.js"></script>
+<script src="../../course.js"></script>
+</body>
+</html>

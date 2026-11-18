@@ -43,6 +43,15 @@
     <li>Every ~2 hours the head is compacted into an immutable, compressed <strong>block</strong> on disk with its own <strong>index</strong>. Older blocks are merged into bigger ones.</li>
     <li><strong>Retention</strong> deletes blocks older than a limit (Prometheus defaults to 15 days). Long-term systems (Thanos, Mimir) ship blocks to object storage and may <strong>downsample</strong> (keep one point per 5 min instead of per 15 s).</li>
   </ol>
+  <figure class="diagram" data-hint="Hover a flow for what it carries · full screen for the notes">
+    <iframe src="diagrams/tsdb-write-path.html" title="Data flow: how a sample reaches disk and how a query reads it back" loading="lazy"></iframe>
+    <figcaption><strong>The whole path, both directions.</strong> Every sample is written twice on purpose: to RAM so it can be queried, and to the WAL so a crash cannot lose it. Nothing ever reads the WAL except a restart.
+      <pre><code>exporter ──scrape──▶ scrape loop ──┬──▶ head block (RAM, ~2h) ──compact──▶ block (disk) ──▶ object storage
+                                   └──▶ WAL (disk, append) ─ ─replay on restart─ ─▶ head
+                                              PromQL reads head + whatever blocks the range needs</code></pre>
+    </figcaption>
+  </figure>
+
   <p>To find series fast, the index is an <strong>inverted index</strong>: for each label pair (e.g. <code>method="GET"</code>) it keeps a list of the series IDs that have it. A query for <code>{method="GET",status="500"}</code> intersects the two lists.</p>
 
   <h2>Compression: why it is so small</h2>
